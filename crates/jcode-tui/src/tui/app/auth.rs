@@ -2447,9 +2447,15 @@ impl App {
                             success: true,
                             message: format!(
                                 "{}.\n\n\
-                                 Stored at ~/.config/jcode/{}.\n\
+                                 Stored at {}.\n\
                                  {}{}",
-                                saved_label, env_file, guidance, model_hint
+                                saved_label,
+                                crate::storage::app_config_dir()
+                                    .expect("config directory resolved while saving API key")
+                                    .join(&env_file)
+                                    .display(),
+                                guidance,
+                                model_hint
                             ),
                         }));
                     }
@@ -2642,10 +2648,15 @@ impl App {
                         Bus::global().publish(BusEvent::LoginCompleted(LoginCompleted {
                             provider: "cursor".to_string(),
                             success: true,
-                            message: "Cursor API key saved.\n\n\
-                             Stored at ~/.config/jcode/cursor.env.\n\
-                             jcode will use it with the native Cursor HTTPS transport."
-                                .to_string(),
+                            message: format!(
+                                "Cursor API key saved.\n\n\
+                                 Stored at {}.\n\
+                                 jcode will use it with the native Cursor HTTPS transport.",
+                                crate::storage::app_config_dir()
+                                    .expect("config directory resolved while saving Cursor API key")
+                                    .join("cursor.env")
+                                    .display()
+                            ),
                         }));
                     }
                     Err(e) => {
@@ -2821,8 +2832,9 @@ impl App {
                             ))
                         } else {
                             let current_model = provider.model();
-                            crate::auth::lifecycle::provider_model_to_select_after_auth(
+                            crate::auth::lifecycle::provider_model_to_select_after_auth_with_configured_default(
                                 &activation,
+                                crate::config::config().provider.default_model.as_deref(),
                                 Some(&current_model),
                                 &routes,
                             )
@@ -2894,8 +2906,9 @@ impl App {
                     }
                 } else {
                     let current_model = provider.model();
-                    if let Some(model) = crate::auth::lifecycle::provider_model_to_select_after_auth(
+                    if let Some(model) = crate::auth::lifecycle::provider_model_to_select_after_auth_with_configured_default(
                         &activation,
+                        crate::config::config().provider.default_model.as_deref(),
                         Some(&current_model),
                         &routes,
                     ) {
@@ -3436,10 +3449,13 @@ impl App {
             success: true,
             message: format!(
                 "Azure OpenAI configuration saved.\n\n\
-                 Stored at ~/.config/jcode/{}.\n\
+                 Stored at {}.\n\
                  {}\n\n\
                  Use /model after your Azure deployment exists. If the model list looks stale, run /refresh-model-list.",
-                crate::auth::azure::ENV_FILE,
+                crate::storage::app_config_dir()
+                    .expect("config directory resolved while saving Azure configuration")
+                    .join(crate::auth::azure::ENV_FILE)
+                    .display(),
                 auth_note,
             ),
         }));
