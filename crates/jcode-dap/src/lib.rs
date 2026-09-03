@@ -7,7 +7,9 @@ mod process;
 mod protocol;
 pub mod testing;
 
-pub use client::DapClient;
+pub use client::{
+    DapClient, EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_BYTES, MAX_RETAINED_EVENT_SIZE,
+};
 pub use error::{DapError, Result};
 pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,
