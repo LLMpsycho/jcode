@@ -15,7 +15,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, OwnedMutexGuard, RwLock};
 
 /// Stable identity for a file inside one canonical workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -147,6 +147,15 @@ impl From<EditError> for FileSnapshotLedgerError {
 #[derive(Clone)]
 pub(crate) struct FileSnapshotLedger {
     state: Arc<RwLock<LedgerState>>,
+    write_transaction: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct SnapshotWrite {
+    pub(crate) relative_path: String,
+    pub(crate) expected_revision: FileRevision,
+    pub(crate) contents: Vec<u8>,
+    pub(crate) mtime_ns: Option<u128>,
 }
 
 #[derive(Default)]
@@ -177,7 +186,14 @@ impl FileSnapshotLedger {
     pub(crate) fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(LedgerState::default())),
+            write_transaction: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Serialize ledger-aware write transactions so two anchored edits cannot
+    /// both preflight the same revision and then race to publish it.
+    pub(crate) async fn lock_write_transaction(&self) -> OwnedMutexGuard<()> {
+        self.write_transaction.clone().lock_owned().await
     }
 
     /// Register text observed from disk. Repeated observations of the same
@@ -272,6 +288,71 @@ impl FileSnapshotLedger {
             Some(session_id.to_owned()),
             true,
         )
+    }
+
+    /// Atomically update all ledger records after a multi-file publication.
+    /// Every expected revision is checked before any ledger entry is changed.
+    pub(crate) async fn record_writes(
+        &self,
+        session_id: &str,
+        workspace_root: &Path,
+        writes: Vec<SnapshotWrite>,
+    ) -> Result<Vec<SnapshotRecord>, FileSnapshotLedgerError> {
+        let mut prepared = Vec::with_capacity(writes.len());
+        let mut seen = HashSet::with_capacity(writes.len());
+        for write in writes {
+            let observation = prepare_observation(
+                workspace_root,
+                &write.relative_path,
+                &write.contents,
+                write.mtime_ns,
+            )?;
+            if !seen.insert(observation.key.clone()) {
+                return Err(EditError::DuplicateObservedFile {
+                    path: write.relative_path,
+                }
+                .into());
+            }
+            prepared.push((observation, write.expected_revision));
+        }
+
+        let mut state = self.state.write().await;
+        for (observation, expected) in &prepared {
+            let Some(current) = state.snapshots.get(&observation.key) else {
+                return Err(EditError::StaleRevision {
+                    path: observation.key.relative_path.clone(),
+                    expected: expected.revision,
+                    actual: 0,
+                }
+                .into());
+            };
+            if !same_strong_revision(expected, &current.record.revision) {
+                return Err(EditError::StaleRevision {
+                    path: observation.key.relative_path.clone(),
+                    expected: expected.revision,
+                    actual: current.record.revision.revision,
+                }
+                .into());
+            }
+            expected.revision.checked_add(1).ok_or_else(|| {
+                FileSnapshotLedgerError::RevisionOverflow {
+                    path: observation.key.relative_path.clone(),
+                }
+            })?;
+        }
+
+        prepared
+            .into_iter()
+            .map(|(observation, _)| {
+                upsert_snapshot(
+                    &mut state,
+                    observation,
+                    SnapshotSource::Write,
+                    Some(session_id.to_owned()),
+                    true,
+                )
+            })
+            .collect()
     }
 
     pub(crate) async fn snapshot(

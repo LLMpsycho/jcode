@@ -1,5 +1,6 @@
 mod agentgrep;
 pub mod ambient;
+mod anchored_edit;
 mod apply_patch;
 mod bash;
 mod batch;
@@ -366,7 +367,12 @@ impl Registry {
             Self::insert_tool(
                 &mut tools_map,
                 "read",
-                read::ReadTool::with_file_snapshots(file_snapshots),
+                read::ReadTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "anchored_edit",
+                anchored_edit::AnchoredEditTool::new(file_snapshots),
             );
         }
         let base_ms = base_start.elapsed().as_millis();
