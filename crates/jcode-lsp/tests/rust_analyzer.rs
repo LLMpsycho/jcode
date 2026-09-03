@@ -1,7 +1,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use jcode_lsp::{LspProcess, LspServerConfig, ProcessStatus, discover_executable};
+use jcode_lsp::{
+    LspConfig, LspProcess, LspServerConfig, LspServicePool, ProcessStatus, discover_executable,
+};
 
 #[tokio::test]
 async fn installed_rust_analyzer_initializes_and_shuts_down() {
@@ -45,4 +47,42 @@ async fn installed_rust_analyzer_initializes_and_shuts_down() {
         process.status().await.unwrap(),
         ProcessStatus::Exited { .. }
     ));
+}
+
+#[tokio::test]
+async fn shared_pool_reuses_one_server_but_isolates_worktree_identities() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("LSP crate should live below the workspace root");
+    if discover_executable(
+        "rust-analyzer",
+        std::env::var_os("PATH").as_deref(),
+        workspace,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let pool = LspServicePool::new();
+    let config = LspConfig::default();
+    let first = pool
+        .get_or_start(workspace, "worktree-a", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    let reused = pool
+        .get_or_start(workspace, "worktree-a", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    let isolated = pool
+        .get_or_start(workspace, "worktree-b", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &reused));
+    assert!(!std::sync::Arc::ptr_eq(&first, &isolated));
+    assert_eq!(pool.len().await, 2);
+    pool.shutdown_all(Duration::from_secs(5)).await;
+    assert!(pool.is_empty().await);
 }

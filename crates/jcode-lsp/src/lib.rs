@@ -8,6 +8,7 @@ mod framing;
 mod protocol;
 pub mod testing;
 mod transport;
+mod workspace;
 
 pub use client::LspClient;
 pub use config::config_digest;
@@ -19,3 +20,4 @@ pub use framing::{
 pub use jcode_lsp_types::*;
 pub use protocol::{IncomingMessage, decode_message, encode_message};
 pub use transport::{LspProcess, ProcessStatus};
+pub use workspace::{LspServicePool, LspWorkspace, LspWorkspaceKey};

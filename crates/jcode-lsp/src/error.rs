@@ -38,6 +38,8 @@ pub enum LspError {
     MissingProcessPipe { stream: &'static str },
     #[error("workspace path cannot be represented as a file URI: {path}")]
     InvalidWorkspaceUri { path: String },
+    #[error("LSP server `{server_id}` is not configured")]
+    UnknownServer { server_id: String },
 }
 
 impl From<std::io::Error> for LspError {
