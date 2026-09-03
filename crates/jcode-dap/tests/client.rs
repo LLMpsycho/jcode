@@ -1,6 +1,6 @@
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -341,13 +341,7 @@ async fn abort_during_blocked_write_does_not_corrupt_the_frame() {
     assert_eq!(sent.command, "next");
     adapter
         .write_all(
-            &encode_message(&Response::success(
-                1,
-                sent.seq,
-                sent.command.clone(),
-                None,
-            ))
-            .unwrap(),
+            &encode_message(&Response::success(1, sent.seq, sent.command.clone(), None)).unwrap(),
         )
         .await
         .unwrap();
@@ -454,7 +448,11 @@ async fn reader_eof_interrupts_a_blocked_writer_and_pending_request() {
     );
     let request = tokio::spawn({
         let client = client.clone();
-        async move { client.request("blocked", None, Duration::from_secs(5)).await }
+        async move {
+            client
+                .request("blocked", None, Duration::from_secs(5))
+                .await
+        }
     });
     tokio::time::timeout(Duration::from_secs(1), started_receiver)
         .await
@@ -561,8 +559,7 @@ async fn reverse_request_waits_for_blocked_write_then_receives_correlated_reject
         recv_framed(&mut adapter, &mut decoder),
     )
     .await
-    .expect("reverse rejection should follow the blocked outbound frame")
-    else {
+    .expect("reverse rejection should follow the blocked outbound frame") else {
         panic!("expected reverse rejection response")
     };
     assert_eq!(rejection.request_seq, 41);
@@ -571,13 +568,7 @@ async fn reverse_request_waits_for_blocked_write_then_receives_correlated_reject
 
     adapter
         .write_all(
-            &encode_message(&Response::success(
-                42,
-                outbound.seq,
-                outbound.command,
-                None,
-            ))
-            .unwrap(),
+            &encode_message(&Response::success(42, outbound.seq, outbound.command, None)).unwrap(),
         )
         .await
         .unwrap();
