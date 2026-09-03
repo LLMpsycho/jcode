@@ -21,3 +21,10 @@ captures/
 /*.avif
 /*.mp4
 /*.png
+
+# Competitive evaluation outputs are local by default.
+/competitive-eval/campaigns/*
+!/competitive-eval/campaigns/.gitkeep
+/competitive-eval/baselines/*
+!/competitive-eval/baselines/.gitkeep
+!/competitive-eval/baselines/baseline.lock.json

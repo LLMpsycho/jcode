@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "locked_files": [
+    {
+      "path": "docs/plans/omp-overtake/FAIRNESS.md",
+      "sha256": "265e3976c82b2ad8aca9564854193401d0b901cea78ba172a672881c649c3ade"
+    },
+    {
+      "path": "docs/plans/omp-overtake/RISK_REGISTER.md",
+      "sha256": "2fdbfc301908674afddfe4a57f48f57ad0f18a23367ec40f1e198d1f03652bdf"
+    },
+    {
+      "path": "docs/plans/omp-overtake/SCORECARD.md",
+      "sha256": "9642caad8b28cbb3ed5847a18c0cedb0694dc026d25bb8a11d16a5172c2e63e0"
+    },
+    {
+      "path": "scripts/competitive_eval/schema/campaign.schema.json",
+      "sha256": "0f2267b3a3bdce49e1f4eadd621f8a89ac3a0c7cef474740e5f546ff737ad065"
+    },
+    {
+      "path": "scripts/competitive_eval/schema/result.schema.json",
+      "sha256": "a6fb61a9c67317783cca4246f477dcc4a058364797128506abf4835ef82db3e3"
+    },
+    {
+      "path": "scripts/competitive_eval/schema/task.schema.json",
+      "sha256": "bac574514e0d50f0e5e069afe221c04bed3e5ec976c4c2f8a0055a3233e2a107"
+    }
+  ],
+  "policy": "Implementation commits must not modify locked files. Evaluator corrections invalidate prior measurements."
+}
