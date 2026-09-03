@@ -1,6 +1,6 @@
 # Phase 3 DAP protocol foundation
 
-This branch implements the DAP protocol foundation, owner-scoped session manager, and the Phase 3 30D launch and owned-attach slice. It does not register an agent tool or expose arbitrary PID attachment.
+This branch implements the DAP protocol foundation, owner-scoped session manager, the Phase 3 30D launch and owned-attach slice, and the 30E breakpoint/thread/execution-control slice. It does not register an agent tool or expose arbitrary PID attachment.
 
 ## Implemented
 
@@ -30,6 +30,11 @@ This branch implements the DAP protocol foundation, owner-scoped session manager
 - Owned attach spawns and retains the target child internally, authorizes only the owned adapter PID with Linux `PR_SET_PTRACER`, and never accepts a caller-supplied PID.
 - Startup uses one checked Tokio deadline across adapter spawn, initialize, launch or attach, initialized, configurationDone, and the start response. Adapter and target ownership enter the cancellation-safe reservation before protocol awaits.
 - Finalization asks the live adapter to disconnect within a bound, closes transport, then cleans the owned target and adapter process groups locally. Windows launch and attach fail closed before reservation or spawn.
+- A separate non-breaking `DebugOperationConfig` configures bounded operation time, source hashing, breakpoint registries, event reconciliation, thread snapshots, and adapter strings. Exact-30D `DebugSessionManagerConfig` and `StoppedState` remain unchanged.
+- Owner-authorized source breakpoints use canonical workspace-contained regular files, exact-byte SHA-256 revisions, full-source `setBreakpoints` replacement, manager-local monotonic IDs, capability gates, bounded public snapshots, compensating clears, and explicit indeterminate synchronization.
+- Every breakpoint event is queued in one bounded per-session queue while a transaction is in flight. Response sequence ordering installs adapter IDs before applying higher-sequence ID-only events, while overflow and ambiguous outcomes cannot claim synchronized state.
+- Per-entry operation gates serialize breakpoint mutation, ephemeral thread lookup, and execution control without holding synchronous state locks across I/O. Detached operations own the session entry and immutable operation config, never `Arc<ManagerCore>`; terminal closure prevents post-cleanup commits.
+- Ephemeral `threads`, `continue`, `pause`, `next`, `stepIn`, and `stepOut` operations enforce owner, state, thread, capability, deadline, and execution-revision checks. No stack, frame, scope, variable, or evaluation cache exists.
 
 ## Verified behavior
 
@@ -59,6 +64,16 @@ This branch implements the DAP protocol foundation, owner-scoped session manager
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
 - Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
 - Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, serialized reservation-drop cleanup, deadline cleanup, scoped Linux ptracer arguments, and owned-target exit during attach. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and a reaped target exit that cannot commit a Running session.
+- `manager::breakpoints::tests::full_source_set_idempotence_remove_and_exact_revision` proves ordered full-source replacement, idempotence, removal, and exact-byte revision metadata.
+- `manager::breakpoints::tests::id_only_higher_sequence_event_is_applied_after_response` proves the corrected response-delivery race: a higher-sequence ID-only event is queued and applied after adapter-ID installation.
+- `manager::breakpoints::tests::queue_all_events_is_bounded_and_overflow_is_recorded` proves unknown-source and ID-only events share the bounded in-flight queue and overflow is explicit.
+- `manager::breakpoints::tests::ambiguous_timeout_with_unknown_queued_events_is_indeterminate` proves an ambiguous dispatch timeout cannot publish synchronized breakpoint state.
+- `manager::breakpoints::tests::source_change_triggers_compensating_empty_clear` proves post-response source mutation causes a compensating empty clear rather than a stale commit.
+- `manager::breakpoints::tests::wrong_owner_all_breakpoint_apis_emit_zero_traffic` and `manager::control::tests::stale_revision_and_wrong_owner_emit_zero_control_traffic` prove universal owner denial with no DAP request.
+- `manager::breakpoints::tests::exact_30d_public_struct_literals_remain_source_compatible` and `manager::control::tests::public_id_accessors_and_formatting_are_stable` prove exact-30D config/stopped-state construction remains valid and public opaque IDs have stable accessors/formatting.
+- `manager::control::tests::threads_are_ephemeral_bounded_and_preserve_order`, `continue_uses_stopped_thread_and_does_not_require_continued_event`, `pause_and_steps_use_exact_commands_and_response_event_order`, and `continue_timeout_is_conservative_and_later_stop_recovers` prove the minimal thread dependency and request/event/revision semantics.
+- `manager::control::tests::final_manager_drop_closes_transport_despite_detached_operation` proves an aborted public caller leaves reconciliation detached without retaining `ManagerCore`, so final manager drop still closes transport promptly.
+- `real_subprocess_full_breakpoint_and_control_contract_repeats_cleanly` runs the framed fake adapter as a real subprocess twice per invocation. It proves Unicode/space source paths, ordered full-set replacement, threads, continue, pause, all three step commands, termination, and process-group cleanup; the focused command was repeated in three independent invocations without a failure.
 
 Focused validation commands:
 
@@ -72,13 +87,13 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 112 tests: 88 crate-internal library/client/process tests, 10 framing/protocol integration tests, 11 real launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 127 tests plus 2 compile-fail doctests: 102 crate-internal library/client/process tests, 1 repeated breakpoint/control subprocess test, 10 framing/protocol integration tests, 11 launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 
 - Adapter discovery and debugger profiles beyond configured `lldb-dap`.
 - Agent tool registration and TUI integration.
-- Breakpoint, stepping, stack, variable, evaluate, and higher-level debug policy.
+- Stack trace, frame selection, scopes, variables, evaluate, step-in targets, and higher-level debug policy.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.

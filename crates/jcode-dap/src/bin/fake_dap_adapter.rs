@@ -53,7 +53,14 @@ fn main() -> std::io::Result<()> {
                 &mut output,
                 &mut seq,
                 &request,
-                Some(json!({"supportsConfigurationDoneRequest":true})),
+                Some(json!({
+                    "supportsConfigurationDoneRequest":true,
+                    "supportsCancelRequest":true,
+                    "supportsConditionalBreakpoints":true,
+                    "supportsHitConditionalBreakpoints":true,
+                    "supportsLogPoints":true,
+                    "supportsSteppingGranularity":true
+                })),
             )?;
         } else if command == "launch" || command == "attach" {
             if cwd.join("reject-start").exists() {
@@ -124,7 +131,75 @@ fn main() -> std::io::Result<()> {
                 event(&mut output, &mut seq, "exited", Some(json!({"exitCode":0})))?;
                 event(&mut output, &mut seq, "terminated", None)?;
             }
+            if cwd.join("stop-on-entry").exists() {
+                event(
+                    &mut output,
+                    &mut seq,
+                    "stopped",
+                    Some(json!({"reason":"entry","threadId":1,"allThreadsStopped":true})),
+                )?;
+            }
         } else if command == "configurationDone" {
+            respond(&mut output, &mut seq, &request, None)?;
+        } else if command == "setBreakpoints" {
+            if cwd.join("hang-set-breakpoints").exists() {
+                continue;
+            }
+            let breakpoints = request["arguments"]["breakpoints"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .enumerate()
+                .map(|(index, breakpoint)| {
+                    json!({
+                        "id": i64::try_from(index).unwrap_or(0) + 100,
+                        "verified": true,
+                        "line": breakpoint["line"],
+                        "column": breakpoint.get("column")
+                    })
+                })
+                .collect::<Vec<_>>();
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({"breakpoints":breakpoints})),
+            )?;
+        } else if command == "threads" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({"threads":[{"id":1,"name":"main"},{"id":2,"name":"worker"}]})),
+            )?;
+        } else if command == "continue" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({"allThreadsContinued":true})),
+            )?;
+            if cwd.join("control-stops").exists() {
+                event(
+                    &mut output,
+                    &mut seq,
+                    "stopped",
+                    Some(json!({"reason":"breakpoint","threadId":1,"allThreadsStopped":true})),
+                )?;
+            }
+        } else if matches!(command, "pause" | "next" | "stepIn" | "stepOut") {
+            respond(&mut output, &mut seq, &request, None)?;
+            if cwd.join("control-stops").exists() {
+                let reason = if command == "pause" { "pause" } else { "step" };
+                event(
+                    &mut output,
+                    &mut seq,
+                    "stopped",
+                    Some(json!({"reason":reason,"threadId":1,"allThreadsStopped":true})),
+                )?;
+            }
+        } else if command == "cancel" {
             respond(&mut output, &mut seq, &request, None)?;
         } else if command == "disconnect" {
             if cwd.join("hang-disconnect").exists() {

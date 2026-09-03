@@ -304,3 +304,56 @@ async fn source_change_triggers_compensating_empty_clear() {
     ));
     sleep(Duration::from_millis(1)).await;
 }
+
+#[tokio::test]
+async fn ambiguous_timeout_with_unknown_queued_events_is_indeterminate() {
+    let mut f = fixture("owner");
+    let task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let _set = request(&mut f.adapter).await;
+    f.adapter
+        .event(
+            "breakpoint",
+            Some(json!({"reason":"changed","breakpoint":{"id":999,"verified":false}})),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::RequestTimeout { .. })
+    ));
+    let snapshot = f.manager.breakpoints("owner", f.id).unwrap();
+    assert_eq!(snapshot.sources.len(), 1);
+    assert_eq!(
+        snapshot.sources[0].synchronization,
+        DebugBreakpointSynchronization::Indeterminate
+    );
+}
+
+#[tokio::test]
+async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
+    let f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let mut data = lock(&entry.data);
+    data.breakpoints.in_flight = Some(BreakpointTransactionInFlight {
+        source: f.source.clone(),
+        bounded_events: VecDeque::new(),
+        overflowed: false,
+    });
+    queue_breakpoint_event(&mut data, 1, json!({"unknown":"source"}), 1);
+    queue_breakpoint_event(&mut data, 2, json!({"breakpoint":{"id":9}}), 1);
+    let transaction = data.breakpoints.in_flight.as_ref().unwrap();
+    assert_eq!(transaction.bounded_events.len(), 1);
+    assert!(transaction.overflowed);
+}

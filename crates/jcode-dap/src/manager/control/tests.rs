@@ -323,3 +323,59 @@ fn public_id_accessors_and_formatting_are_stable() {
     };
     let _ = Event::new(1, "custom", None);
 }
+
+#[tokio::test]
+async fn final_manager_drop_closes_transport_despite_detached_operation() {
+    let root = std::env::temp_dir().join(format!(
+        "jcode-dap-drop-{}-{}",
+        std::process::id(),
+        crate::session::next_manager_id().unwrap()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let program = root.join("main");
+    std::fs::write(&program, b"x").unwrap();
+    let manager = DebugSessionManager::new_with_operation_config(
+        DebugSessionManagerConfig::default(),
+        DebugOperationConfig {
+            operation_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (client, mut adapter) = FakeAdapter::pair(1024 * 1024);
+    let mut reservation = manager
+        .reserve(NewDebugSession {
+            owner_session_id: "owner".into(),
+            workspace: DebugWorkspaceKey::new(&root, "drop").unwrap(),
+            adapter_id: "fake".into(),
+            start: Some(DebugSessionStart::Launch {
+                program,
+                cwd: root.clone(),
+            }),
+        })
+        .unwrap();
+    reservation.attach_client(client).unwrap();
+    reservation.mark_configuring().unwrap();
+    reservation.mark_running().unwrap();
+    let id = reservation.commit().unwrap();
+    let caller = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .pause("owner", id, DebugPauseRequest::default())
+                .await
+        })
+    };
+    let threads = recv(&mut adapter).await;
+    assert_eq!(threads.command, "threads");
+    caller.abort();
+    let _ = caller.await;
+    drop(manager);
+    assert!(matches!(
+        timeout(Duration::from_secs(1), adapter.recv())
+            .await
+            .unwrap(),
+        Err(DapError::TransportClosed)
+    ));
+    let _ = std::fs::remove_dir_all(root);
+}

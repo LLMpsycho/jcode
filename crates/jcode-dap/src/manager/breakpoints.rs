@@ -59,12 +59,6 @@ impl BreakpointRegistry {
             unmatched_adapter_events: self.unmatched_events,
         }
     }
-
-    fn mark_indeterminate(&mut self, source: &Path) {
-        if let Some(record) = self.sources.get_mut(source) {
-            record.synchronization = DebugBreakpointSynchronization::Indeterminate;
-        }
-    }
 }
 
 pub(super) fn queue_breakpoint_event(data: &mut SessionData, seq: i64, body: Value, limit: usize) {
@@ -286,21 +280,25 @@ async fn transact(
     let response = match response {
         Ok(response) => response,
         Err(error) => {
-            finish_ambiguous(&entry, &source.canonical);
+            if matches!(error, DapError::Response { .. }) {
+                clear_transaction(&entry);
+            } else {
+                finish_ambiguous(&entry, &source, &desired);
+            }
             return Err(error);
         }
     };
     let parsed = match parse_breakpoints_response(&response, desired.len(), &operations) {
         Ok(parsed) => parsed,
         Err(error) => {
-            finish_ambiguous(&entry, &source.canonical);
+            finish_ambiguous(&entry, &source, &desired);
             return Err(error);
         }
     };
     let after = resolve_source(&entry.workspace, &source.canonical, &operations, deadline).await?;
     if after.revision != source.revision {
         let compensation = send_set(&client, &source.canonical, &[], true, deadline).await;
-        finish_ambiguous(&entry, &source.canonical);
+        finish_ambiguous(&entry, &source, &desired);
         if compensation.is_err() {
             return Err(DapError::BreakpointReconciliationIndeterminate {
                 path: source.relative,
@@ -727,10 +725,34 @@ fn client_for(entry: &SessionEntry, operation: &'static str) -> Result<DapClient
         .map(|t| t.client.clone())
         .ok_or_else(|| invalid_transition(entry, &data, operation))
 }
-fn finish_ambiguous(entry: &SessionEntry, source: &Path) {
+fn clear_transaction(entry: &SessionEntry) {
     let mut data = lock(&entry.data);
     data.breakpoints.in_flight = None;
-    data.breakpoints.mark_indeterminate(source);
+    notify(entry, &mut data);
+}
+
+fn finish_ambiguous(
+    entry: &SessionEntry,
+    source: &ResolvedSource,
+    desired: &BTreeMap<DebugBreakpointId, DebugBreakpoint>,
+) {
+    let mut data = lock(&entry.data);
+    data.breakpoints.in_flight = None;
+    let generation = data
+        .breakpoints
+        .sources
+        .get(&source.canonical)
+        .map_or(1, |record| record.generation.saturating_add(1));
+    data.breakpoints.sources.insert(
+        source.canonical.clone(),
+        SourceRecord {
+            relative: source.relative.clone(),
+            revision: source.revision.clone(),
+            generation,
+            synchronization: DebugBreakpointSynchronization::Indeterminate,
+            breakpoints: desired.clone(),
+        },
+    );
     notify(entry, &mut data);
 }
 
