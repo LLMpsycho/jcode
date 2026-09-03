@@ -345,6 +345,26 @@ require_same_revision = true
 require_covered_ranges = true
 allow_full_file_write = false
 
+[lsp]
+# Shared language intelligence is lazy: no server process starts until the lsp
+# tool or post-edit verification needs one. Distinct worktrees never share a
+# mutable document namespace.
+enabled = true
+shared = true
+idle_timeout_seconds = 300
+request_timeout_seconds = 20
+post_edit_diagnostics = "delta" # off | delta | file | workspace
+post_edit_wait_ms = 750
+max_output_tokens = 2500
+
+[lsp.servers.rust-analyzer]
+# Executed directly without shell interpolation. Provider/API secrets are not
+# forwarded to the language-server environment.
+command = "rust-analyzer"
+args = []
+root_markers = ["Cargo.toml", "rust-project.json"]
+file_extensions = ["rs"]
+
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.
 # standard emits only spec-compatible ACP messages.
