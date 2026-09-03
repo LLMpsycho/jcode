@@ -627,6 +627,42 @@ async fn reservation_drop_waits_for_finalization_lock_before_cleanup_and_slot_re
     ));
 }
 
+#[test]
+fn reservation_drop_without_runtime_waits_for_finalization_lock() {
+    use std::sync::mpsc;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let manager = manager();
+    let reservation = manager.reserve(spec("drop-no-runtime")).unwrap();
+    let entry = manager.core.entry(reservation.id()).unwrap();
+    let finalization = runtime.block_on(entry.finalization.lock());
+    let (started_tx, started_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        drop(reservation);
+        finished_tx.send(()).unwrap();
+    });
+    started_rx.recv().unwrap();
+
+    assert!(matches!(
+        manager.reserve(spec("drop-no-runtime")),
+        Err(DapError::OwnerAlreadyHasActiveSession { .. })
+    ));
+    assert!(matches!(
+        finished_rx.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
+    drop(finalization);
+    finished_rx.recv().unwrap();
+    dropper.join().unwrap();
+    assert!(manager.reserve(spec("drop-no-runtime")).is_ok());
+}
+
 #[tokio::test]
 async fn cleanup_owner_and_shutdown_remove_visibility() {
     let manager = manager();

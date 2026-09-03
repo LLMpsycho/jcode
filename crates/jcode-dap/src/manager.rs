@@ -700,6 +700,7 @@ impl ManagerCore {
             return;
         }
 
+        let _finalization = entry.finalization.blocking_lock();
         let transport = {
             let mut data = lock(&entry.data);
             if data.transport.is_none() {
