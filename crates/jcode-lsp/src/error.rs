@@ -20,4 +20,18 @@ pub enum LspError {
     InvalidJson(String),
     #[error("invalid JSON-RPC message: {0}")]
     InvalidMessage(String),
+    #[error("LSP transport I/O failed: {0}")]
+    Io(String),
+    #[error("LSP request {method} timed out")]
+    RequestTimeout { method: String },
+    #[error("LSP transport closed")]
+    TransportClosed,
+    #[error("LSP server returned error {code}: {message}")]
+    Response { code: i64, message: String },
+}
+
+impl From<std::io::Error> for LspError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
 }
