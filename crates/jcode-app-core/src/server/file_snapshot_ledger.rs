@@ -4,8 +4,7 @@
 //! the shared revision substrate that later read and write tool slices can call
 //! without introducing process-global state.
 
-// The service API is intentionally landed before tool integration in the next
-// Phase 1 slice.
+// Some write-side APIs intentionally remain unused until the next Phase 1 slice.
 #![allow(dead_code)]
 
 use chrono::{DateTime, Utc};

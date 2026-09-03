@@ -334,6 +334,17 @@ impl Registry {
     }
 
     pub async fn new(_provider: Arc<dyn Provider>) -> Self {
+        Self::new_inner(None).await
+    }
+
+    pub(crate) async fn new_with_file_snapshots(
+        _provider: Arc<dyn Provider>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+    ) -> Self {
+        Self::new_inner(Some(file_snapshots)).await
+    }
+
+    async fn new_inner(file_snapshots: Option<crate::server::FileSnapshotLedger>) -> Self {
         let start = std::time::Instant::now();
         let skills_start = std::time::Instant::now();
         let skills = Self::shared_skills_registry();
@@ -351,6 +362,13 @@ impl Registry {
 
         let base_start = std::time::Instant::now();
         let mut tools_map = Self::base_tools(&skills);
+        if let Some(file_snapshots) = file_snapshots {
+            Self::insert_tool(
+                &mut tools_map,
+                "read",
+                read::ReadTool::with_file_snapshots(file_snapshots),
+            );
+        }
         let base_ms = base_start.elapsed().as_millis();
 
         // Per-session tools that need provider/registry references

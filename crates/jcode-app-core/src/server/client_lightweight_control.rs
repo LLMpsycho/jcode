@@ -18,10 +18,10 @@ use super::comm_sync::{
     handle_comm_resync_plan, handle_comm_status, handle_comm_summary,
 };
 use super::{
-    AwaitMembersRuntime, ChannelSubscriptions, ClientConnectionInfo, FileTouchService,
-    SessionAgents, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember,
-    SwarmMutationRuntime, VersionedPlan, format_structured_completion_report, truncate_detail,
-    update_member_status_with_report_tldr,
+    AwaitMembersRuntime, ChannelSubscriptions, ClientConnectionInfo, FileSnapshotLedger,
+    FileTouchService, SessionAgents, SessionInterruptQueues, SharedContext, SwarmEvent,
+    SwarmMember, SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
+    truncate_detail, update_member_status_with_report_tldr,
 };
 use crate::config::SwarmSpawnMode;
 use crate::protocol::{Request, ServerEvent};
@@ -64,6 +64,7 @@ pub(super) struct LightweightControlContext<'a> {
     pub(super) swarm_plans: &'a Arc<RwLock<HashMap<String, VersionedPlan>>>,
     pub(super) swarm_coordinators: &'a Arc<RwLock<HashMap<String, String>>>,
     pub(super) file_touch: &'a FileTouchService,
+    pub(super) file_snapshots: &'a FileSnapshotLedger,
     pub(super) channel_subscriptions: &'a ChannelSubscriptions,
     pub(super) channel_subscriptions_by_session: &'a ChannelSubscriptions,
     pub(super) client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -91,6 +92,7 @@ pub(super) async fn handle_lightweight_control_request(
         swarm_plans,
         swarm_coordinators,
         file_touch,
+        file_snapshots,
         channel_subscriptions,
         channel_subscriptions_by_session,
         client_connections,
@@ -439,6 +441,7 @@ pub(super) async fn handle_lightweight_control_request(
                 swarm_event_tx,
                 mcp_pool,
                 soft_interrupt_queues,
+                file_snapshots,
                 swarm_mutation_runtime,
                 client_connections,
             )
@@ -674,6 +677,7 @@ pub(super) async fn handle_lightweight_control_request(
                 global_session_id,
                 provider_template,
                 soft_interrupt_queues,
+                file_snapshots,
                 client_connections,
                 swarm_members,
                 swarms_by_id,

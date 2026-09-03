@@ -1,7 +1,8 @@
 use super::{
-    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
-    broadcast_swarm_status, create_headless_session, persist_swarm_state_for, record_swarm_event,
-    remove_background_tool_signal, remove_session_interrupt_queue,
+    FileSnapshotLedger, SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember,
+    SwarmState, VersionedPlan, broadcast_swarm_status, create_headless_session,
+    persist_swarm_state_for, record_swarm_event, remove_background_tool_signal,
+    remove_session_interrupt_queue,
 };
 use crate::agent::Agent;
 use crate::provider::Provider;
@@ -65,6 +66,7 @@ pub(super) async fn maybe_handle_session_admin_command(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
+    file_snapshots: &FileSnapshotLedger,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
 ) -> Result<Option<String>> {
     if let Some((working_dir, selfdev_requested)) = parse_create_session_command(cmd) {
@@ -82,6 +84,7 @@ pub(super) async fn maybe_handle_session_admin_command(
             swarm_coordinators,
             swarm_plans,
             soft_interrupt_queues,
+            file_snapshots,
             selfdev_requested,
             None,
             None,

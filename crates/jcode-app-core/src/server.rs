@@ -636,7 +636,7 @@ mod file_touch_service;
 pub(crate) use self::file_touch_service::FileTouchService;
 
 mod file_snapshot_ledger;
-pub(crate) use self::file_snapshot_ledger::FileSnapshotLedger;
+pub(crate) use self::file_snapshot_ledger::{FileSnapshotLedger, ReadCoverage};
 
 #[cfg(test)]
 mod socket_tests;
@@ -779,11 +779,14 @@ impl Server {
         };
         crate::process_title::set_server_title(&identity.name);
 
+        let file_snapshots = FileSnapshotLedger::new();
+
         // Initialize the background runner even when ambient mode is disabled so
         // session-targeted scheduled tasks still have a live delivery loop.
         let ambient_runner = {
             let safety = Arc::new(crate::safety::SafetySystem::new());
-            let handle = AmbientRunnerHandle::new(safety);
+            let handle =
+                AmbientRunnerHandle::new_with_file_snapshots(safety, file_snapshots.clone());
             crate::tool::ambient::init_schedule_runner(handle.clone());
             Some(handle)
         };
@@ -808,7 +811,7 @@ impl Server {
             client_count: Arc::new(RwLock::new(0)),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touch: FileTouchService::new(),
-            file_snapshots: FileSnapshotLedger::new(),
+            file_snapshots,
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
@@ -954,7 +957,11 @@ impl Server {
 
             let previous_status = session.status.clone();
             let provider = self.provider.fork();
-            let registry = crate::tool::Registry::new(provider.clone()).await;
+            let registry = crate::tool::Registry::new_with_file_snapshots(
+                provider.clone(),
+                self.file_snapshots.clone(),
+            )
+            .await;
             if session.is_canary {
                 registry.register_selfdev_tools().await;
             }

@@ -18,6 +18,7 @@ use crate::memory::MemoryManager;
 use crate::notifications::NotificationDispatcher;
 use crate::provider::Provider;
 use crate::safety::SafetySystem;
+use crate::server::FileSnapshotLedger;
 use crate::session::Session;
 use crate::tool;
 use crate::tool::ambient as ambient_tools;
@@ -54,10 +55,22 @@ struct AmbientRunnerInner {
     /// Soft interrupt queue for the currently-running ambient agent (if any).
     /// Telegram replies push messages here so they arrive mid-cycle.
     active_cycle_queue: RwLock<Option<SoftInterruptQueue>>,
+    file_snapshots: Option<FileSnapshotLedger>,
 }
 
 impl AmbientRunnerHandle {
     pub fn new(safety: Arc<SafetySystem>) -> Self {
+        Self::new_inner(safety, None)
+    }
+
+    pub(crate) fn new_with_file_snapshots(
+        safety: Arc<SafetySystem>,
+        file_snapshots: FileSnapshotLedger,
+    ) -> Self {
+        Self::new_inner(safety, Some(file_snapshots))
+    }
+
+    fn new_inner(safety: Arc<SafetySystem>, file_snapshots: Option<FileSnapshotLedger>) -> Self {
         let state = AmbientState::load().unwrap_or_default();
         Self {
             inner: Arc::new(AmbientRunnerInner {
@@ -70,7 +83,17 @@ impl AmbientRunnerHandle {
                 notifier: NotificationDispatcher::new(),
                 active_user_sessions: RwLock::new(0),
                 active_cycle_queue: RwLock::new(None),
+                file_snapshots,
             }),
+        }
+    }
+
+    async fn new_registry(&self, provider: Arc<dyn Provider>) -> tool::Registry {
+        match &self.inner.file_snapshots {
+            Some(file_snapshots) => {
+                tool::Registry::new_with_file_snapshots(provider, file_snapshots.clone()).await
+            }
+            None => tool::Registry::new(provider).await,
         }
     }
 
@@ -386,7 +409,7 @@ impl AmbientRunnerHandle {
     ) -> anyhow::Result<()> {
         let session = Session::load(session_id)?;
         let cycle_provider = provider.fork();
-        let registry = tool::Registry::new(cycle_provider.clone()).await;
+        let registry = self.new_registry(cycle_provider.clone()).await;
         if session.is_canary {
             registry.register_selfdev_tools().await;
         }
@@ -463,7 +486,7 @@ impl AmbientRunnerHandle {
         let child_is_canary = child.is_canary;
         let child_is_debug = child.is_debug;
         let cycle_provider = provider.fork();
-        let registry = tool::Registry::new(cycle_provider.clone()).await;
+        let registry = self.new_registry(cycle_provider.clone()).await;
         if child_is_canary {
             registry.register_selfdev_tools().await;
         }
@@ -942,7 +965,7 @@ impl AmbientRunnerHandle {
         self.set_running_detail("setting up tools").await;
 
         let cycle_provider = provider.fork();
-        let registry = tool::Registry::new(cycle_provider.clone()).await;
+        let registry = self.new_registry(cycle_provider.clone()).await;
         registry.register_ambient_tools().await;
 
         let mut agent = Agent::new(cycle_provider.clone(), registry);
