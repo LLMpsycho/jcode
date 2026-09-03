@@ -201,6 +201,14 @@ pub struct Diagnostic {
     pub data: Option<Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PublishDiagnosticsParams {
+    pub uri: String,
+    pub diagnostics: Vec<Diagnostic>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<i64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextEdit {
     pub range: Range,

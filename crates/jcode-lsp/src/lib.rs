@@ -2,7 +2,9 @@
 
 mod client;
 mod config;
+mod diagnostics;
 mod discovery;
+mod document_sync;
 mod error;
 mod framing;
 mod protocol;
@@ -12,7 +14,9 @@ mod workspace;
 
 pub use client::LspClient;
 pub use config::config_digest;
+pub use diagnostics::{DiagnosticSnapshot, DiagnosticsCache};
 pub use discovery::discover_executable;
+pub use document_sync::{DocumentState, DocumentSync};
 pub use error::{LspError, Result};
 pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,
