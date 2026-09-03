@@ -112,7 +112,7 @@ pub(super) async fn set_breakpoint_owned(
             actual: source.revision,
         });
     }
-    let (desired, mutation, discarded, needs_reset) = {
+    let (desired, mutation, discarded, needs_reset, source_modified) = {
         let mut data = lock(&entry.data);
         ensure_open(&entry, &data, "set breakpoint")?;
         check_capabilities(&data.capabilities, &request.breakpoint)?;
@@ -170,18 +170,20 @@ pub(super) async fn set_breakpoint_owned(
             .checked_add(1)
             .ok_or(DapError::SessionIdExhausted)?;
         let id = DebugBreakpointId(registry.next_id);
-        let (mut desired, discarded, needs_reset) = match record {
+        let (mut desired, discarded, needs_reset, source_modified) = match record {
             Some(record) if record.revision == source.revision => (
                 record.breakpoints.clone(),
                 Vec::new(),
                 record.synchronization == DebugBreakpointSynchronization::Indeterminate,
+                false,
             ),
             Some(record) => (
                 BTreeMap::new(),
                 record.breakpoints.keys().copied().collect(),
                 true,
+                true,
             ),
-            None => (BTreeMap::new(), Vec::new(), false),
+            None => (BTreeMap::new(), Vec::new(), false, false),
         };
         desired.insert(
             id,
@@ -192,6 +194,7 @@ pub(super) async fn set_breakpoint_owned(
             DebugBreakpointMutation::Created { breakpoint_id: id },
             discarded,
             needs_reset,
+            source_modified,
         )
     };
     transact(
@@ -202,6 +205,7 @@ pub(super) async fn set_breakpoint_owned(
         mutation,
         discarded,
         needs_reset,
+        source_modified,
         deadline,
     )
     .await
@@ -276,6 +280,7 @@ pub(super) async fn remove_breakpoint_owned(
         },
         Vec::new(),
         needs_reset || drifted,
+        drifted,
         deadline,
     )
     .await
@@ -290,6 +295,7 @@ async fn transact(
     mutation: DebugBreakpointMutation,
     discarded: Vec<DebugBreakpointId>,
     reset: bool,
+    reset_source_modified: bool,
     deadline: Instant,
 ) -> Result<DebugBreakpointMutationResult> {
     let client = client_for(&entry, "mutate breakpoints")?;
@@ -307,7 +313,15 @@ async fn transact(
         });
     }
     if reset {
-        match send_set(&client, &source.wire_path, &[], true, deadline).await {
+        match send_set(
+            &client,
+            &source.wire_path,
+            &[],
+            reset_source_modified,
+            deadline,
+        )
+        .await
+        {
             Ok(_) => {
                 let mut data = lock(&entry.data);
                 data.breakpoints.sources.remove(&source.canonical);

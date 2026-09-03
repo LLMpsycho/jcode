@@ -8,6 +8,11 @@ use super::*;
 use crate::testing::FakeAdapter;
 use crate::{DebugSessionManagerConfig, DebugSourceBreakpoint, Message, StoppedState};
 
+mod event_contract;
+mod preflight_contract;
+mod transaction_contract;
+mod wire_contract;
+
 struct Fixture {
     manager: DebugSessionManager,
     id: DebugSessionId,

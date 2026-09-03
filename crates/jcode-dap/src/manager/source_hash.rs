@@ -150,3 +150,83 @@ fn hash_file(path: &Path, limit: u64, cancelled: &AtomicBool) -> Result<DebugSou
         byte_len: bytes,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decode_hex(value: &str) -> [u8; 32] {
+        let mut result = [0_u8; 32];
+        for (index, byte) in result.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).unwrap();
+        }
+        result
+    }
+
+    #[test]
+    fn exact_source_digest_distinguishes_lf_crlf_bom_whitespace_and_byte_changes() {
+        let root = std::env::temp_dir().join(format!(
+            "jcode-dap-source-hash-{}-{}",
+            std::process::id(),
+            crate::session::next_manager_id().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        let cases = [
+            (
+                b"a\n".as_slice(),
+                "87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7",
+            ),
+            (
+                b"a\r\n".as_slice(),
+                "8e4621379786ef42a4fec155cd525c291dd7db3c1fde3478522f4f61c03fd1bd",
+            ),
+            (
+                b"\xef\xbb\xbfa\n".as_slice(),
+                "be4fccb045869c7ad387b9081a44cfd495b37efc020da4b44542de0d980c747f",
+            ),
+            (
+                b"a \n".as_slice(),
+                "19ae96e7938ec564866a1bb552e51bc3f1b9aa32c5221f3e8c3a75d0080c7004",
+            ),
+            (
+                b"b\n".as_slice(),
+                "0263829989b6fd954f72baaf2fc64bc2e2f01d692d4de72986ea808f6e99813f",
+            ),
+        ];
+        for (bytes, digest) in cases {
+            std::fs::write(&path, bytes).unwrap();
+            let revision = hash_file(&path, u64::MAX, &AtomicBool::new(false)).unwrap();
+            assert_eq!(revision.byte_len, u64::try_from(bytes.len()).unwrap());
+            assert_eq!(revision.sha256, decode_hex(digest));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_hash_byte_limit_accepts_boundary_and_rejects_boundary_plus_one() {
+        let root = std::env::temp_dir().join(format!(
+            "jcode-dap-source-limit-{}-{}",
+            std::process::id(),
+            crate::session::next_manager_id().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        std::fs::write(&path, b"12345").unwrap();
+        assert_eq!(
+            hash_file(&path, 5, &AtomicBool::new(false))
+                .unwrap()
+                .byte_len,
+            5
+        );
+        assert!(matches!(
+            hash_file(&path, 4, &AtomicBool::new(false)),
+            Err(DapError::DebugSourceTooLarge {
+                observed: 5,
+                limit: 4,
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}
