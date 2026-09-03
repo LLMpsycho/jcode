@@ -366,6 +366,32 @@ async fn timeout_is_a_hard_deadline_while_writer_is_backpressured() {
 }
 
 #[tokio::test]
+async fn timeout_is_a_hard_deadline_while_request_is_serialized() {
+    let arguments = Some(json!({
+        "payload": vec![serde_json::Value::Null; 1_000_000],
+    }));
+    let (client, _adapter) = FakeAdapter::pair(16);
+    let started = tokio::time::Instant::now();
+    let result = client
+        .request("large", arguments, Duration::from_millis(1))
+        .await;
+    assert!(matches!(result, Err(DapError::RequestTimeout { .. })));
+    assert!(started.elapsed() < Duration::from_millis(250));
+}
+
+#[tokio::test]
+async fn unsupported_timeout_range_returns_an_error_instead_of_panicking() {
+    let (client, _adapter) = FakeAdapter::pair(16);
+    assert_eq!(
+        client
+            .request("threads", None, Duration::MAX)
+            .await
+            .unwrap_err(),
+        DapError::InvalidRequestTimeout
+    );
+}
+
+#[tokio::test]
 async fn event_retention_is_byte_bounded_and_survives_oversized_events() {
     assert_eq!(
         EVENT_CHANNEL_CAPACITY * MAX_RETAINED_EVENT_SIZE,

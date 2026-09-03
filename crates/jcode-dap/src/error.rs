@@ -24,6 +24,8 @@ pub enum DapError {
     Io(String),
     #[error("DAP request {command} timed out")]
     RequestTimeout { command: String },
+    #[error("DAP request timeout exceeds the supported instant range")]
+    InvalidRequestTimeout,
     #[error("DAP transport closed")]
     TransportClosed,
     #[error("DAP adapter rejected {command}: {message}")]

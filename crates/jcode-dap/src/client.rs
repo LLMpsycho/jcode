@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Mutex as AsyncMutex, broadcast, mpsc, oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
@@ -55,6 +55,7 @@ struct Shared {
     shutdown: watch::Sender<bool>,
     next_seq: AtomicI64,
     enqueue: AsyncMutex<()>,
+    serializer: Arc<Semaphore>,
 }
 
 struct ClientInner {
@@ -104,6 +105,7 @@ impl DapClient {
             shutdown,
             next_seq: AtomicI64::new(1),
             enqueue: AsyncMutex::new(()),
+            serializer: Arc::new(Semaphore::new(1)),
         });
         let writer_task = tokio::spawn(write_loop(
             writer,
@@ -162,15 +164,29 @@ impl DapClient {
         timeout: Duration,
     ) -> Result<Response> {
         let command = command.into();
-        let deadline = Instant::now() + timeout;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(DapError::InvalidRequestTimeout)?;
         self.ensure_open()?;
         let mut request_seq = None;
         let result = tokio::time::timeout_at(deadline, async {
+            let serializer = Arc::clone(&self.inner.shared.serializer)
+                .acquire_owned()
+                .await
+                .map_err(|_| DapError::TransportClosed)?;
             let _enqueue = self.inner.shared.enqueue.lock().await;
             self.ensure_open()?;
             let seq = next_sequence(&self.inner.shared.next_seq)?;
+            let message = Request::new(seq, command.clone(), arguments);
+            let frame = tokio::task::spawn_blocking(move || {
+                let _serializer = serializer;
+                encode_message(&message)
+            })
+            .await
+            .map_err(|error| {
+                DapError::InvalidMessage(format!("DAP request serialization task failed: {error}"))
+            })??;
             request_seq = Some(seq);
-            let frame = encode_message(&Request::new(seq, command.clone(), arguments))?;
             let (sender, receiver) = oneshot::channel();
             {
                 let mut pending = lock_pending(&self.inner.shared.pending);

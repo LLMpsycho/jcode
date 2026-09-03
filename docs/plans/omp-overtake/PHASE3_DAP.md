@@ -8,6 +8,8 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - Extension-tolerant capability decoding that preserves unknown adapter fields.
 - `jcode-dap` with bounded `Content-Length` framing and strict DAP message classification.
 - An asynchronous client with monotonic request sequences, bounded pending requests, cancellation-safe pending cleanup, out-of-order response correlation, command matching, event delivery, hard end-to-end request deadlines, conditional nonblocking best-effort cancellation, and terminal transport failure propagation.
+- Request serialization runs on one bounded blocking lane under the same request deadline. Timeout arithmetic is checked, and unsupported timeout ranges return a structured error instead of panicking.
+- Outgoing JSON payloads are bounded to the same 16 MiB protocol limit as incoming frames before a framed message is allocated.
 - A bounded dedicated writer actor owns the transport writer. Once a complete encoded frame enters its queue, caller cancellation cannot cancel that frame midway through `write_all` and corrupt subsequent framing.
 - Explicit client close and last-client-drop shutdown abort the owned reader and writer tasks, fail pending requests, and release both halves of the transport.
 - Event retention is bounded by both 128 events and an 8 MiB serialized-byte ceiling. Events larger than the per-slot 64 KiB ceiling are dropped without terminating the transport, while flooding uses the broadcast channel's deterministic lag signal.
@@ -27,7 +29,8 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - Concurrent requests receive out-of-order responses correctly and retain strictly increasing client sequence numbers in actual writer-queue order.
 - Events are delivered independently of responses.
 - Reverse `runInTerminal` requests are published for observation and receive a fail-closed rejection response with the adapter request sequence and command. A reverse request during outbound backpressure waits outside the reader and receives its correlated rejection after the blocked frame drains. A reverse request followed by EOF terminates the pending request as transport closure rather than hiding EOF behind writer backpressure.
-- A request timeout covers writer-queue admission, writer backpressure, complete frame write and flush, and response waiting under one deadline. Timeout cleanup removes pending state, and any advertised DAP `cancel` is attempted with `try_send`, so cancellation cannot block or extend the deadline.
+- A request timeout covers bounded serialization, writer-queue admission, writer backpressure, complete frame write and flush, and response waiting under one deadline. A one-millisecond deadline remains prompt while a multi-megabyte request is being serialized, and an unrepresentable timeout returns `InvalidRequestTimeout`. Timeout cleanup removes pending state, and any advertised DAP `cancel` is attempted with `try_send`, so cancellation cannot block or extend the deadline.
+- Outgoing messages that exceed the protocol payload limit are rejected as `PayloadTooLarge` before framing.
 - Dropping or aborting request futures releases their pending correlation slots, preventing abandoned callers from exhausting the bounded client capacity.
 - Aborting a request while its large frame is blocked on a tiny transport still lets the writer actor finish that frame; the following request remains decodable and correlated.
 - Oversized events are discarded safely, and a 129-event flood against the 128-event retained channel reports exactly one lagged event without unbounded retention.
@@ -41,7 +44,7 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 Focused validation commands:
 
 ```text
-cargo fmt --all -- --check
+cargo fmt --manifest-path "$PWD/Cargo.toml" --all -- --check
 scripts/dev_cargo.sh test -p jcode-dap-types -p jcode-dap
 scripts/dev_cargo.sh clippy -p jcode-dap-types -p jcode-dap --all-targets -- -D warnings
 python3 scripts/check_dependency_boundaries.py
@@ -50,7 +53,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 37 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 527 lines and the largest DAP test file is 591 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 40 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 543 lines and the largest DAP test file is 617 lines, so this slice remains below the repository file budgets.
 
 ## Deliberately deferred
 

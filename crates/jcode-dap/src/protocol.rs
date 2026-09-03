@@ -1,7 +1,9 @@
+use std::io::Write;
+
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{DapError, Event, Request, Response, Result, encode_frame};
+use crate::{DEFAULT_MAX_PAYLOAD_BYTES, DapError, Event, Request, Response, Result, encode_frame};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Message {
@@ -42,10 +44,50 @@ pub fn decode_message(payload: &[u8]) -> Result<Message> {
 }
 
 pub fn encode_message(message: &impl Serialize) -> Result<Vec<u8>> {
-    let payload =
-        serde_json::to_vec(message).map_err(|error| DapError::InvalidJson(error.to_string()))?;
+    let mut payload = BoundedPayload::new(DEFAULT_MAX_PAYLOAD_BYTES);
+    if let Err(error) = serde_json::to_writer(&mut payload, message) {
+        if payload.observed > payload.limit {
+            return Err(DapError::PayloadTooLarge {
+                observed: payload.observed,
+                limit: payload.limit,
+            });
+        }
+        return Err(DapError::InvalidJson(error.to_string()));
+    }
+    let payload = payload.bytes;
     decode_message(&payload)?;
     Ok(encode_frame(&payload))
+}
+
+struct BoundedPayload {
+    bytes: Vec<u8>,
+    limit: usize,
+    observed: usize,
+}
+
+impl BoundedPayload {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            observed: 0,
+        }
+    }
+}
+
+impl Write for BoundedPayload {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.observed = self.observed.saturating_add(buffer.len());
+        if self.observed > self.limit {
+            return Err(std::io::Error::other("DAP payload limit exceeded"));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 
 fn invalid_message(error: serde_json::Error) -> DapError {

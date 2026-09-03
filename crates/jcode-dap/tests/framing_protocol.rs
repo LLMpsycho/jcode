@@ -1,5 +1,6 @@
 use jcode_dap::{
-    DapError, Event, FrameDecoder, Message, Request, decode_message, encode_frame, encode_message,
+    DEFAULT_MAX_PAYLOAD_BYTES, DapError, Event, FrameDecoder, Message, Request, decode_message,
+    encode_frame, encode_message,
 };
 
 #[test]
@@ -136,4 +137,20 @@ fn message_encoding_round_trips_through_framing() {
     let frame = FrameDecoder::default().push(&encoded).unwrap().remove(0);
     assert_eq!(decode_message(&frame).unwrap(), Message::Event(event));
     assert!(encode_message(&Request::new(0, "bad", None)).is_err());
+}
+
+#[test]
+fn encoding_rejects_payloads_above_protocol_limit() {
+    let request = Request::new(
+        1,
+        "large",
+        Some(serde_json::json!({
+            "payload": "x".repeat(DEFAULT_MAX_PAYLOAD_BYTES),
+        })),
+    );
+    assert!(matches!(
+        encode_message(&request),
+        Err(DapError::PayloadTooLarge { observed, limit })
+            if observed > limit && limit == DEFAULT_MAX_PAYLOAD_BYTES
+    ));
 }
