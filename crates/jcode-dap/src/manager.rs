@@ -11,6 +11,8 @@ use crate::client::DapClientStatus;
 use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program, revalidate_program};
 use crate::process::{OwnedChildObserver, OwnedTargetProcess};
 use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
+#[cfg(test)]
+mod lifecycle_tests;
 mod source_hash;
 mod supervision;
 

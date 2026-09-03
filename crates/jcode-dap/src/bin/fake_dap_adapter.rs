@@ -17,6 +17,26 @@ fn main() -> std::io::Result<()> {
             std::thread::park();
         }
     }
+    if mode.as_deref() == Some(std::ffi::OsStr::new("--target-tree-probe")) {
+        let pid_marker = args
+            .next()
+            .ok_or_else(|| std::io::Error::other("missing target PID marker"))?;
+        let descendant_marker = args
+            .next()
+            .ok_or_else(|| std::io::Error::other("missing descendant PID marker"))?;
+        std::fs::write(pid_marker, std::process::id().to_string())?;
+        let child = Command::new("/bin/sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        std::fs::write(descendant_marker, child.id().to_string())?;
+        std::mem::forget(child);
+        loop {
+            std::thread::park();
+        }
+    }
     if mode.as_deref() == Some(std::ffi::OsStr::new("--target-exit-after")) {
         let pid_marker = args
             .next()
@@ -142,6 +162,17 @@ fn main() -> std::io::Result<()> {
         } else if command == "configurationDone" {
             respond(&mut output, &mut seq, &request, None)?;
         } else if command == "setBreakpoints" {
+            append_log(&log_path, "marker\tsetBreakpoints-received")?;
+            if cwd.join("mutate-source-on-set").exists()
+                && let Some(source) = request["arguments"]["source"]["path"].as_str()
+            {
+                OpenOptions::new()
+                    .append(true)
+                    .open(source)?
+                    .write_all(b"// mutated\n")?;
+                append_log(&log_path, "marker\tsource-mutated")?;
+            }
+            wait_for_release(&cwd, "hold-set-breakpoints", "release-set-breakpoints")?;
             if cwd.join("hang-set-breakpoints").exists() {
                 continue;
             }
@@ -174,6 +205,11 @@ fn main() -> std::io::Result<()> {
                 Some(json!({"threads":[{"id":1,"name":"main"},{"id":2,"name":"worker"}]})),
             )?;
         } else if command == "continue" {
+            append_log(&log_path, "marker\tcontinue-received")?;
+            if cwd.join("exit-on-control").exists() {
+                return Ok(());
+            }
+            wait_for_release(&cwd, "hold-control", "release-control")?;
             respond(
                 &mut output,
                 &mut seq,
@@ -189,6 +225,14 @@ fn main() -> std::io::Result<()> {
                 )?;
             }
         } else if matches!(command, "pause" | "next" | "stepIn" | "stepOut") {
+            append_log(&log_path, &format!("marker\t{command}-received"))?;
+            if cwd.join("exit-on-control").exists() {
+                return Ok(());
+            }
+            wait_for_release(&cwd, "hold-control", "release-control")?;
+            if cwd.join("hang-control").exists() {
+                continue;
+            }
             respond(&mut output, &mut seq, &request, None)?;
             if cwd.join("control-stops").exists() {
                 let reason = if command == "pause" { "pause" } else { "step" };
@@ -229,9 +273,25 @@ fn main() -> std::io::Result<()> {
             return Ok(());
         }
     }
-    loop {
-        std::thread::park();
+    append_log(&log_path, "marker\ttransport-eof")?;
+    Ok(())
+}
+
+fn wait_for_release(cwd: &std::path::Path, hold: &str, release: &str) -> std::io::Result<()> {
+    if !cwd.join(hold).exists() {
+        return Ok(());
     }
+    append_log(
+        &cwd.join("fake-dap.log"),
+        &format!("marker\twaiting-{release}"),
+    )?;
+    while !cwd.join(release).exists() {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    append_log(
+        &cwd.join("fake-dap.log"),
+        &format!("marker\treleased-{release}"),
+    )
 }
 
 fn append_log(path: &std::path::Path, line: &str) -> std::io::Result<()> {

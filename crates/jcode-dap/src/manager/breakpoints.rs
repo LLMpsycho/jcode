@@ -806,6 +806,13 @@ fn finish_ambiguous(
     operations: &DebugOperationConfig,
 ) {
     let mut data = lock(&entry.data);
+    if entry.closed.load(std::sync::atomic::Ordering::Acquire)
+        || data.state.is_terminal()
+        || matches!(data.state, DebugSessionState::Terminating)
+    {
+        data.breakpoints.in_flight = None;
+        return;
+    }
     let queued = data
         .breakpoints
         .in_flight
