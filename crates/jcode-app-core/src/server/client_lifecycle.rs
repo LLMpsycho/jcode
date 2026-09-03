@@ -376,6 +376,7 @@ pub(super) async fn handle_client(
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touch: FileTouchService,
     file_snapshots: FileSnapshotLedger,
+    lsp_pool: Arc<jcode_lsp::LspServicePool>,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -497,7 +498,7 @@ pub(super) async fn handle_client(
     let provider = provider_template.fork_for_new_session();
     let t0 = std::time::Instant::now();
     let registry =
-        Registry::new_with_file_snapshots(provider.clone(), file_snapshots.clone()).await;
+        Registry::new_with_services(provider.clone(), file_snapshots.clone(), lsp_pool).await;
     let registry_ms = t0.elapsed().as_millis();
 
     let mut swarm_enabled = crate::config::config().features.swarm;

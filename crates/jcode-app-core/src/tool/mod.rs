@@ -25,6 +25,7 @@ pub mod inflight;
 mod invalid;
 mod jcode_docs;
 mod ls;
+mod lsp;
 pub mod mcp;
 mod memory;
 mod multiedit;
@@ -338,17 +339,28 @@ impl Registry {
     }
 
     pub async fn new(_provider: Arc<dyn Provider>) -> Self {
-        Self::new_inner(None).await
+        Self::new_inner(None, None).await
     }
 
     pub(crate) async fn new_with_file_snapshots(
         _provider: Arc<dyn Provider>,
         file_snapshots: crate::server::FileSnapshotLedger,
     ) -> Self {
-        Self::new_inner(Some(file_snapshots)).await
+        Self::new_inner(Some(file_snapshots), None).await
     }
 
-    async fn new_inner(file_snapshots: Option<crate::server::FileSnapshotLedger>) -> Self {
+    pub(crate) async fn new_with_services(
+        _provider: Arc<dyn Provider>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+        lsp_pool: Arc<jcode_lsp::LspServicePool>,
+    ) -> Self {
+        Self::new_inner(Some(file_snapshots), Some(lsp_pool)).await
+    }
+
+    async fn new_inner(
+        file_snapshots: Option<crate::server::FileSnapshotLedger>,
+        lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
+    ) -> Self {
         let start = std::time::Instant::now();
         let skills_start = std::time::Instant::now();
         let skills = Self::shared_skills_registry();
@@ -402,6 +414,9 @@ impl Registry {
                 "apply_patch",
                 apply_patch::ApplyPatchTool::with_file_snapshots(file_snapshots),
             );
+        }
+        if let Some(lsp_pool) = lsp_pool {
+            Self::insert_tool(&mut tools_map, "lsp", lsp::LspTool::new(lsp_pool));
         }
         let base_ms = base_start.elapsed().as_millis();
 

@@ -711,6 +711,8 @@ pub struct Server {
     file_touch: FileTouchService,
     /// Shared file revisions and exact per-session read coverage.
     file_snapshots: FileSnapshotLedger,
+    /// Shared, worktree-isolated language server processes.
+    lsp_pool: Arc<jcode_lsp::LspServicePool>,
     /// Shared ownership of core swarm coordination state.
     swarm_state: SwarmState,
     /// Shared context by swarm (swarm_id -> key -> SharedContext)
@@ -782,6 +784,7 @@ impl Server {
         crate::process_title::set_server_title(&identity.name);
 
         let file_snapshots = FileSnapshotLedger::new();
+        let lsp_pool = Arc::new(jcode_lsp::LspServicePool::new());
 
         // Initialize the background runner even when ambient mode is disabled so
         // session-targeted scheduled tasks still have a live delivery loop.
@@ -814,6 +817,7 @@ impl Server {
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touch: FileTouchService::new(),
             file_snapshots,
+            lsp_pool,
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
@@ -959,9 +963,10 @@ impl Server {
 
             let previous_status = session.status.clone();
             let provider = self.provider.fork();
-            let registry = crate::tool::Registry::new_with_file_snapshots(
+            let registry = crate::tool::Registry::new_with_services(
                 provider.clone(),
                 self.file_snapshots.clone(),
+                Arc::clone(&self.lsp_pool),
             )
             .await;
             if session.is_canary {

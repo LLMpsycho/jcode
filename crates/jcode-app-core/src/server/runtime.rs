@@ -102,6 +102,7 @@ pub(super) struct ServerRuntime {
     // Owned now so later tool integration does not need global state.
     #[allow(dead_code)]
     file_snapshots: FileSnapshotLedger,
+    lsp_pool: Arc<jcode_lsp::LspServicePool>,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -136,6 +137,7 @@ impl ServerRuntime {
             shared_context: Arc::clone(&server.shared_context),
             file_touch: server.file_touch.clone(),
             file_snapshots: server.file_snapshots.clone(),
+            lsp_pool: Arc::clone(&server.lsp_pool),
             channel_subscriptions: Arc::clone(&server.channel_subscriptions),
             channel_subscriptions_by_session: Arc::clone(&server.channel_subscriptions_by_session),
             client_debug_state: Arc::clone(&server.client_debug_state),
@@ -312,6 +314,9 @@ impl ServerRuntime {
 
     pub(super) async fn shutdown(&self) {
         self.tasks.shutdown().await;
+        self.lsp_pool
+            .shutdown_all(std::time::Duration::from_secs(2))
+            .await;
     }
 
     async fn increment_client_count(&self) {
@@ -360,6 +365,7 @@ impl ServerRuntime {
                     Arc::clone(&self.swarm_state.coordinators),
                     self.file_touch.clone(),
                     self.file_snapshots.clone(),
+                    Arc::clone(&self.lsp_pool),
                     Arc::clone(&self.channel_subscriptions),
                     Arc::clone(&self.channel_subscriptions_by_session),
                     Arc::clone(&self.client_debug_state),

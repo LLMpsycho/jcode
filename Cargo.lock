@@ -3125,6 +3125,7 @@ dependencies = [
  "jcode-edit-core",
  "jcode-edit-types",
  "jcode-import-core",
+ "jcode-lsp",
  "jcode-message-types",
  "jcode-notify-email",
  "jcode-overnight-core",

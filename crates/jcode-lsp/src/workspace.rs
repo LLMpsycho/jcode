@@ -115,8 +115,17 @@ impl LspWorkspace {
     }
 
     pub async fn definition(&self, path: &Path, position: Position) -> Result<Value> {
-        self.position_request("textDocument/definition", path, position, None)
-            .await
+        let mut result = Value::Null;
+        for _ in 0..20 {
+            result = self
+                .position_request("textDocument/definition", path, position, None)
+                .await?;
+            if !result.is_null() && result.as_array().is_none_or(|items| !items.is_empty()) {
+                return Ok(result);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        Ok(result)
     }
 
     pub async fn references(&self, path: &Path, position: Position) -> Result<Value> {
@@ -167,10 +176,20 @@ impl LspWorkspace {
         if let Some(context) = context {
             params["context"] = context;
         }
-        self.process
-            .client()
-            .request(method, Some(params), self.request_timeout)
-            .await
+        for attempt in 0..5 {
+            match self
+                .process
+                .client()
+                .request(method, Some(params.clone()), self.request_timeout)
+                .await
+            {
+                Err(LspError::Response { code: -32801, .. }) if attempt < 4 => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                result => return result,
+            }
+        }
+        unreachable!("bounded request retry loop always returns")
     }
 }
 
