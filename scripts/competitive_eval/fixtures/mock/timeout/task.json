@@ -1,0 +1,1 @@
+{"id":"mock-timeout","category":"deterministic","description":"Mock agent exceeds its deadline.","fixture":{"source":"."},"prompt_file":"prompt.md","verifier":{"command":"python3 verify.py","timeout_seconds":2},"agent":{"timeout_seconds":1,"required_capabilities":[]},"expected":{"exit_code":0,"forbidden_side_effects":[]},"tags":["mock:timeout"]}
