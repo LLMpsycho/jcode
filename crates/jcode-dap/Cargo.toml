@@ -1,0 +1,24 @@
+[package]
+name = "jcode-dap"
+version = "0.1.0"
+edition = "2024"
+description = "Debug Adapter Protocol framing, client, and owned process infrastructure for Jcode"
+publish = false
+
+[lib]
+name = "jcode_dap"
+path = "src/lib.rs"
+
+[dependencies]
+jcode-dap-types = { path = "../jcode-dap-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread"] }

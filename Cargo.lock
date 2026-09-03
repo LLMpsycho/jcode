@@ -3327,6 +3327,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-dap"
+version = "0.1.0"
+dependencies = [
+ "jcode-dap-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "jcode-dap-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jcode-edit-core"
 version = "0.1.0"
 dependencies = [
