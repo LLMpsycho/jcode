@@ -1,5 +1,42 @@
 use super::*;
 
+impl SessionEntry {
+    pub(super) fn snapshot(&self) -> Option<DebugSessionSnapshot> {
+        let data = lock(&self.data);
+        Some(DebugSessionSnapshot {
+            id: self.id,
+            workspace: self.workspace.clone(),
+            adapter_id: self.adapter_id.clone(),
+            start: data.start.clone()?,
+            state: data.state.clone(),
+            capabilities: data.capabilities.clone(),
+            output: data.output.status(),
+        })
+    }
+
+    pub(super) fn fence_terminal(&self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            let mut data = lock(&self.data);
+            if !data.state.is_terminal() && !matches!(data.state, DebugSessionState::Terminating) {
+                if let Some(next) = data.execution_revision.checked_add(1) {
+                    data.execution_revision = next;
+                }
+                notify(self, &mut data);
+            }
+        }
+    }
+
+    pub(super) fn advance_execution(&self, data: &mut SessionData) -> bool {
+        if let Some(next) = data.execution_revision.checked_add(1) {
+            data.execution_revision = next;
+            true
+        } else {
+            self.closed.store(true, Ordering::Release);
+            false
+        }
+    }
+}
+
 pub(super) async fn supervise(
     core: Weak<ManagerCore>,
     entry: Arc<SessionEntry>,
@@ -26,6 +63,7 @@ pub(super) async fn supervise(
         None
     };
     if let Some(reason) = initial_end {
+        entry.fence_terminal();
         if let Some(core) = core.upgrade() {
             let _ignored = core.finalize(entry, reason, true, false).await;
         }
@@ -100,6 +138,7 @@ pub(super) async fn supervise(
             }
         };
         if let Some(reason) = end {
+            entry.fence_terminal();
             if let Some(core) = core.upgrade() {
                 let _ignored = core.finalize(entry.clone(), reason, true, false).await;
             }
@@ -141,7 +180,11 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                     | DebugSessionState::Stopped(_)
             ) {
                 data.state = DebugSessionState::Stopped(stopped);
-                data.execution_revision = data.execution_revision.saturating_add(1);
+                if !entry.advance_execution(&mut data) {
+                    return Some(DebugSessionEndReason::ProtocolError {
+                        message: "execution revision exhausted".to_owned(),
+                    });
+                }
             } else {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "stopped event arrived in an invalid session state".to_owned(),
@@ -154,7 +197,11 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                 DebugSessionState::Stopped(_) | DebugSessionState::Configuring
             ) {
                 data.state = DebugSessionState::Running;
-                data.execution_revision = data.execution_revision.saturating_add(1);
+                if !entry.advance_execution(&mut data) {
+                    return Some(DebugSessionEndReason::ProtocolError {
+                        message: "execution revision exhausted".to_owned(),
+                    });
+                }
             } else if !matches!(data.state, DebugSessionState::Running) {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "continued event arrived in an invalid session state".to_owned(),
@@ -162,13 +209,16 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
             }
         }
         SessionEvent::Breakpoint { seq, body } => {
-            let limit = entry.operations.max_queued_breakpoint_events;
-            super::breakpoints::queue_breakpoint_event(&mut data, seq, body, limit);
+            super::breakpoints::queue_breakpoint_event(&mut data, seq, body, &entry.operations);
         }
         SessionEvent::Terminated => {
+            drop(data);
+            entry.fence_terminal();
             return Some(DebugSessionEndReason::DebuggeeExited { exit_code: None });
         }
         SessionEvent::Exited(exit_code) => {
+            drop(data);
+            entry.fence_terminal();
             return Some(DebugSessionEndReason::DebuggeeExited { exit_code });
         }
         SessionEvent::Ignore => return None,

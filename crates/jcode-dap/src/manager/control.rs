@@ -17,7 +17,7 @@ pub(super) async fn threads_owned(
     operations: Arc<DebugOperationConfig>,
 ) -> Result<DebugThreadsSnapshot> {
     let deadline = operation_deadline(&operations)?;
-    let _gate = entry.operation.lock().await;
+    let _gate = deadline_gate(&entry, deadline, "threads").await?;
     request_threads_locked(&entry, &operations, deadline).await
 }
 
@@ -77,7 +77,7 @@ async fn control_owned(
     granularity: DebugSteppingGranularity,
 ) -> Result<DebugControlResult> {
     let deadline = operation_deadline(&operations)?;
-    let _gate = entry.operation.lock().await;
+    let _gate = deadline_gate(&entry, deadline, operation_name(operation)).await?;
     let (initial_revision, state, stopped_id, all_stopped, capabilities) = {
         let data = lock(&entry.data);
         ensure_control_state(&entry, &data, operation)?;
@@ -181,7 +181,9 @@ async fn control_owned(
         )
     {
         data.state = DebugSessionState::Running;
-        data.execution_revision = data.execution_revision.saturating_add(1);
+        if !entry.advance_execution(&mut data) {
+            return Err(DapError::TransportClosed);
+        }
         notify(&entry, &mut data);
     }
     Ok(DebugControlResult {
@@ -373,6 +375,18 @@ fn operation_deadline(config: &DebugOperationConfig) -> Result<Instant> {
         .checked_add(config.operation_timeout)
         .ok_or(DapError::InvalidRequestTimeout)
 }
+
+pub(super) async fn deadline_gate<'a>(
+    entry: &'a SessionEntry,
+    deadline: Instant,
+    command: &'static str,
+) -> Result<tokio::sync::MutexGuard<'a, ()>> {
+    tokio::time::timeout_at(deadline, entry.operation.lock())
+        .await
+        .map_err(|_| DapError::RequestTimeout {
+            command: command.to_owned(),
+        })
+}
 fn operation_name(operation: DebugControlOperation) -> &'static str {
     match operation {
         DebugControlOperation::Continue => "continue",
@@ -456,7 +470,7 @@ fn commit_running_if_current(entry: &SessionEntry, revision: DebugExecutionRevis
         && matches!(data.state, DebugSessionState::Stopped(_))
     {
         data.state = DebugSessionState::Running;
-        data.execution_revision = data.execution_revision.saturating_add(1);
+        let _advanced = entry.advance_execution(&mut data);
         notify(entry, &mut data)
     }
 }

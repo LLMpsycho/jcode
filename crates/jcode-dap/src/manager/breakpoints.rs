@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -27,6 +28,7 @@ pub(super) struct BreakpointRegistry {
 }
 
 struct SourceRecord {
+    original: PathBuf,
     relative: PathBuf,
     revision: DebugSourceRevision,
     generation: u64,
@@ -61,9 +63,14 @@ impl BreakpointRegistry {
     }
 }
 
-pub(super) fn queue_breakpoint_event(data: &mut SessionData, seq: i64, body: Value, limit: usize) {
+pub(super) fn queue_breakpoint_event(
+    data: &mut SessionData,
+    seq: i64,
+    body: Value,
+    operations: &DebugOperationConfig,
+) {
     if let Some(transaction) = data.breakpoints.in_flight.as_mut() {
-        if transaction.bounded_events.len() < limit {
+        if transaction.bounded_events.len() < operations.max_queued_breakpoint_events {
             transaction
                 .bounded_events
                 .push_back(QueuedBreakpointEvent { seq, body });
@@ -71,7 +78,7 @@ pub(super) fn queue_breakpoint_event(data: &mut SessionData, seq: i64, body: Val
             transaction.overflowed = true;
         }
     } else {
-        apply_breakpoint_event(&mut data.breakpoints, seq, body);
+        apply_breakpoint_event(&mut data.breakpoints, seq, body, operations);
     }
 }
 
@@ -87,7 +94,7 @@ pub(super) async fn set_breakpoint_owned(
     let deadline = Instant::now()
         .checked_add(operations.operation_timeout)
         .ok_or(DapError::InvalidRequestTimeout)?;
-    let _gate = entry.operation.lock().await;
+    let _gate = control::deadline_gate(&entry, deadline, "set breakpoint").await?;
     ensure_live_breakpoint_state(&entry)?;
     let source = resolve_source(&entry.workspace, &request.source, &operations, deadline).await?;
     validate_breakpoint(&request.breakpoint, &operations, &entry)?;
@@ -103,12 +110,17 @@ pub(super) async fn set_breakpoint_owned(
         ensure_open(&entry, &data, "set breakpoint")?;
         check_capabilities(&data.capabilities, &request.breakpoint)?;
         let registry = &mut data.breakpoints;
-        let total: usize = registry
+        let mut total: usize = registry
             .sources
             .values()
             .map(|record| record.breakpoints.len())
             .sum();
         let record = registry.sources.get(&source.canonical);
+        if let Some(record) = record
+            && record.revision != source.revision
+        {
+            total = total.saturating_sub(record.breakpoints.len());
+        }
         if let Some(record) = record
             && record.revision == source.revision
             && record.synchronization == DebugBreakpointSynchronization::Synchronized
@@ -131,7 +143,9 @@ pub(super) async fn set_breakpoint_owned(
                 limit: operations.max_breakpoint_sources,
             });
         }
-        let current_len = record.map_or(0, |record| record.breakpoints.len());
+        let current_len = record
+            .filter(|record| record.revision == source.revision)
+            .map_or(0, |record| record.breakpoints.len());
         if current_len >= operations.max_breakpoints_per_source {
             return Err(DapError::BreakpointLimitExceeded {
                 scope: "per-source",
@@ -194,12 +208,12 @@ pub(super) async fn remove_breakpoint_owned(
     let deadline = Instant::now()
         .checked_add(operations.operation_timeout)
         .ok_or(DapError::InvalidRequestTimeout)?;
-    let _gate = entry.operation.lock().await;
+    let _gate = control::deadline_gate(&entry, deadline, "remove breakpoint").await?;
     ensure_live_breakpoint_state(&entry)?;
-    let (source_path, source_relative, source_revision, desired, needs_reset) = {
+    let (source_path, source_revision, desired, needs_reset) = {
         let data = lock(&entry.data);
         ensure_open(&entry, &data, "remove breakpoint")?;
-        let Some((path, record)) = data
+        let Some((_, record)) = data
             .breakpoints
             .sources
             .iter()
@@ -220,19 +234,22 @@ pub(super) async fn remove_breakpoint_owned(
         let mut desired = record.breakpoints.clone();
         desired.remove(&request.breakpoint_id);
         (
-            path.clone(),
-            record.relative.clone(),
+            record.original.clone(),
             record.revision.clone(),
             desired,
             record.synchronization == DebugBreakpointSynchronization::Indeterminate,
         )
     };
     let actual = resolve_source(&entry.workspace, &source_path, &operations, deadline).await?;
-    if actual.revision != source_revision {
-        return Err(DapError::DebugSourceRevisionMismatch {
-            path: source_relative,
-        });
-    }
+    let drifted = actual.revision != source_revision;
+    let desired = if drifted {
+        desired
+            .into_iter()
+            .map(|(id, breakpoint)| (id, pending_breakpoint(id, &actual, breakpoint.requested)))
+            .collect()
+    } else {
+        desired
+    };
     transact(
         Arc::clone(&entry),
         operations,
@@ -242,7 +259,7 @@ pub(super) async fn remove_breakpoint_owned(
             breakpoint_id: request.breakpoint_id,
         },
         Vec::new(),
-        needs_reset,
+        needs_reset || drifted,
         deadline,
     )
     .await
@@ -260,9 +277,6 @@ async fn transact(
     deadline: Instant,
 ) -> Result<DebugBreakpointMutationResult> {
     let client = client_for(&entry, "mutate breakpoints")?;
-    if reset {
-        send_set(&client, &source.canonical, &[], true, deadline).await?;
-    }
     let requested = desired
         .values()
         .map(|bp| bp.requested.clone())
@@ -276,14 +290,41 @@ async fn transact(
             overflowed: false,
         });
     }
-    let response = send_set(&client, &source.canonical, &requested, false, deadline).await;
+    if reset {
+        match send_set(&client, &source.wire_path, &[], true, deadline).await {
+            Ok(_) => {
+                let mut data = lock(&entry.data);
+                data.breakpoints.sources.remove(&source.canonical);
+                notify(&entry, &mut data);
+            }
+            Err(error) => {
+                finish_ambiguous(&entry, &source, &desired, &operations);
+                return Err(error);
+            }
+        }
+    }
+    let before =
+        match resolve_source(&entry.workspace, &source.original, &operations, deadline).await {
+            Ok(before) => before,
+            Err(error) => {
+                clear_transaction(&entry, &operations);
+                return Err(error);
+            }
+        };
+    if before.canonical != source.canonical || before.revision != source.revision {
+        clear_transaction(&entry, &operations);
+        return Err(DapError::DebugSourceChangedDuringOperation {
+            path: source.relative,
+        });
+    }
+    let response = send_set(&client, &source.wire_path, &requested, false, deadline).await;
     let response = match response {
         Ok(response) => response,
         Err(error) => {
             if matches!(error, DapError::Response { .. }) {
-                clear_transaction(&entry);
+                clear_transaction(&entry, &operations);
             } else {
-                finish_ambiguous(&entry, &source, &desired);
+                finish_ambiguous(&entry, &source, &desired, &operations);
             }
             return Err(error);
         }
@@ -291,23 +332,29 @@ async fn transact(
     let parsed = match parse_breakpoints_response(&response, desired.len(), &operations) {
         Ok(parsed) => parsed,
         Err(error) => {
-            finish_ambiguous(&entry, &source, &desired);
+            finish_ambiguous(&entry, &source, &desired, &operations);
             return Err(error);
         }
     };
-    let after = resolve_source(&entry.workspace, &source.canonical, &operations, deadline).await?;
-    if after.revision != source.revision {
-        let compensation = send_set(&client, &source.canonical, &[], true, deadline).await;
-        finish_ambiguous(&entry, &source, &desired);
+    let after = resolve_source(&entry.workspace, &source.original, &operations, deadline).await;
+    if !matches!(&after, Ok(after) if after.canonical == source.canonical && after.revision == source.revision)
+    {
+        let compensation = send_set(&client, &source.wire_path, &[], true, deadline).await;
         if compensation.is_err() {
+            finish_ambiguous(&entry, &source, &desired, &operations);
             return Err(DapError::BreakpointReconciliationIndeterminate {
                 path: source.relative,
                 message: "source changed and compensating clear failed".to_owned(),
             });
         }
+        discard_source_and_finish(&entry, &source, &operations);
         return Err(DapError::DebugSourceChangedDuringOperation {
             path: source.relative,
         });
+    }
+    let mut committed = desired;
+    for ((_, bp), wire) in committed.iter_mut().zip(parsed) {
+        apply_wire_breakpoint(bp, wire, &operations);
     }
     let mut data = lock(&entry.data);
     if entry.closed.load(std::sync::atomic::Ordering::Acquire)
@@ -317,16 +364,20 @@ async fn transact(
         data.breakpoints.in_flight = None;
         return Err(DapError::TransportClosed);
     }
-    let transaction = data
-        .breakpoints
-        .in_flight
-        .take()
-        .expect("breakpoint transaction marker");
-    debug_assert_eq!(transaction.source, source.canonical);
-    let mut committed = desired;
-    for ((_, bp), wire) in committed.iter_mut().zip(parsed) {
-        apply_wire_breakpoint(bp, wire, &operations);
+    if adapter_ids_collide(&data.breakpoints, &source.canonical, &committed) {
+        drop(data);
+        finish_ambiguous(&entry, &source, &committed, &operations);
+        return Err(DapError::InvalidSetBreakpointsResponse {
+            message: "adapter breakpoint id collides with another source".to_owned(),
+        });
     }
+    let Some(transaction) = data.breakpoints.in_flight.take() else {
+        return Err(DapError::BreakpointReconciliationIndeterminate {
+            path: source.relative,
+            message: "breakpoint transaction marker was lost".to_owned(),
+        });
+    };
+    debug_assert_eq!(transaction.source, source.canonical);
     let generation = data
         .breakpoints
         .sources
@@ -335,6 +386,7 @@ async fn transact(
     data.breakpoints.sources.insert(
         source.canonical.clone(),
         SourceRecord {
+            original: source.original.clone(),
             relative: source.relative.clone(),
             revision: source.revision.clone(),
             generation,
@@ -353,14 +405,27 @@ async fn transact(
         .collect::<Vec<_>>();
     queued.sort_by_key(|event| event.seq);
     for event in queued {
-        apply_breakpoint_event(&mut data.breakpoints, event.seq, event.body);
+        if !transaction.overflowed {
+            apply_breakpoint_event(&mut data.breakpoints, event.seq, event.body, &operations);
+        } else {
+            apply_event_for_other_source(
+                &mut data.breakpoints,
+                &source.canonical,
+                event,
+                &operations,
+            );
+        }
     }
-    let source_result = source_snapshot(
-        data.breakpoints
-            .sources
-            .get(&source.canonical)
-            .expect("committed source"),
-    );
+    let Some(record) = data.breakpoints.sources.get(&source.canonical) else {
+        return Err(DapError::BreakpointReconciliationIndeterminate {
+            path: source.relative,
+            message: "committed source disappeared during reconciliation".to_owned(),
+        });
+    };
+    let source_result = source_snapshot(record);
+    if source_result.breakpoints.is_empty() {
+        data.breakpoints.sources.remove(&source.canonical);
+    }
     notify(&entry, &mut data);
     if transaction.overflowed {
         return Err(DapError::BreakpointReconciliationIndeterminate {
@@ -376,7 +441,9 @@ async fn transact(
 }
 
 struct ResolvedSource {
+    original: PathBuf,
     canonical: PathBuf,
+    wire_path: String,
     relative: PathBuf,
     revision: DebugSourceRevision,
 }
@@ -387,7 +454,8 @@ async fn resolve_source(
     operations: &DebugOperationConfig,
     deadline: Instant,
 ) -> Result<ResolvedSource> {
-    if path.as_os_str().as_encoded_bytes().len() > operations.max_source_path_bytes {
+    let encoded = path.as_os_str().as_encoded_bytes();
+    if encoded.contains(&0) || encoded.len() > operations.max_source_path_bytes {
         return Err(DapError::InvalidDebugSource {
             path: path.to_path_buf(),
             message: "source path exceeds configured byte limit".to_owned(),
@@ -395,8 +463,17 @@ async fn resolve_source(
     }
     let root = workspace.canonical_root().to_path_buf();
     let input = path.to_path_buf();
+    let original = input.clone();
     let limit = operations.max_source_revision_bytes;
-    let task = tokio::task::spawn_blocking(move || -> Result<_> {
+    let path_limit = operations.max_source_path_bytes;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let task_cancelled = Arc::clone(&cancelled);
+    let mut task = tokio::task::spawn_blocking(move || -> Result<_> {
+        if task_cancelled.load(Ordering::Acquire) {
+            return Err(DapError::RequestTimeout {
+                command: "source revision".to_owned(),
+            });
+        }
         let candidate = if input.is_absolute() {
             input
         } else {
@@ -422,33 +499,62 @@ async fn resolve_source(
         }
         let relative = canonical
             .strip_prefix(&root)
-            .expect("contained source")
+            .map_err(|_| DapError::DebugSourceOutsideWorkspace {
+                path: canonical.clone(),
+                workspace: root.clone(),
+            })?
             .to_path_buf();
-        let revision = hash_file(&canonical, limit)?;
-        Ok((canonical, relative, revision))
+        let wire_path = canonical
+            .to_str()
+            .ok_or_else(|| DapError::InvalidDebugSource {
+                path: canonical.clone(),
+                message: "canonical source path is not valid UTF-8".to_owned(),
+            })?
+            .to_owned();
+        if wire_path.as_bytes().contains(&0) || wire_path.len() > path_limit {
+            return Err(DapError::InvalidDebugSource {
+                path: canonical,
+                message: "canonical source path exceeds configured byte limit or contains NUL"
+                    .to_owned(),
+            });
+        }
+        let revision = hash_file(&canonical, limit, &task_cancelled)?;
+        Ok((canonical, wire_path, relative, revision))
     });
-    let (canonical, relative, revision) = tokio::time::timeout_at(deadline, task)
-        .await
-        .map_err(|_| DapError::RequestTimeout {
-            command: "source revision".to_owned(),
-        })?
-        .map_err(|error| DapError::DebugOperationTaskFailed {
+    let joined = tokio::time::timeout_at(deadline, &mut task).await;
+    let (canonical, wire_path, relative, revision) = match joined {
+        Ok(joined) => joined.map_err(|error| DapError::DebugOperationTaskFailed {
             operation: "source revision",
             message: error.to_string(),
-        })??;
+        })??,
+        Err(_) => {
+            cancelled.store(true, Ordering::Release);
+            let _ = task.await;
+            return Err(DapError::RequestTimeout {
+                command: "source revision".to_owned(),
+            });
+        }
+    };
     Ok(ResolvedSource {
+        original,
         canonical,
+        wire_path,
         relative,
         revision,
     })
 }
 
-fn hash_file(path: &Path, limit: u64) -> Result<DebugSourceRevision> {
+fn hash_file(path: &Path, limit: u64, cancelled: &AtomicBool) -> Result<DebugSourceRevision> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
     loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(DapError::RequestTimeout {
+                command: "source revision".to_owned(),
+            });
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -471,7 +577,7 @@ fn hash_file(path: &Path, limit: u64) -> Result<DebugSourceRevision> {
 
 async fn send_set(
     client: &DapClient,
-    path: &Path,
+    path: &str,
     breakpoints: &[DebugSourceBreakpoint],
     source_modified: bool,
     deadline: Instant,
@@ -605,7 +711,9 @@ fn apply_wire_breakpoint(
 ) {
     bp.verified = wire.verified;
     bp.adapter_id = wire.id;
-    bp.reason = wire.reason.map(parse_reason);
+    bp.reason = wire
+        .reason
+        .map(|reason| parse_reason(reason, operations.max_breakpoint_message_bytes));
     let (message, truncated) = truncate(wire.message, operations.max_breakpoint_message_bytes);
     bp.message = message;
     bp.message_truncated_prefix_bytes = truncated;
@@ -616,11 +724,11 @@ fn apply_wire_breakpoint(
         end_column: wire.end_column,
     };
 }
-fn parse_reason(reason: String) -> DebugBreakpointReason {
+fn parse_reason(reason: String, limit: usize) -> DebugBreakpointReason {
     match reason.as_str() {
         "pending" => DebugBreakpointReason::Pending,
         "failed" => DebugBreakpointReason::Failed,
-        _ => DebugBreakpointReason::Other(reason),
+        _ => DebugBreakpointReason::Other(truncate(Some(reason), limit).0.unwrap_or_default()),
     }
 }
 fn truncate(message: Option<String>, limit: usize) -> (Option<String>, usize) {
@@ -725,9 +833,20 @@ fn client_for(entry: &SessionEntry, operation: &'static str) -> Result<DapClient
         .map(|t| t.client.clone())
         .ok_or_else(|| invalid_transition(entry, &data, operation))
 }
-fn clear_transaction(entry: &SessionEntry) {
+fn clear_transaction(entry: &SessionEntry, operations: &DebugOperationConfig) {
     let mut data = lock(&entry.data);
-    data.breakpoints.in_flight = None;
+    let queued = data
+        .breakpoints
+        .in_flight
+        .take()
+        .map(|transaction| transaction.bounded_events);
+    if let Some(queued) = queued {
+        let mut queued = queued.into_iter().collect::<Vec<_>>();
+        queued.sort_by_key(|event| event.seq);
+        for event in queued {
+            apply_breakpoint_event(&mut data.breakpoints, event.seq, event.body, operations);
+        }
+    }
     notify(entry, &mut data);
 }
 
@@ -735,9 +854,24 @@ fn finish_ambiguous(
     entry: &SessionEntry,
     source: &ResolvedSource,
     desired: &BTreeMap<DebugBreakpointId, DebugBreakpoint>,
+    operations: &DebugOperationConfig,
 ) {
     let mut data = lock(&entry.data);
-    data.breakpoints.in_flight = None;
+    let queued = data
+        .breakpoints
+        .in_flight
+        .take()
+        .map(|transaction| transaction.bounded_events);
+    if let Some(queued) = queued {
+        for event in queued {
+            apply_event_for_other_source(
+                &mut data.breakpoints,
+                &source.canonical,
+                event,
+                operations,
+            );
+        }
+    }
     let generation = data
         .breakpoints
         .sources
@@ -746,6 +880,7 @@ fn finish_ambiguous(
     data.breakpoints.sources.insert(
         source.canonical.clone(),
         SourceRecord {
+            original: source.original.clone(),
             relative: source.relative.clone(),
             revision: source.revision.clone(),
             generation,
@@ -756,7 +891,87 @@ fn finish_ambiguous(
     notify(entry, &mut data);
 }
 
-fn apply_breakpoint_event(registry: &mut BreakpointRegistry, _seq: i64, body: Value) {
+fn discard_source_and_finish(
+    entry: &SessionEntry,
+    source: &ResolvedSource,
+    operations: &DebugOperationConfig,
+) {
+    let mut data = lock(&entry.data);
+    let queued = data
+        .breakpoints
+        .in_flight
+        .take()
+        .map(|transaction| transaction.bounded_events);
+    data.breakpoints.sources.remove(&source.canonical);
+    if let Some(queued) = queued {
+        for event in queued {
+            apply_event_for_other_source(
+                &mut data.breakpoints,
+                &source.canonical,
+                event,
+                operations,
+            );
+        }
+    }
+    notify(entry, &mut data);
+}
+
+fn adapter_ids_collide(
+    registry: &BreakpointRegistry,
+    replacing: &Path,
+    proposed: &BTreeMap<DebugBreakpointId, DebugBreakpoint>,
+) -> bool {
+    let other = registry
+        .sources
+        .iter()
+        .filter(|(path, _)| path.as_path() != replacing)
+        .flat_map(|(_, record)| record.breakpoints.values().filter_map(|bp| bp.adapter_id))
+        .collect::<std::collections::HashSet<_>>();
+    proposed
+        .values()
+        .filter_map(|bp| bp.adapter_id)
+        .any(|id| other.contains(&id))
+}
+
+fn apply_event_for_other_source(
+    registry: &mut BreakpointRegistry,
+    target: &Path,
+    event: QueuedBreakpointEvent,
+    operations: &DebugOperationConfig,
+) {
+    let id = event
+        .body
+        .get("breakpoint")
+        .and_then(|bp| bp.get("id"))
+        .and_then(Value::as_i64);
+    let Some(id) = id else {
+        registry.unmatched_events = registry.unmatched_events.saturating_add(1);
+        return;
+    };
+    let paths = registry
+        .sources
+        .iter()
+        .filter_map(|(path, record)| {
+            record
+                .breakpoints
+                .values()
+                .any(|bp| bp.adapter_id == Some(id))
+                .then_some(path.clone())
+        })
+        .collect::<Vec<_>>();
+    if paths.len() == 1 && paths[0].as_path() != target {
+        apply_breakpoint_event(registry, event.seq, event.body, operations);
+    } else {
+        registry.unmatched_events = registry.unmatched_events.saturating_add(1);
+    }
+}
+
+fn apply_breakpoint_event(
+    registry: &mut BreakpointRegistry,
+    _seq: i64,
+    body: Value,
+    operations: &DebugOperationConfig,
+) {
     #[derive(Deserialize)]
     struct EventBody {
         reason: String,
@@ -783,32 +998,60 @@ fn apply_breakpoint_event(registry: &mut BreakpointRegistry, _seq: i64, body: Va
         registry.unmatched_events = registry.unmatched_events.saturating_add(1);
         return;
     };
-    let found = registry.sources.values_mut().find_map(|record| {
-        record
-            .breakpoints
-            .values_mut()
-            .find(|bp| bp.adapter_id == Some(id))
-            .map(|bp| (record.generation, bp))
-    });
-    let Some((_generation, bp)) = found else {
+    let invalid_location = [
+        event.breakpoint.line,
+        event.breakpoint.column,
+        event.breakpoint.end_line,
+        event.breakpoint.end_column,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| value == 0 || value > MAX_DAP_INTEGER);
+    if i32::try_from(id).is_err() || invalid_location {
         registry.unmatched_events = registry.unmatched_events.saturating_add(1);
         return;
-    };
+    }
+    let matches = registry
+        .sources
+        .iter()
+        .filter_map(|(path, record)| {
+            record
+                .breakpoints
+                .values()
+                .find(|bp| bp.adapter_id == Some(id))
+                .map(|bp| (path.clone(), bp.id))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        registry.unmatched_events = registry.unmatched_events.saturating_add(1);
+        return;
+    }
+    let (path, local_id) = &matches[0];
     match event.reason.as_str() {
         "removed" => {
-            for record in registry.sources.values_mut() {
-                record.breakpoints.retain(|_, bp| bp.adapter_id != Some(id));
+            if let Some(record) = registry.sources.get_mut(path) {
+                record.breakpoints.remove(local_id);
+                record.generation = record.generation.saturating_add(1);
             }
         }
         "changed" => {
+            let Some(record) = registry.sources.get_mut(path) else {
+                return;
+            };
+            let Some(bp) = record.breakpoints.get_mut(local_id) else {
+                return;
+            };
             if let Some(v) = event.breakpoint.verified {
                 bp.verified = v
             }
             if let Some(v) = event.breakpoint.reason {
-                bp.reason = Some(parse_reason(v))
+                bp.reason = Some(parse_reason(v, operations.max_breakpoint_message_bytes))
             }
             if let Some(v) = event.breakpoint.message {
-                bp.message = Some(v)
+                let (message, truncated) =
+                    truncate(Some(v), operations.max_breakpoint_message_bytes);
+                bp.message = message;
+                bp.message_truncated_prefix_bytes = truncated;
             }
             bp.resolved = DebugBreakpointLocation {
                 line: event.breakpoint.line.or(bp.resolved.line),

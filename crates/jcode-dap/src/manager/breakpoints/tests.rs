@@ -231,6 +231,39 @@ async fn id_only_higher_sequence_event_is_applied_after_response() {
         result.source.breakpoints[0].reason,
         Some(DebugBreakpointReason::Pending)
     );
+
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let mut data = lock(&entry.data);
+    let bounded = DebugOperationConfig {
+        max_breakpoint_message_bytes: 4,
+        ..DebugOperationConfig::default()
+    };
+    apply_breakpoint_event(
+        &mut data.breakpoints,
+        100,
+        json!({"reason":"changed","breakpoint":{"id":42,"message":"éabcdef","reason":"adapter-specific"}}),
+        &bounded,
+    );
+    let snapshot = data.breakpoints.snapshot();
+    assert_eq!(
+        snapshot.sources[0].breakpoints[0].message.as_deref(),
+        Some("cdef")
+    );
+    assert_eq!(
+        snapshot.sources[0].breakpoints[0].message_truncated_prefix_bytes,
+        4
+    );
+    let unmatched = snapshot.unmatched_adapter_events;
+    apply_breakpoint_event(
+        &mut data.breakpoints,
+        101,
+        json!({"reason":"changed","breakpoint":{"id":42,"line":0,"verified":true}}),
+        &bounded,
+    );
+    assert_eq!(
+        data.breakpoints.snapshot().unmatched_adapter_events,
+        unmatched + 1
+    );
 }
 
 #[tokio::test]
@@ -302,7 +335,26 @@ async fn source_change_triggers_compensating_empty_clear() {
         task.await.unwrap(),
         Err(DapError::DebugSourceChangedDuringOperation { .. })
     ));
+    assert!(
+        f.manager
+            .breakpoints("owner", f.id)
+            .unwrap()
+            .sources
+            .is_empty()
+    );
     sleep(Duration::from_millis(1)).await;
+}
+
+#[tokio::test]
+async fn serialized_operation_gate_obeys_the_single_operation_deadline() {
+    let f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let _held = entry.operation.lock().await;
+    let deadline = Instant::now() + Duration::from_millis(20);
+    assert!(matches!(
+        control::deadline_gate(&entry, deadline, "set breakpoint").await,
+        Err(DapError::RequestTimeout { command }) if command == "set breakpoint"
+    ));
 }
 
 #[tokio::test]
@@ -351,8 +403,12 @@ async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
         bounded_events: VecDeque::new(),
         overflowed: false,
     });
-    queue_breakpoint_event(&mut data, 1, json!({"unknown":"source"}), 1);
-    queue_breakpoint_event(&mut data, 2, json!({"breakpoint":{"id":9}}), 1);
+    let operations = DebugOperationConfig {
+        max_queued_breakpoint_events: 1,
+        ..DebugOperationConfig::default()
+    };
+    queue_breakpoint_event(&mut data, 1, json!({"unknown":"source"}), &operations);
+    queue_breakpoint_event(&mut data, 2, json!({"breakpoint":{"id":9}}), &operations);
     let transaction = data.breakpoints.in_flight.as_ref().unwrap();
     assert_eq!(transaction.bounded_events.len(), 1);
     assert!(transaction.overflowed);

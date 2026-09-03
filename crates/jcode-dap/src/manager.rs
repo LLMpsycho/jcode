@@ -475,7 +475,10 @@ impl DebugSessionReservation {
         {
             return Err(invalid_transition(&entry, &data, "attach target"));
         }
-        data.transport.as_mut().unwrap().target = Some(target);
+        let Some(transport) = data.transport.as_mut() else {
+            return Err(invalid_transition(&entry, &data, "attach target"));
+        };
+        transport.target = Some(target);
         Ok(())
     }
 
@@ -683,21 +686,6 @@ use startup::{
     deadline_result, deny_unsupported, initialize, start_after_initialize, startup_deadline,
 };
 
-impl SessionEntry {
-    fn snapshot(&self) -> Option<DebugSessionSnapshot> {
-        let data = lock(&self.data);
-        Some(DebugSessionSnapshot {
-            id: self.id,
-            workspace: self.workspace.clone(),
-            adapter_id: self.adapter_id.clone(),
-            start: data.start.clone()?,
-            state: data.state.clone(),
-            capabilities: data.capabilities.clone(),
-            output: data.output.status(),
-        })
-    }
-}
-
 impl ManagerCore {
     fn entry(&self, id: DebugSessionId) -> Result<Arc<SessionEntry>> {
         lock(&self.registry)
@@ -767,6 +755,11 @@ impl ManagerCore {
     fn drain_owner(&self, owner: &str) -> Vec<Arc<SessionEntry>> {
         let mut registry = lock(&self.registry);
         let ids = registry.ids_by_owner.remove(owner).unwrap_or_default();
+        for id in &ids {
+            if let Some(entry) = registry.entries.get(id) {
+                entry.fence_terminal();
+            }
+        }
         registry.active_by_owner.remove(owner);
         registry.terminal_order.retain(|id| !ids.contains(id));
         ids.into_iter()
@@ -776,6 +769,9 @@ impl ManagerCore {
 
     fn drain_all(&self) -> Vec<Arc<SessionEntry>> {
         let mut registry = lock(&self.registry);
+        for entry in registry.entries.values() {
+            entry.fence_terminal();
+        }
         let entries = registry.entries.drain().map(|(_, entry)| entry).collect();
         registry.active_by_owner.clear();
         registry.ids_by_owner.clear();
@@ -867,8 +863,8 @@ impl ManagerCore {
         retain: bool,
         abort_supervisor: bool,
     ) -> Result<()> {
+        entry.fence_terminal();
         let _finalization = entry.finalization.lock().await;
-        entry.closed.store(true, Ordering::Release);
         let (transport, supervisor) = {
             let mut data = lock(&entry.data);
             if data.state.is_terminal() {
@@ -976,7 +972,7 @@ impl Drop for ManagerCore {
                 .collect::<Vec<_>>()
         };
         for entry in entries {
-            entry.closed.store(true, Ordering::Release);
+            entry.fence_terminal();
             let mut data = lock(&entry.data);
             if let Some(handle) = data.supervisor.take() {
                 handle.abort();

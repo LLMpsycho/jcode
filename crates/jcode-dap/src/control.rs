@@ -26,7 +26,7 @@ impl fmt::Display for DebugThreadId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DebugExecutionRevision(pub(crate) u64);
 
 impl DebugExecutionRevision {
