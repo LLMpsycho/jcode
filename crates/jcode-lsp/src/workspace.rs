@@ -181,6 +181,24 @@ impl LspWorkspace {
         .await
     }
 
+    pub async fn prepare_rename(&self, path: &Path, position: Position) -> Result<Value> {
+        self.position_request("textDocument/prepareRename", path, position, None)
+            .await
+    }
+
+    pub async fn rename(&self, path: &Path, position: Position, new_name: &str) -> Result<Value> {
+        let uri = file_uri(&path.canonicalize()?)?;
+        self.request_with_content_modified_retry(
+            "textDocument/rename",
+            serde_json::json!({
+                "textDocument": {"uri": uri},
+                "position": position,
+                "newName": new_name
+            }),
+        )
+        .await
+    }
+
     pub async fn document_symbols(&self, path: &Path) -> Result<Value> {
         let uri = file_uri(&path.canonicalize()?)?;
         self.process

@@ -183,3 +183,87 @@ async fn rust_definition_and_introduced_error_are_observable() {
 
     pool.shutdown_all(Duration::from_secs(5)).await;
 }
+
+#[tokio::test]
+async fn rust_cross_file_rename_returns_edits_for_definition_and_reference() {
+    let path = std::env::var_os("PATH");
+    let current = std::env::current_dir().unwrap();
+    if discover_executable("rust-analyzer", path.as_deref(), &current).is_err() {
+        return;
+    }
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("src")).unwrap();
+    std::fs::write(
+        project.path().join("Cargo.toml"),
+        "[package]\nname = \"rename-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    let lib_path = project.path().join("src/lib.rs");
+    let other_path = project.path().join("src/other.rs");
+    let lib = "mod other;\npub fn call() -> u32 { other::target() }\n";
+    let other = "pub fn target() -> u32 { 1 }\n";
+    std::fs::write(&lib_path, lib).unwrap();
+    std::fs::write(&other_path, other).unwrap();
+
+    let pool = LspServicePool::new();
+    let config = LspConfig::default();
+    let workspace = pool
+        .get_or_start(project.path(), "rename", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    workspace
+        .sync_document_from_disk(&lib_path, "rust")
+        .await
+        .unwrap();
+    workspace
+        .sync_document_from_disk(&other_path, "rust")
+        .await
+        .unwrap();
+    let reference_column = lib.lines().nth(1).unwrap().find("target").unwrap() as u32;
+    workspace
+        .definition(
+            &lib_path,
+            Position {
+                line: 1,
+                character: reference_column,
+            },
+        )
+        .await
+        .unwrap();
+
+    let declaration_column = other.find("target").unwrap() as u32;
+    let position = Position {
+        line: 0,
+        character: declaration_column,
+    };
+    assert!(
+        !workspace
+            .prepare_rename(&other_path, position)
+            .await
+            .unwrap()
+            .is_null()
+    );
+    let edit = workspace
+        .rename(&other_path, position, "renamed_target")
+        .await
+        .unwrap();
+    let mut touched = std::collections::HashSet::new();
+    if let Some(changes) = edit.get("changes").and_then(serde_json::Value::as_object) {
+        touched.extend(changes.keys().cloned());
+    }
+    if let Some(changes) = edit
+        .get("documentChanges")
+        .and_then(serde_json::Value::as_array)
+    {
+        touched.extend(changes.iter().filter_map(|change| {
+            change
+                .get("textDocument")
+                .and_then(|document| document.get("uri"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        }));
+    }
+    assert_eq!(touched.len(), 2, "workspace edit: {edit}");
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}

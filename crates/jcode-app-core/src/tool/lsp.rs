@@ -52,6 +52,7 @@ enum LspAction {
     DocumentSymbols,
     WorkspaceSymbols,
     Capabilities,
+    Rename,
 }
 
 impl LspAction {
@@ -65,6 +66,7 @@ impl LspAction {
             Self::DocumentSymbols => "document_symbols",
             Self::WorkspaceSymbols => "workspace_symbols",
             Self::Capabilities => "capabilities",
+            Self::Rename => "rename",
         }
     }
 }
@@ -80,6 +82,10 @@ struct LspInput {
     character: Option<u32>,
     #[serde(default)]
     query: Option<String>,
+    #[serde(default)]
+    new_name: Option<String>,
+    #[serde(default)]
+    apply: bool,
     intent: String,
 }
 
@@ -102,13 +108,15 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "status", "diagnostics", "hover", "definition", "references",
-                        "document_symbols", "workspace_symbols", "capabilities"
+                        "document_symbols", "workspace_symbols", "capabilities", "rename"
                     ]
                 },
                 "file": {"type": ["string", "null"], "description": "Workspace-relative source file."},
                 "line": {"type": ["integer", "null"], "minimum": 1, "description": "One-based source line."},
                 "character": {"type": ["integer", "null"], "minimum": 1, "description": "One-based UTF-16 character offset."},
                 "query": {"type": ["string", "null"], "description": "Workspace-symbol query."},
+                "new_name": {"type": ["string", "null"], "description": "New symbol name for rename preview."},
+                "apply": {"type": "boolean", "default": false, "description": "Rename application is not enabled yet; false returns a preview."},
                 "intent": super::intent_schema_property()
             },
             "additionalProperties": false
@@ -267,6 +275,34 @@ impl Tool for LspTool {
                             Some(document.version),
                             text,
                             json!({"count": count}),
+                            max_chars,
+                            "fresh",
+                        ))
+                    }
+                    LspAction::Rename => {
+                        if params.apply {
+                            bail!(
+                                "LSP rename application is not enabled yet; repeat with `apply: false` to inspect the atomic edit preview"
+                            );
+                        }
+                        let position = one_based_position(params.line, params.character)?;
+                        let new_name = params
+                            .new_name
+                            .as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                            .ok_or_else(|| anyhow!("lsp rename requires `new_name`"))?;
+                        let preparation = workspace.prepare_rename(file, position).await?;
+                        if preparation.is_null() {
+                            bail!("the language server rejected rename at this position");
+                        }
+                        let edit = workspace.rename(file, position, new_name).await?;
+                        let (text, summary, count) = render_workspace_edit(&edit, &root)?;
+                        Ok(shaped_output(
+                            action,
+                            &workspace,
+                            Some(document.version),
+                            text,
+                            json!({"files": summary, "edit_count": count, "applied": false}),
                             max_chars,
                             "fresh",
                         ))
@@ -529,6 +565,76 @@ fn render_symbols(value: &Value, root: &Path) -> (String, usize) {
     }
 }
 
+fn render_workspace_edit(value: &Value, root: &Path) -> Result<(String, Vec<Value>, usize)> {
+    let mut lines = Vec::new();
+    let mut summary = Vec::new();
+    let mut total = 0;
+    if let Some(changes) = value.get("changes").and_then(Value::as_object) {
+        for (uri, edits) in changes {
+            collect_workspace_edit_summary(
+                uri,
+                edits.as_array().map(Vec::len).unwrap_or(0),
+                root,
+                &mut lines,
+                &mut summary,
+                &mut total,
+            );
+        }
+    }
+    if let Some(document_changes) = value.get("documentChanges").and_then(Value::as_array) {
+        for change in document_changes {
+            let Some(uri) = change
+                .get("textDocument")
+                .and_then(|document| document.get("uri"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            collect_workspace_edit_summary(
+                uri,
+                change
+                    .get("edits")
+                    .and_then(Value::as_array)
+                    .map(Vec::len)
+                    .unwrap_or(0),
+                root,
+                &mut lines,
+                &mut summary,
+                &mut total,
+            );
+        }
+    }
+    if !value.is_object() {
+        bail!("language server returned an unsupported WorkspaceEdit shape");
+    }
+    if lines.is_empty() {
+        Ok(("Rename produced no edits.".to_owned(), summary, 0))
+    } else {
+        Ok((
+            format!("Rename preview:\n{}", lines.join("\n")),
+            summary,
+            total,
+        ))
+    }
+}
+
+fn collect_workspace_edit_summary(
+    uri: &str,
+    count: usize,
+    root: &Path,
+    lines: &mut Vec<String>,
+    summary: &mut Vec<Value>,
+    total: &mut usize,
+) {
+    if count == 0 {
+        return;
+    }
+    *total += count;
+    let path = display_uri(uri, root);
+    lines.push(format!("{path}: {count} edit(s)"));
+    summary.push(json!({"path": path, "edit_count": count}));
+}
+
 fn collect_symbols(value: &Value, root: &Path, lines: &mut Vec<String>, depth: usize) {
     let Some(items) = value.as_array() else {
         return;
@@ -775,6 +881,28 @@ mod tests {
         for tool in ["read", "bash", "lsp"] {
             assert!(!is_post_edit_tool(tool));
         }
+    }
+
+    #[test]
+    fn rename_preview_summarizes_workspace_edits_without_dumping_protocol_json() {
+        let edit = json!({
+            "changes": {
+                "file:///workspace/src/lib.rs": [{
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 3}},
+                    "newText": "renamed"
+                }],
+                "file:///workspace/src/other.rs": [{
+                    "range": {"start": {"line": 2, "character": 4}, "end": {"line": 2, "character": 7}},
+                    "newText": "renamed"
+                }]
+            }
+        });
+        let (text, files, count) = render_workspace_edit(&edit, Path::new("/workspace")).unwrap();
+        assert!(text.contains("src/lib.rs: 1 edit(s)"));
+        assert!(text.contains("src/other.rs: 1 edit(s)"));
+        assert!(!text.contains("newText"));
+        assert_eq!(files.len(), 2);
+        assert_eq!(count, 2);
     }
 
     #[tokio::test]

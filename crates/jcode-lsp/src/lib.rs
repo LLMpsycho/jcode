@@ -5,6 +5,7 @@ mod config;
 mod diagnostics;
 mod discovery;
 mod document_sync;
+mod edits;
 mod error;
 mod framing;
 mod protocol;
@@ -17,6 +18,7 @@ pub use config::config_digest;
 pub use diagnostics::{DiagnosticSnapshot, DiagnosticsCache, diagnostic_delta};
 pub use discovery::discover_executable;
 pub use document_sync::{DocumentState, DocumentSync};
+pub use edits::{PlannedTextEdits, apply_text_edits};
 pub use error::{LspError, Result};
 pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,
