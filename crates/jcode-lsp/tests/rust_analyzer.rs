@@ -424,6 +424,98 @@ async fn installed_typescript_server_resolves_definition() {
 }
 
 #[tokio::test]
+async fn typescript_file_rename_returns_import_updates() {
+    let current = std::env::current_dir().unwrap();
+    let config = LspConfig::default();
+    let server = &config.servers["typescript-language-server"];
+    if discover_executable(
+        &server.command,
+        std::env::var_os("PATH").as_deref(),
+        &current,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let typescript_root = std::env::var_os("JCODE_TEST_TYPESCRIPT_ROOT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            discover_executable("tsc", std::env::var_os("PATH").as_deref(), &current)
+                .ok()
+                .and_then(|path| path.canonicalize().ok())
+                .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
+        });
+    let Some(typescript_root) =
+        typescript_root.filter(|root| root.join("lib/tsserver.js").is_file())
+    else {
+        return;
+    };
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::create_dir(project.path().join("node_modules")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &typescript_root,
+        project.path().join("node_modules/typescript"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    std::fs::write(
+        project.path().join("package.json"),
+        r#"{"name":"lsp-typescript-rename-fixture","private":true}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true},"include":["src"]}"#,
+    )
+    .unwrap();
+    let old_path = project.path().join("src/value.ts");
+    let new_path = project.path().join("src/renamed.ts");
+    let importer_path = project.path().join("src/main.ts");
+    std::fs::write(&old_path, "export const value = 1;\n").unwrap();
+    std::fs::write(
+        &importer_path,
+        "import { value } from './value';\nconsole.log(value);\n",
+    )
+    .unwrap();
+
+    let pool = LspServicePool::new();
+    let workspace = pool
+        .get_or_start(
+            project.path(),
+            "typescript-rename-fixture",
+            "typescript-language-server",
+            &config,
+        )
+        .await
+        .unwrap();
+    workspace
+        .sync_document_from_disk(&old_path, "typescript")
+        .await
+        .unwrap();
+    workspace
+        .sync_document_from_disk(&importer_path, "typescript")
+        .await
+        .unwrap();
+
+    let edit = workspace
+        .will_rename_file(&old_path, &new_path)
+        .await
+        .unwrap();
+    let serialized = edit.to_string();
+    assert!(
+        serialized.contains("main.ts") && serialized.contains("renamed"),
+        "TypeScript file rename did not update the import: {edit}; stderr: {}",
+        workspace.process().recent_stderr()
+    );
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
 async fn installed_pyright_reports_a_type_error() {
     let current = std::env::current_dir().unwrap();
     let config = LspConfig::default();

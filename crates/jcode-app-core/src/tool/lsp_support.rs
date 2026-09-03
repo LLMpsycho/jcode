@@ -21,6 +21,26 @@ pub(super) fn resolve_file(root: &Path, file: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
+pub(super) fn resolve_new_file(root: &Path, file: &str) -> Result<PathBuf> {
+    let candidate = root.join(file);
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(_) => bail!("LSP file rename destination already exists: {file}"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| anyhow!("LSP file rename destination has no parent"))?
+        .canonicalize()?;
+    if !parent.starts_with(root) {
+        bail!("LSP file rename destination must remain inside the workspace");
+    }
+    let name = candidate
+        .file_name()
+        .ok_or_else(|| anyhow!("LSP file rename destination has no file name"))?;
+    Ok(parent.join(name))
+}
+
 pub(super) fn select_server(
     config: &LspConfig,
     requested: Option<&str>,
@@ -117,4 +137,33 @@ pub(super) fn one_based_position(line: Option<u32>, character: Option<u32>) -> R
         line: line - 1,
         character: character.unwrap_or(1) - 1,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_new_file;
+
+    #[test]
+    fn new_file_resolution_rejects_existing_and_escaping_destinations() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir(workspace.path().join("src")).unwrap();
+        std::fs::write(workspace.path().join("src/existing.rs"), "").unwrap();
+
+        assert!(resolve_new_file(workspace.path(), "src/existing.rs").is_err());
+        assert!(resolve_new_file(workspace.path(), "../escaping.rs").is_err());
+        assert_eq!(
+            resolve_new_file(workspace.path(), "src/new.rs").unwrap(),
+            workspace.path().join("src/new.rs")
+        );
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                workspace.path().join("missing-target"),
+                workspace.path().join("src/dangling.rs"),
+            )
+            .unwrap();
+            assert!(resolve_new_file(workspace.path(), "src/dangling.rs").is_err());
+        }
+    }
 }

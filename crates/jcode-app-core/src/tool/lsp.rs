@@ -12,9 +12,10 @@ use jcode_lsp::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::lsp_action::LspAction;
 use super::lsp_support::{
-    discover_server_root, language_id, one_based_position, resolve_file, select_server,
-    workspace_root,
+    discover_server_root, language_id, one_based_position, resolve_file, resolve_new_file,
+    select_server, workspace_root,
 };
 use super::{Tool, ToolContext, ToolOutput};
 
@@ -49,50 +50,6 @@ impl LspTool {
         self.config_override
             .clone()
             .unwrap_or_else(|| crate::config::config().lsp.clone())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum LspAction {
-    Status,
-    Diagnostics,
-    Hover,
-    Definition,
-    References,
-    DocumentSymbols,
-    WorkspaceSymbols,
-    Capabilities,
-    Rename,
-    Implementation,
-    TypeDefinition,
-    SignatureHelp,
-    IncomingCalls,
-    OutgoingCalls,
-    CodeActions,
-    Reload,
-}
-
-impl LspAction {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Status => "status",
-            Self::Diagnostics => "diagnostics",
-            Self::Hover => "hover",
-            Self::Definition => "definition",
-            Self::References => "references",
-            Self::DocumentSymbols => "document_symbols",
-            Self::WorkspaceSymbols => "workspace_symbols",
-            Self::Capabilities => "capabilities",
-            Self::Rename => "rename",
-            Self::Implementation => "implementation",
-            Self::TypeDefinition => "type_definition",
-            Self::SignatureHelp => "signature_help",
-            Self::IncomingCalls => "incoming_calls",
-            Self::OutgoingCalls => "outgoing_calls",
-            Self::CodeActions => "code_actions",
-            Self::Reload => "reload",
-        }
     }
 }
 
@@ -137,7 +94,7 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "status", "diagnostics", "hover", "definition", "references",
-                        "document_symbols", "workspace_symbols", "capabilities", "rename",
+                        "document_symbols", "workspace_symbols", "capabilities", "rename", "rename_file",
                         "implementation", "type_definition", "signature_help", "incoming_calls",
                         "outgoing_calls", "code_actions", "reload"
                     ]
@@ -147,9 +104,9 @@ impl Tool for LspTool {
                 "line": {"type": ["integer", "null"], "minimum": 1, "description": "One-based source line."},
                 "character": {"type": ["integer", "null"], "minimum": 1, "description": "One-based UTF-16 character offset."},
                 "query": {"type": ["string", "null"], "description": "Workspace-symbol query."},
-                "new_name": {"type": ["string", "null"], "description": "New symbol name for rename preview."},
+                "new_name": {"type": ["string", "null"], "description": "New symbol name, or workspace-relative destination path for rename_file."},
                 "selector": {"type": ["string", "null"], "description": "Exact code-action title or one-based list index to apply."},
-                "apply": {"type": "boolean", "default": false, "description": "Apply a semantic rename or explicitly selected code action through the snapshot guard."},
+                "apply": {"type": "boolean", "default": false, "description": "Apply a semantic/file rename or explicitly selected code action through the snapshot guard."},
                 "intent": super::intent_schema_property()
             },
             "additionalProperties": false
@@ -283,8 +240,10 @@ impl Tool for LspTool {
                 let file = file
                     .as_deref()
                     .ok_or_else(|| anyhow!("lsp action `{}` requires `file`", action.as_str()))?;
-                let language_id = language_id(file);
-                let document = workspace.sync_document_from_disk(file, language_id).await?;
+                let document_language_id = language_id(file);
+                let document = workspace
+                    .sync_document_from_disk(file, document_language_id)
+                    .await?;
                 match action {
                     LspAction::Diagnostics => {
                         let snapshot = workspace
@@ -510,6 +469,98 @@ impl Tool for LspTool {
                             Some(document.version),
                             text,
                             json!({"files": summary, "edit_count": count, "applied": false}),
+                            max_chars,
+                            "fresh",
+                        ))
+                    }
+                    LspAction::RenameFile => {
+                        let new_name = params
+                            .new_name
+                            .as_deref()
+                            .filter(|name| !name.trim().is_empty())
+                            .ok_or_else(|| anyhow!("lsp rename_file requires `new_name`"))?;
+                        let destination = resolve_new_file(&root, new_name)?;
+                        let edit = workspace.will_rename_file(file, &destination).await?;
+                        let edit = if edit.is_null() { json!({}) } else { edit };
+                        if params.apply {
+                            workspace.close_document(file).await?;
+                            let applied = super::lsp_rename::apply_workspace_edit_and_file_rename(
+                                &edit,
+                                file,
+                                &destination,
+                                &root,
+                                &ctx,
+                                self.file_snapshots.clone(),
+                                params.intent.clone(),
+                            )
+                            .await;
+                            let applied = match applied {
+                                Ok(applied) => applied,
+                                Err(error) => {
+                                    let _ = workspace
+                                        .sync_document_from_disk(file, document_language_id)
+                                        .await;
+                                    return Err(error);
+                                }
+                            };
+                            let mut lifecycle_warnings = Vec::new();
+                            if let Err(error) = workspace.did_rename_file(file, &destination).await
+                            {
+                                lifecycle_warnings.push(format!("didRenameFiles failed: {error}"));
+                            }
+                            if let Err(error) = workspace
+                                .sync_document_from_disk(&destination, language_id(&destination))
+                                .await
+                            {
+                                lifecycle_warnings
+                                    .push(format!("reopening destination failed: {error}"));
+                            }
+                            let warning = if lifecycle_warnings.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" LSP lifecycle warning: {}", lifecycle_warnings.join("; "))
+                            };
+                            let mut output = ToolOutput::new(format!(
+                                "Renamed {} to {} and applied {} related edit(s).{}",
+                                file.strip_prefix(&root).unwrap_or(file).display(),
+                                destination
+                                    .strip_prefix(&root)
+                                    .unwrap_or(&destination)
+                                    .display(),
+                                applied.edit_count,
+                                warning
+                            ))
+                            .with_title("lsp rename_file")
+                            .with_metadata(applied.metadata);
+                            attach_post_edit_feedback(
+                                "anchored_edit",
+                                &mut output,
+                                &ctx,
+                                Arc::clone(&self.pool),
+                            )
+                            .await;
+                            return Ok(output);
+                        }
+                        let (text, summary, count) = render_workspace_edit(&edit, &root)?;
+                        let source = file.strip_prefix(&root).unwrap_or(file).display();
+                        let destination_display = destination
+                            .strip_prefix(&root)
+                            .unwrap_or(&destination)
+                            .display();
+                        Ok(shaped_output(
+                            action,
+                            &workspace,
+                            Some(document.version),
+                            format!(
+                                "File rename preview: {source} -> {destination_display}\n{text}"
+                            ),
+                            json!({
+                                "source": source.to_string(),
+                                "destination": destination_display.to_string(),
+                                "files": summary,
+                                "edit_count": count,
+                                "applied": false
+                            }),
                             max_chars,
                             "fresh",
                         ))

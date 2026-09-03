@@ -107,12 +107,7 @@ impl LspProcess {
             .client
             .request(
                 "initialize",
-                Some(json!({
-                    "processId": std::process::id(),
-                    "rootUri": root_uri.as_str(),
-                    "capabilities": {},
-                    "clientInfo": {"name": "jcode"}
-                })),
+                Some(initialize_params(root_uri.as_str())),
                 timeout,
             )
             .await?;
@@ -148,6 +143,31 @@ impl LspProcess {
             let _ = child.kill().await;
         }
     }
+}
+
+fn initialize_params(root_uri: &str) -> Value {
+    json!({
+        "processId": std::process::id(),
+        "rootUri": root_uri,
+        "workspaceFolders": [{"uri": root_uri, "name": "workspace"}],
+        "capabilities": {
+            "workspace": {
+                "applyEdit": false,
+                "configuration": true,
+                "workspaceFolders": true,
+                "workspaceEdit": {
+                    "documentChanges": true,
+                    "resourceOperations": ["create", "rename", "delete"]
+                },
+                "fileOperations": {
+                    "dynamicRegistration": true,
+                    "didRename": true,
+                    "willRename": true
+                }
+            }
+        },
+        "clientInfo": {"name": "jcode"}
+    })
 }
 
 fn controlled_environment(path_env: Option<&OsStr>) -> Vec<(OsString, OsString)> {
@@ -269,5 +289,20 @@ mod tests {
                 .all(|(key, _)| key != "ANTHROPIC_API_KEY")
         );
         assert!(environment.iter().all(|(key, _)| key != "OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn initialization_advertises_explicit_file_rename_support_without_implicit_edits() {
+        let params = initialize_params("file:///workspace/");
+        assert_eq!(params["capabilities"]["workspace"]["applyEdit"], false);
+        assert_eq!(
+            params["capabilities"]["workspace"]["fileOperations"]["willRename"],
+            true
+        );
+        assert_eq!(
+            params["capabilities"]["workspace"]["fileOperations"]["didRename"],
+            true
+        );
+        assert_eq!(params["workspaceFolders"][0]["uri"], "file:///workspace/");
     }
 }

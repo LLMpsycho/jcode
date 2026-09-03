@@ -227,6 +227,39 @@ impl LspWorkspace {
             .await
     }
 
+    pub async fn will_rename_file(&self, old_path: &Path, new_path: &Path) -> Result<Value> {
+        let old_uri = file_uri(&old_path.canonicalize()?)?;
+        let new_uri = file_uri(new_path)?;
+        match self
+            .request_with_content_modified_retry(
+                "workspace/willRenameFiles",
+                serde_json::json!({"files": [{"oldUri": old_uri, "newUri": new_uri}]}),
+            )
+            .await
+        {
+            Err(LspError::Response { code: -32601, .. }) => Ok(Value::Null),
+            result => result,
+        }
+    }
+
+    pub async fn close_document(&self, path: &Path) -> Result<()> {
+        self.documents.close(self.process.client(), path).await
+    }
+
+    pub async fn did_rename_file(&self, old_path: &Path, new_path: &Path) -> Result<()> {
+        let old_uri = file_uri(old_path)?;
+        let new_uri = file_uri(new_path)?;
+        self.process
+            .client()
+            .notify(
+                "workspace/didRenameFiles",
+                Some(serde_json::json!({
+                    "files": [{"oldUri": old_uri, "newUri": new_uri}]
+                })),
+            )
+            .await
+    }
+
     pub async fn incoming_calls(&self, path: &Path, position: Position) -> Result<Value> {
         self.call_hierarchy("callHierarchy/incomingCalls", path, position)
             .await

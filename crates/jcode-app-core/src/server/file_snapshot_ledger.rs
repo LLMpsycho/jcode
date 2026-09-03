@@ -158,6 +158,15 @@ pub(crate) struct SnapshotWrite {
     pub(crate) mtime_ns: Option<u128>,
 }
 
+#[derive(Clone)]
+pub(crate) struct SnapshotMove {
+    pub(crate) source_relative_path: String,
+    pub(crate) expected_revision: FileRevision,
+    pub(crate) destination_relative_path: String,
+    pub(crate) contents: Vec<u8>,
+    pub(crate) mtime_ns: Option<u128>,
+}
+
 #[derive(Default)]
 struct LedgerState {
     snapshots: HashMap<SnapshotKey, SnapshotEntry>,
@@ -353,6 +362,96 @@ impl FileSnapshotLedger {
                 )
             })
             .collect()
+    }
+
+    /// Atomically replace one path identity with another while recording any
+    /// related text edits. The source revision and every edited file are
+    /// checked before ledger state changes.
+    pub(crate) async fn record_move_with_writes(
+        &self,
+        session_id: &str,
+        workspace_root: &Path,
+        movement: SnapshotMove,
+        writes: Vec<SnapshotWrite>,
+    ) -> Result<(SnapshotRecord, Vec<SnapshotRecord>), FileSnapshotLedgerError> {
+        let source_key = snapshot_key(workspace_root, &movement.source_relative_path)?;
+        let destination = prepare_observation(
+            workspace_root,
+            &movement.destination_relative_path,
+            &movement.contents,
+            movement.mtime_ns,
+        )?;
+        if source_key == destination.key {
+            return Err(EditError::DuplicateObservedFile {
+                path: movement.destination_relative_path,
+            }
+            .into());
+        }
+
+        let mut prepared_writes = Vec::with_capacity(writes.len());
+        let mut seen = HashSet::from([source_key.clone(), destination.key.clone()]);
+        for write in writes {
+            let observation = prepare_observation(
+                workspace_root,
+                &write.relative_path,
+                &write.contents,
+                write.mtime_ns,
+            )?;
+            if !seen.insert(observation.key.clone()) {
+                return Err(EditError::DuplicateObservedFile {
+                    path: write.relative_path,
+                }
+                .into());
+            }
+            prepared_writes.push((observation, write.expected_revision));
+        }
+
+        let mut state = self.state.write().await;
+        require_current_revision(&state, &source_key, &movement.expected_revision)?;
+        for (observation, expected) in &prepared_writes {
+            require_current_revision(&state, &observation.key, expected)?;
+            expected.revision.checked_add(1).ok_or_else(|| {
+                FileSnapshotLedgerError::RevisionOverflow {
+                    path: observation.key.relative_path.clone(),
+                }
+            })?;
+        }
+        if let Some(current) = state.snapshots.get(&destination.key) {
+            current
+                .record
+                .revision
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| FileSnapshotLedgerError::RevisionOverflow {
+                    path: destination.key.relative_path.clone(),
+                })?;
+        }
+
+        state.snapshots.remove(&source_key);
+        state.reads_by_session.retain(|_, reads| {
+            reads.remove(&source_key);
+            !reads.is_empty()
+        });
+        let destination_record = upsert_snapshot(
+            &mut state,
+            destination,
+            SnapshotSource::Write,
+            Some(session_id.to_owned()),
+            true,
+        )?;
+        let write_records = prepared_writes
+            .into_iter()
+            .map(|(observation, _)| {
+                upsert_snapshot(
+                    &mut state,
+                    observation,
+                    SnapshotSource::Write,
+                    Some(session_id.to_owned()),
+                    true,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((destination_record, write_records))
     }
 
     pub(crate) async fn snapshot(
@@ -597,6 +696,30 @@ fn upsert_snapshot(
 
 fn same_strong_revision(left: &FileRevision, right: &FileRevision) -> bool {
     left.revision == right.revision && left.content_digest == right.content_digest
+}
+
+fn require_current_revision(
+    state: &LedgerState,
+    key: &SnapshotKey,
+    expected: &FileRevision,
+) -> Result<(), FileSnapshotLedgerError> {
+    let Some(current) = state.snapshots.get(key) else {
+        return Err(EditError::StaleRevision {
+            path: key.relative_path.clone(),
+            expected: expected.revision,
+            actual: 0,
+        }
+        .into());
+    };
+    if !same_strong_revision(expected, &current.record.revision) {
+        return Err(EditError::StaleRevision {
+            path: key.relative_path.clone(),
+            expected: expected.revision,
+            actual: current.record.revision.revision,
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn normalized_line_count(text: &str) -> u64 {
@@ -899,6 +1022,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_move_and_related_writes_update_the_ledger_atomically() {
+        let workspace = tempfile::tempdir().unwrap();
+        let ledger = FileSnapshotLedger::new();
+        let source = ledger
+            .record_read(
+                "reader",
+                workspace.path(),
+                "src/value.ts",
+                b"export const value = 1;\n",
+                None,
+                coverage(Vec::new(), true),
+            )
+            .await
+            .unwrap();
+        let importer = ledger
+            .observe_text(
+                workspace.path(),
+                "src/main.ts",
+                b"import { value } from './value';\n",
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut stale = source.revision.clone();
+        stale.revision += 1;
+        assert!(
+            ledger
+                .record_move_with_writes(
+                    "session",
+                    workspace.path(),
+                    SnapshotMove {
+                        source_relative_path: "src/value.ts".to_owned(),
+                        expected_revision: stale,
+                        destination_relative_path: "src/renamed.ts".to_owned(),
+                        contents: b"export const value = 1;\n".to_vec(),
+                        mtime_ns: None,
+                    },
+                    vec![],
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            ledger
+                .snapshot(workspace.path(), "src/value.ts")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            ledger
+                .snapshot(workspace.path(), "src/renamed.ts")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let (destination, writes) = ledger
+            .record_move_with_writes(
+                "session",
+                workspace.path(),
+                SnapshotMove {
+                    source_relative_path: "src/value.ts".to_owned(),
+                    expected_revision: source.revision,
+                    destination_relative_path: "src/renamed.ts".to_owned(),
+                    contents: b"export const value = 1;\n".to_vec(),
+                    mtime_ns: None,
+                },
+                vec![SnapshotWrite {
+                    relative_path: "src/main.ts".to_owned(),
+                    expected_revision: importer.revision,
+                    contents: b"import { value } from './renamed';\n".to_vec(),
+                    mtime_ns: None,
+                }],
+            )
+            .await
+            .unwrap();
+        assert_eq!(destination.key.relative_path, "src/renamed.ts");
+        assert_eq!(destination.writer_session_id.as_deref(), Some("session"));
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].revision.revision, 2);
+        assert!(
+            ledger
+                .snapshot(workspace.path(), "src/value.ts")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn session_workspace_and_expiry_cleanup_are_scoped() {
         let workspace_a = tempfile::tempdir().unwrap();
         let workspace_b = tempfile::tempdir().unwrap();
@@ -974,3 +1189,7 @@ mod tests {
         panic!("deterministic collision search exhausted")
     }
 }
+
+#[cfg(test)]
+#[path = "file_snapshot_ledger_move_tests.rs"]
+mod move_read_tests;

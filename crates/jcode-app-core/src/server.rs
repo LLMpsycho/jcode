@@ -637,7 +637,8 @@ pub(crate) use self::file_touch_service::FileTouchService;
 
 mod file_snapshot_ledger;
 pub(crate) use self::file_snapshot_ledger::{
-    FileSnapshotLedger, ReadCoverage, SessionReadFreshness, SnapshotRecord, SnapshotWrite,
+    FileSnapshotLedger, ReadCoverage, SessionReadFreshness, SnapshotMove, SnapshotRecord,
+    SnapshotWrite,
 };
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use super::*;
 use crate::message::{Message, ToolDefinition};
 use crate::provider::{EventStream, Provider};
+use jcode_lsp::Position;
 
 struct MockProvider;
 
@@ -234,6 +235,7 @@ fn expanded_read_actions_are_advertised_and_shaped_without_raw_payloads() {
         "incoming_calls",
         "outgoing_calls",
         "code_actions",
+        "rename_file",
     ] {
         assert!(
             actions.iter().any(|value| value == action),
@@ -503,6 +505,129 @@ async fn read_then_lsp_apply_performs_atomic_cross_file_rename() {
             .unwrap()
             .len(),
         2
+    );
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
+async fn read_then_lsp_rename_file_updates_typescript_imports() {
+    let current = std::env::current_dir().unwrap();
+    if discover_executable(
+        "typescript-language-server",
+        std::env::var_os("PATH").as_deref(),
+        &current,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let typescript_root = std::env::var_os("JCODE_TEST_TYPESCRIPT_ROOT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            discover_executable("tsc", std::env::var_os("PATH").as_deref(), &current)
+                .ok()
+                .and_then(|path| path.canonicalize().ok())
+                .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
+        });
+    let Some(typescript_root) =
+        typescript_root.filter(|root| root.join("lib/tsserver.js").is_file())
+    else {
+        return;
+    };
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("src")).unwrap();
+    std::fs::create_dir(project.path().join("node_modules")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &typescript_root,
+        project.path().join("node_modules/typescript"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    std::fs::write(
+        project.path().join("package.json"),
+        r#"{"name":"tool-typescript-rename-fixture","private":true}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true},"include":["src"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/value.ts"),
+        "export const value = 1;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/main.ts"),
+        "import { value } from './value';\nconsole.log(value);\n",
+    )
+    .unwrap();
+
+    let pool = Arc::new(LspServicePool::new());
+    let ledger = crate::server::FileSnapshotLedger::new();
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry =
+        super::super::Registry::new_with_services(provider, ledger, Arc::clone(&pool)).await;
+    let context = |call: &str| ToolContext {
+        session_id: "lsp-file-rename-test".to_owned(),
+        message_id: "message".to_owned(),
+        tool_call_id: call.to_owned(),
+        working_dir: Some(project.path().to_owned()),
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: super::super::ToolExecutionMode::Direct,
+    };
+    for file in ["src/value.ts", "src/main.ts"] {
+        registry
+            .execute(
+                "read",
+                json!({"file_path": file, "intent": "Read before TypeScript file rename"}),
+                context(&format!("read-{file}")),
+            )
+            .await
+            .unwrap();
+    }
+
+    let output = registry
+        .execute(
+            "lsp",
+            json!({
+                "action": "rename_file",
+                "file": "src/value.ts",
+                "new_name": "src/renamed.ts",
+                "apply": true,
+                "intent": "Rename a TypeScript module and update imports"
+            }),
+            context("rename-file"),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        output
+            .output
+            .contains("Renamed src/value.ts to src/renamed.ts"),
+        "{}",
+        output.output
+    );
+    assert!(!project.path().join("src/value.ts").exists());
+    assert!(project.path().join("src/renamed.ts").exists());
+    assert!(
+        std::fs::read_to_string(project.path().join("src/main.ts"))
+            .unwrap()
+            .contains("./renamed")
+    );
+    assert_eq!(
+        output.metadata.as_ref().unwrap()["file_rename_applied"],
+        true
+    );
+    assert_eq!(
+        output.metadata.as_ref().unwrap()["destination"]["path"],
+        "src/renamed.ts"
     );
     pool.shutdown_all(Duration::from_secs(5)).await;
 }
