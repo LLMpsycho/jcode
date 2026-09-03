@@ -336,6 +336,15 @@ disable_base_tools = false
 mcp_tools = "auto"
 mcp_tools_token_threshold = 8000
 
+# Built-in mutation tools consult the shared file snapshot ledger before
+# overwriting an existing file. "warn" preserves legacy behavior while making
+# stale or unread writes visible. Use "block" to require a current read.
+[editing.read_guard]
+mode = "warn" # off | warn | block
+require_same_revision = true
+require_covered_ranges = true
+allow_full_file_write = false
+
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.
 # standard emits only spec-compatible ACP messages.

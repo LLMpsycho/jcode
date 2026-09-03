@@ -16,6 +16,9 @@ mod discover;
 mod discover_secrets;
 mod edit;
 mod feedback;
+mod file_write_guard;
+#[cfg(test)]
+mod file_write_guard_tests;
 mod gmail;
 mod goal;
 pub mod inflight;
@@ -372,7 +375,32 @@ impl Registry {
             Self::insert_tool(
                 &mut tools_map,
                 "anchored_edit",
-                anchored_edit::AnchoredEditTool::new(file_snapshots),
+                anchored_edit::AnchoredEditTool::new(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "write",
+                write::WriteTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "edit",
+                edit::EditTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "multiedit",
+                multiedit::MultiEditTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "patch",
+                patch::PatchTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "apply_patch",
+                apply_patch::ApplyPatchTool::with_file_snapshots(file_snapshots),
             );
         }
         let base_ms = base_start.elapsed().as_millis();

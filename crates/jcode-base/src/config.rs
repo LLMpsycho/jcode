@@ -489,6 +489,9 @@ pub struct Config {
     /// Built-in tool exposure configuration
     pub tools: ToolConfig,
 
+    /// File editing safety configuration.
+    pub editing: EditingConfig,
+
     /// Agent Client Protocol adapter configuration
     pub acp: AcpConfig,
 
@@ -548,6 +551,47 @@ pub struct Config {
 
     /// Global "launch a new jcode" hotkeys (macOS). Baked once by auto-import.
     pub launch_hotkeys: LaunchHotkeysConfig,
+}
+
+/// Controls read-before-overwrite safety for built-in file mutation tools.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EditingConfig {
+    pub read_guard: ReadGuardConfig,
+}
+
+/// Policy applied before an existing file is overwritten.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadGuardConfig {
+    /// Rollout mode. Warn preserves legacy behavior while surfacing unsafe writes.
+    pub mode: ReadGuardMode,
+    /// Require the session's latest read to match the live ledger revision.
+    pub require_same_revision: bool,
+    /// Require prior read coverage for affected ranges when the tool knows them.
+    pub require_covered_ranges: bool,
+    /// Permit whole-file overwrite tools when the session read the full file.
+    pub allow_full_file_write: bool,
+}
+
+impl Default for ReadGuardConfig {
+    fn default() -> Self {
+        Self {
+            mode: ReadGuardMode::Warn,
+            require_same_revision: true,
+            require_covered_ranges: true,
+            allow_full_file_write: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadGuardMode {
+    Off,
+    #[default]
+    Warn,
+    Block,
 }
 
 /// Controls who owns autonomous wake execution.

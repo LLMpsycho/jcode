@@ -121,7 +121,7 @@ async fn test_apply_update_simple() {
         new_lines: vec!["foo".to_string(), "baz".to_string()],
         is_end_of_file: false,
     }];
-    let (old_result, new_result) = apply_update_chunks(f.path(), &chunks).await.unwrap();
+    let (old_result, new_result, _) = apply_update_chunks(f.path(), &chunks).await.unwrap();
     assert_eq!(old_result, "foo\nbar\n");
     assert_eq!(new_result, "foo\nbaz\n");
 }
@@ -143,7 +143,7 @@ async fn test_apply_update_multiple_chunks() {
             is_end_of_file: false,
         },
     ];
-    let (old_result, new_result) = apply_update_chunks(f.path(), &chunks).await.unwrap();
+    let (old_result, new_result, _) = apply_update_chunks(f.path(), &chunks).await.unwrap();
     assert_eq!(old_result, "foo\nbar\nbaz\nqux\n");
     assert_eq!(new_result, "foo\nBAR\nbaz\nQUX\n");
 }
@@ -159,7 +159,7 @@ async fn test_apply_update_with_context_header() {
         new_lines: vec!["        return 42".to_string()],
         is_end_of_file: false,
     }];
-    let (_old_result, new_result) = apply_update_chunks(f.path(), &chunks).await.unwrap();
+    let (_old_result, new_result, _) = apply_update_chunks(f.path(), &chunks).await.unwrap();
     assert_eq!(
         new_result,
         "class Foo:\n    def bar(self):\n        pass\n    def baz(self):\n        return 42\n"
@@ -175,7 +175,7 @@ async fn test_apply_update_append_at_eof() {
         new_lines: vec!["quux".to_string()],
         is_end_of_file: false,
     }];
-    let (_old_result, new_result) = apply_update_chunks(f.path(), &chunks).await.unwrap();
+    let (_old_result, new_result, _) = apply_update_chunks(f.path(), &chunks).await.unwrap();
     assert_eq!(new_result, "foo\nbar\nbaz\nquux\n");
 }
 
@@ -268,7 +268,7 @@ async fn apply_patch_refuses_to_delete_a_protected_path() {
         "*** Begin Patch\n*** Delete File: {}\n*** End Patch",
         key.display()
     );
-    let result = ApplyPatchTool
+    let result = ApplyPatchTool::new()
         .execute(
             serde_json::json!({ "patch_text": patch }),
             ToolContext {
@@ -310,7 +310,7 @@ async fn apply_patch_still_deletes_ordinary_files() {
         "*** Begin Patch\n*** Delete File: {}\n*** End Patch",
         target.display()
     );
-    ApplyPatchTool
+    ApplyPatchTool::new()
         .execute(
             serde_json::json!({ "patch_text": patch }),
             ToolContext {
