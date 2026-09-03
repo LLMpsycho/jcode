@@ -447,6 +447,29 @@ impl ManagerCore {
         entries: Vec<Arc<SessionEntry>>,
         reason: DebugSessionEndReason,
     ) -> DebugCleanupReport {
+        let session_ids = entries.iter().map(|entry| entry.id).collect::<Vec<_>>();
+        let core = Arc::clone(self);
+        match tokio::spawn(async move { core.finalize_many_owned(entries, reason).await }).await {
+            Ok(report) => report,
+            Err(error) => DebugCleanupReport {
+                cleaned: 0,
+                already_ended: 0,
+                failures: session_ids
+                    .into_iter()
+                    .map(|session_id| DebugCleanupFailure {
+                        session_id,
+                        message: format!("session cleanup task failed: {error}"),
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    async fn finalize_many_owned(
+        self: &Arc<Self>,
+        entries: Vec<Arc<SessionEntry>>,
+        reason: DebugSessionEndReason,
+    ) -> DebugCleanupReport {
         let mut report = DebugCleanupReport::default();
         for entry in entries {
             if entry.snapshot().state.is_terminal() {
@@ -454,7 +477,7 @@ impl ManagerCore {
                 continue;
             }
             match self
-                .finalize(entry.clone(), reason.clone(), false, true)
+                .finalize_owned(entry.clone(), reason.clone(), false, true)
                 .await
             {
                 Ok(()) => report.cleaned += 1,
@@ -477,7 +500,29 @@ impl ManagerCore {
         retain: bool,
         abort_supervisor: bool,
     ) -> Result<()> {
-        self.release_active(&entry);
+        let session_id = entry.id;
+        let core = Arc::clone(self);
+        match tokio::spawn(async move {
+            core.finalize_owned(entry, reason, retain, abort_supervisor)
+                .await
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => Err(DapError::SessionCleanupFailed {
+                session_id,
+                message: format!("session cleanup task failed: {error}"),
+            }),
+        }
+    }
+
+    async fn finalize_owned(
+        self: &Arc<Self>,
+        entry: Arc<SessionEntry>,
+        reason: DebugSessionEndReason,
+        retain: bool,
+        abort_supervisor: bool,
+    ) -> Result<()> {
         let _finalization = entry.finalization.lock().await;
         let (transport, supervisor) = {
             let mut data = lock(&entry.data);
@@ -513,6 +558,7 @@ impl ManagerCore {
             });
             notify(&entry, &mut data);
         }
+        self.release_active(&entry);
         if retain {
             self.record_terminal(&entry);
         }

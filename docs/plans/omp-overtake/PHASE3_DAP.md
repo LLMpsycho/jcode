@@ -19,10 +19,10 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Framing compacts consumed bytes once per input batch rather than once per frame, avoiding quadratic behavior for batches containing many small frames.
 - Reaped process identities are cleared so later object destruction cannot signal a reused process-group id. Unix termination tolerates the normal already-exited `ESRCH` race.
 - A public `DebugSessionManager` exposes immutable owner-authorized snapshots, lists, bounded output pages, termination, owner cleanup, and shutdown without exposing raw clients, processes, or mutable session entries.
-- Opaque process-unique session IDs, canonical workspace keys, one active root per trusted owner, a global active cap, owner reverse indexes, and bounded terminal-history retention are enforced under one short-held registry mutex.
+- Opaque process-unique session IDs, canonical workspace keys, one active root per trusted owner, a global active cap, owner reverse indexes, and bounded terminal-history retention are enforced under one short-held registry mutex. Explicit termination retains the owner's active slot until the session publishes `Ended`.
 - Session state is validated across reserved, initialization, configuration, running, stopped, terminating, and ended states. Illegal transitions return structured errors, adapter events that race later handshake markers are idempotent, and stale events cannot reactivate terminal sessions.
 - Cancellation-safe reservations synchronously release every index and close attached transports when abandoned. A start barrier prevents already-closed attachment from racing supervision before its task handle is stored.
-- Per-entry state locks and an async finalization lock keep registry locks out of I/O. Finalization releases active ownership, closes the client, and uses the owned process abstraction for graceful then forced process-group cleanup.
+- Per-entry state locks and an async finalization lock keep registry locks out of I/O. Detached owned cleanup tasks make finalization survive caller cancellation, release active ownership, close the client, and use the owned process abstraction for graceful then forced process-group cleanup.
 - Supervisors consume output and lifecycle events, observe transport closure and adapter exit, fail closed on receiver lag or non-output source loss, and keep request timeout recoverable.
 - Output retention is bounded by event count and UTF-8 bytes, keeps the newest UTF-8-safe tail, advances monotonic cursors through eviction, and reports ring eviction separately from oversized source loss.
 - Supervisor tasks hold weak manager references, so dropping the final manager synchronously closes transports and leaves process Drop only as the forced-cleanup backstop.
@@ -52,7 +52,7 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Capacity, one-active-per-owner, cancellation release, replacement, terminal pruning, owner cleanup, and shutdown index repair are deterministic.
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
-- Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
+- Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
 
 Focused validation commands:
 
@@ -66,7 +66,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 71 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 73 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 

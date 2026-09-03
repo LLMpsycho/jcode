@@ -6,7 +6,8 @@ use tokio::time::{sleep, timeout};
 use super::*;
 use crate::testing::FakeAdapter;
 use crate::{
-    Capabilities, DapError, DebugSessionStateKind, Event, Message, StoppedState, encode_message,
+    AdapterCommand, AdapterProcess, Capabilities, DapError, DebugSessionStateKind, Event, Message,
+    StoppedState, encode_message,
 };
 
 fn manager() -> DebugSessionManager {
@@ -443,6 +444,123 @@ async fn concurrent_transport_failure_and_terminate_finalize_once() {
     let snapshot = manager.snapshot("a", id).unwrap();
     assert!(snapshot.state.is_terminal());
     assert!(!matches!(snapshot.state, DebugSessionState::Terminating));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cancelling_cleanup_callers_does_not_strand_sessions() {
+    async fn attach_stubborn_process(manager: &DebugSessionManager, owner: &str) -> DebugSessionId {
+        let process = AdapterProcess::spawn(
+            &AdapterCommand::new("/bin/sh", "/")
+                .with_arg("-c")
+                .with_arg("trap '' TERM; printf ready >&2; while :; do sleep 1; done"),
+        )
+        .await
+        .unwrap();
+        timeout(Duration::from_secs(1), async {
+            while process.recent_stderr() != b"ready" {
+                sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let mut reservation = manager.reserve(spec(owner)).unwrap();
+        reservation.attach_process(process).unwrap();
+        reservation.commit().unwrap()
+    }
+
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        termination_grace: Duration::from_millis(100),
+        process_poll_interval: Duration::from_millis(5),
+        ..Default::default()
+    })
+    .unwrap();
+    let id = attach_stubborn_process(&manager, "terminate").await;
+    let terminating = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.terminate("terminate", id).await })
+    };
+    wait_for(&manager, "terminate", id, |state| {
+        matches!(state, DebugSessionState::Terminating)
+    })
+    .await;
+    terminating.abort();
+    assert!(terminating.await.unwrap_err().is_cancelled());
+    wait_for(&manager, "terminate", id, DebugSessionState::is_terminal).await;
+
+    let id = attach_stubborn_process(&manager, "cleanup").await;
+    let entry = manager.core.entry(id).unwrap();
+    let cleanup = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .cleanup_owner("cleanup", OwnerCleanupCause::Disconnected)
+                .await
+        })
+    };
+    timeout(Duration::from_secs(2), async {
+        while !matches!(entry.snapshot().state, DebugSessionState::Terminating) {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    cleanup.abort();
+    assert!(cleanup.await.unwrap_err().is_cancelled());
+    timeout(Duration::from_secs(2), async {
+        while !entry.snapshot().state.is_terminal() {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(manager.reserve(spec("cleanup")).is_ok());
+
+    let id = attach_stubborn_process(&manager, "shutdown").await;
+    let entry = manager.core.entry(id).unwrap();
+    let shutdown = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.shutdown_all().await })
+    };
+    timeout(Duration::from_secs(2), async {
+        while !matches!(entry.snapshot().state, DebugSessionState::Terminating) {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    shutdown.abort();
+    assert!(shutdown.await.unwrap_err().is_cancelled());
+    timeout(Duration::from_secs(2), async {
+        while !entry.snapshot().state.is_terminal() {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(manager.sessions("shutdown").is_empty());
+}
+
+#[tokio::test]
+async fn terminating_keeps_the_owner_slot_until_ended() {
+    let manager = manager();
+    let (id, _adapter) = attached(&manager, "a");
+    let entry = manager.core.entry(id).unwrap();
+    let finalization = entry.finalization.lock().await;
+    let terminating = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.terminate("a", id).await })
+    };
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        manager.reserve(spec("a")),
+        Err(DapError::OwnerAlreadyHasActiveSession { .. })
+    ));
+    drop(finalization);
+    terminating.await.unwrap().unwrap();
+    assert!(manager.reserve(spec("a")).is_ok());
 }
 
 #[tokio::test]
