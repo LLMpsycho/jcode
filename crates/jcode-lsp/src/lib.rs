@@ -14,7 +14,7 @@ mod workspace;
 
 pub use client::LspClient;
 pub use config::config_digest;
-pub use diagnostics::{DiagnosticSnapshot, DiagnosticsCache};
+pub use diagnostics::{DiagnosticSnapshot, DiagnosticsCache, diagnostic_delta};
 pub use discovery::discover_executable;
 pub use document_sync::{DocumentState, DocumentSync};
 pub use error::{LspError, Result};

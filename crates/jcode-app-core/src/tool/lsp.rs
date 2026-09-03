@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use jcode_lsp::{
     Diagnostic, DiagnosticSeverity, LspConfig, LspError, LspServicePool, LspWorkspace, Position,
-    discover_executable,
+    PostEditDiagnosticsMode, SemanticVerification, SemanticVerificationStatus, discover_executable,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -204,11 +204,11 @@ impl Tool for LspTool {
                 match action {
                     LspAction::Diagnostics => {
                         let snapshot = workspace
-                            .wait_for_diagnostics(
+                            .current_diagnostics(
                                 &document,
                                 Duration::from_millis(config.post_edit_wait_ms),
                             )
-                            .await
+                            .await?
                             .or(workspace.diagnostics(file).await?);
                         let freshness = if snapshot
                             .as_ref()
@@ -562,6 +562,131 @@ fn display_uri(uri: &str, root: &Path) -> String {
         .unwrap_or_else(|| uri.to_owned())
 }
 
+pub(crate) async fn attach_post_edit_feedback(
+    tool_name: &str,
+    output: &mut ToolOutput,
+    ctx: &ToolContext,
+    pool: Arc<LspServicePool>,
+) {
+    if !is_post_edit_tool(tool_name) {
+        return;
+    }
+    let config = crate::config::config().lsp.clone();
+    if !config.enabled || config.post_edit_diagnostics == PostEditDiagnosticsMode::Off {
+        return;
+    }
+    let Some(root) = ctx
+        .working_dir
+        .as_deref()
+        .and_then(|root| root.canonicalize().ok())
+    else {
+        return;
+    };
+    let paths = output
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("files"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| file.get("path").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return;
+    }
+
+    let mut files = Vec::new();
+    let mut issue_lines = Vec::new();
+    for relative_path in paths {
+        let result = verify_written_file(&pool, &config, &root, &relative_path).await;
+        match result {
+            Ok(verification) => {
+                if verification.status == SemanticVerificationStatus::IssuesFound {
+                    let path = root.join(&relative_path);
+                    issue_lines.extend(
+                        render_diagnostics(&verification.diagnostics, &root, &path)
+                            .lines()
+                            .map(|line| format!("+ {line}")),
+                    );
+                }
+                files.push(json!({
+                    "path": relative_path,
+                    "status": verification.status,
+                    "document_version": verification.document_version,
+                    "diagnostics": verification.diagnostics
+                }));
+            }
+            Err(error) => files.push(json!({
+                "path": relative_path,
+                "status": SemanticVerificationStatus::Unavailable,
+                "document_version": null,
+                "diagnostics": [],
+                "reason": error.to_string()
+            })),
+        }
+    }
+
+    if !issue_lines.is_empty() {
+        output.output.push_str(&format!(
+            "\n\nDiagnostics delta after edit:\n{}",
+            issue_lines.join("\n")
+        ));
+    }
+    let aggregate = if files.iter().any(|file| file["status"] == "issues_found") {
+        SemanticVerificationStatus::IssuesFound
+    } else if files.iter().any(|file| file["status"] == "stale") {
+        SemanticVerificationStatus::Stale
+    } else if files.iter().any(|file| file["status"] == "unavailable") {
+        SemanticVerificationStatus::Unavailable
+    } else {
+        SemanticVerificationStatus::Clean
+    };
+    let metadata = output.metadata.get_or_insert_with(|| json!({}));
+    if let Some(metadata) = metadata.as_object_mut() {
+        metadata.insert(
+            "semantic_verification".to_owned(),
+            json!({"status": aggregate, "files": files}),
+        );
+    }
+}
+
+fn is_post_edit_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "write" | "edit" | "multiedit" | "patch" | "apply_patch" | "anchored_edit"
+    )
+}
+
+async fn verify_written_file(
+    pool: &LspServicePool,
+    config: &LspConfig,
+    root: &Path,
+    relative_path: &str,
+) -> std::result::Result<SemanticVerification, LspError> {
+    let path = root
+        .join(relative_path)
+        .canonicalize()
+        .map_err(LspError::from)?;
+    if !path.starts_with(root) {
+        return Err(LspError::InvalidWorkspaceUri {
+            path: path.display().to_string(),
+        });
+    }
+    let server_id = select_server(config, Some(&path))
+        .map_err(|error| LspError::InvalidConfig(error.to_string()))?;
+    let workspace = pool
+        .get_or_start(root, root.display().to_string(), &server_id, config)
+        .await?;
+    workspace
+        .verify_disk_change(
+            &path,
+            language_id(&path),
+            Duration::from_millis(config.post_edit_wait_ms),
+        )
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +760,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_builtin_mutation_path_receives_post_edit_feedback() {
+        for tool in [
+            "write",
+            "edit",
+            "multiedit",
+            "patch",
+            "apply_patch",
+            "anchored_edit",
+        ] {
+            assert!(is_post_edit_tool(tool), "missing post-edit path: {tool}");
+        }
+        for tool in ["read", "bash", "lsp"] {
+            assert!(!is_post_edit_tool(tool));
+        }
+    }
+
     #[tokio::test]
     async fn service_registry_exposes_lsp_without_starting_a_process() {
         let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -705,6 +847,91 @@ mod tests {
             .unwrap();
         assert!(output.output.contains("src/lib.rs:1:"), "{}", output.output);
         assert_eq!(output.metadata.as_ref().unwrap()["freshness"], "fresh");
+        pool.shutdown_all(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn write_returns_introduced_rust_error_on_the_same_tool_result() {
+        let current = std::env::current_dir().unwrap();
+        if discover_executable(
+            "rust-analyzer",
+            std::env::var_os("PATH").as_deref(),
+            &current,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("src")).unwrap();
+        std::fs::write(
+            project.path().join("Cargo.toml"),
+            "[package]\nname = \"write-lsp-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.path().join("src/lib.rs"),
+            "pub fn value() -> u32 { 1 }\n",
+        )
+        .unwrap();
+
+        let pool = Arc::new(LspServicePool::new());
+        let config = LspConfig::default();
+        let workspace = pool
+            .get_or_start(
+                project.path(),
+                project.path().canonicalize().unwrap().display().to_string(),
+                "rust-analyzer",
+                &config,
+            )
+            .await
+            .unwrap();
+        let opened = workspace
+            .sync_document_from_disk(&project.path().join("src/lib.rs"), "rust")
+            .await
+            .unwrap();
+        workspace
+            .current_diagnostics(&opened, Duration::from_secs(2))
+            .await
+            .unwrap();
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let registry = super::super::Registry::new_with_services(
+            provider,
+            crate::server::FileSnapshotLedger::new(),
+            Arc::clone(&pool),
+        )
+        .await;
+        let output = registry
+            .execute(
+                "write",
+                json!({
+                    "file_path": "src/lib.rs",
+                    "content": "pub fn value() -> u32 { \"wrong\" }\n",
+                    "intent": "Introduce a deterministic type error"
+                }),
+                ToolContext {
+                    session_id: "lsp-write-test".to_owned(),
+                    message_id: "message".to_owned(),
+                    tool_call_id: "write-call".to_owned(),
+                    working_dir: Some(project.path().to_owned()),
+                    stdin_request_tx: None,
+                    graceful_shutdown_signal: None,
+                    execution_mode: super::super::ToolExecutionMode::Direct,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.output.contains("Diagnostics delta after edit"),
+            "{}\nmetadata: {:?}",
+            output.output,
+            output.metadata
+        );
+        assert_eq!(
+            output.metadata.as_ref().unwrap()["semantic_verification"]["status"],
+            "issues_found"
+        );
         pool.shutdown_all(Duration::from_secs(5)).await;
     }
 }

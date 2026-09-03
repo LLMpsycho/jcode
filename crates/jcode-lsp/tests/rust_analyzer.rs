@@ -158,8 +158,9 @@ async fn rust_definition_and_introduced_error_are_observable() {
         .await
         .unwrap();
     let diagnostics = workspace
-        .wait_for_diagnostics(&document, Duration::from_secs(10))
-        .await;
+        .current_diagnostics(&document, Duration::from_secs(10))
+        .await
+        .unwrap();
     let diagnostics = match diagnostics {
         Some(diagnostics) => diagnostics,
         None => {

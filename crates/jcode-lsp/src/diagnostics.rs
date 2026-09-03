@@ -13,6 +13,54 @@ pub struct DiagnosticSnapshot {
     pub items: Vec<Diagnostic>,
 }
 
+pub fn diagnostic_delta(
+    before: Option<&DiagnosticSnapshot>,
+    after: &DiagnosticSnapshot,
+) -> Vec<Diagnostic> {
+    let before = before
+        .map(|snapshot| {
+            snapshot
+                .items
+                .iter()
+                .map(|diagnostic| (diagnostic_identity(diagnostic), severity_rank(diagnostic)))
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+    let mut delta = after
+        .items
+        .iter()
+        .filter(|diagnostic| {
+            let identity = diagnostic_identity(diagnostic);
+            before
+                .get(&identity)
+                .is_none_or(|previous| severity_rank(diagnostic) < *previous)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    delta.sort_by_key(|diagnostic| {
+        (
+            severity_rank(diagnostic),
+            diagnostic.range.start.line,
+            diagnostic.range.start.character,
+        )
+    });
+    delta
+}
+
+fn diagnostic_identity(diagnostic: &Diagnostic) -> String {
+    serde_json::to_string(&(
+        diagnostic.range,
+        &diagnostic.code,
+        &diagnostic.source,
+        &diagnostic.message,
+    ))
+    .unwrap_or_else(|_| diagnostic.message.clone())
+}
+
+fn severity_rank(diagnostic: &Diagnostic) -> u32 {
+    diagnostic.severity.map(|severity| severity.0).unwrap_or(5)
+}
+
 #[derive(Clone, Default)]
 pub struct DiagnosticsCache {
     snapshots: Arc<RwLock<HashMap<String, DiagnosticSnapshot>>>,
@@ -54,6 +102,13 @@ impl DiagnosticsCache {
 
     pub async fn get(&self, uri: &str) -> Option<DiagnosticSnapshot> {
         self.snapshots.read().await.get(uri).cloned()
+    }
+
+    pub async fn put(&self, snapshot: DiagnosticSnapshot) {
+        self.snapshots
+            .write()
+            .await
+            .insert(snapshot.uri.clone(), snapshot);
     }
 
     pub async fn wait_for_version(
@@ -120,5 +175,42 @@ mod tests {
         assert_eq!(snapshot.version, Some(4));
         assert_eq!(snapshot.items[0].message, "broken");
         assert!(cache.get("file:///ignored").await.is_none());
+    }
+
+    #[test]
+    fn delta_returns_only_new_and_worsened_diagnostics() {
+        let make = |severity, message: &str, line| Diagnostic {
+            range: crate::Range {
+                start: crate::Position { line, character: 0 },
+                end: crate::Position { line, character: 1 },
+            },
+            severity: Some(crate::DiagnosticSeverity(severity)),
+            code: None,
+            source: Some("test".to_owned()),
+            message: message.to_owned(),
+            data: None,
+        };
+        let before = DiagnosticSnapshot {
+            uri: "file:///x".to_owned(),
+            version: Some(1),
+            items: vec![make(2, "existing", 1), make(2, "worsened", 2)],
+        };
+        let after = DiagnosticSnapshot {
+            uri: "file:///x".to_owned(),
+            version: Some(2),
+            items: vec![
+                make(2, "existing", 1),
+                make(1, "worsened", 2),
+                make(1, "new", 3),
+            ],
+        };
+        let delta = diagnostic_delta(Some(&before), &after);
+        assert_eq!(
+            delta
+                .iter()
+                .map(|item| item.message.as_str())
+                .collect::<Vec<_>>(),
+            ["worsened", "new"]
+        );
     }
 }

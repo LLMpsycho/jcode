@@ -9,7 +9,8 @@ use tokio::sync::Mutex;
 use crate::document_sync::file_uri;
 use crate::{
     DiagnosticSnapshot, DiagnosticsCache, DocumentState, DocumentSync, LspConfig, LspError,
-    LspProcess, Position, ProcessStatus, Result, config_digest,
+    LspProcess, Position, ProcessStatus, Result, SemanticVerification, SemanticVerificationStatus,
+    config_digest, diagnostic_delta,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -44,6 +45,7 @@ pub struct LspWorkspace {
     diagnostics: DiagnosticsCache,
     request_timeout: Duration,
     incremental_sync: bool,
+    pull_diagnostics: bool,
 }
 
 impl LspWorkspace {
@@ -109,6 +111,47 @@ impl LspWorkspace {
             .await
     }
 
+    pub async fn current_diagnostics(
+        &self,
+        document: &DocumentState,
+        timeout: Duration,
+    ) -> Result<Option<DiagnosticSnapshot>> {
+        if self.pull_diagnostics {
+            tokio::time::sleep(timeout.min(Duration::from_millis(750))).await;
+            return self.pull_diagnostics(document).await.map(Some);
+        }
+        Ok(self.wait_for_diagnostics(document, timeout).await)
+    }
+
+    pub async fn verify_disk_change(
+        &self,
+        path: &Path,
+        language_id: &str,
+        timeout: Duration,
+    ) -> Result<SemanticVerification> {
+        let before = self.diagnostics(path).await?;
+        let document = self.sync_document_from_disk(path, language_id).await?;
+        let Some(after) = self.current_diagnostics(&document, timeout).await? else {
+            return Ok(SemanticVerification {
+                status: SemanticVerificationStatus::Stale,
+                document_version: Some(document.version),
+                diagnostics: Vec::new(),
+            });
+        };
+        let diagnostics = diagnostic_delta(before.as_ref(), &after);
+        Ok(SemanticVerification {
+            status: if !diagnostics.is_empty() {
+                SemanticVerificationStatus::IssuesFound
+            } else if before.is_none() {
+                SemanticVerificationStatus::Stale
+            } else {
+                SemanticVerificationStatus::Clean
+            },
+            document_version: after.version,
+            diagnostics,
+        })
+    }
+
     pub async fn hover(&self, path: &Path, position: Position) -> Result<Value> {
         self.position_request("textDocument/hover", path, position, None)
             .await
@@ -116,7 +159,7 @@ impl LspWorkspace {
 
     pub async fn definition(&self, path: &Path, position: Position) -> Result<Value> {
         let mut result = Value::Null;
-        for _ in 0..20 {
+        for _ in 0..60 {
             result = self
                 .position_request("textDocument/definition", path, position, None)
                 .await?;
@@ -176,6 +219,15 @@ impl LspWorkspace {
         if let Some(context) = context {
             params["context"] = context;
         }
+        self.request_with_content_modified_retry(method, params)
+            .await
+    }
+
+    async fn request_with_content_modified_retry(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         for attempt in 0..5 {
             match self
                 .process
@@ -190,6 +242,37 @@ impl LspWorkspace {
             }
         }
         unreachable!("bounded request retry loop always returns")
+    }
+
+    async fn pull_diagnostics(&self, document: &DocumentState) -> Result<DiagnosticSnapshot> {
+        let value = self
+            .request_with_content_modified_retry(
+                "textDocument/diagnostic",
+                serde_json::json!({"textDocument": {"uri": document.uri}}),
+            )
+            .await?;
+        let items = match value.get("kind").and_then(Value::as_str) {
+            Some("unchanged") => self
+                .diagnostics
+                .get(&document.uri)
+                .await
+                .map(|snapshot| snapshot.items)
+                .unwrap_or_default(),
+            _ => serde_json::from_value(
+                value
+                    .get("items")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
+            .map_err(|error| LspError::InvalidMessage(error.to_string()))?,
+        };
+        let snapshot = DiagnosticSnapshot {
+            uri: document.uri.clone(),
+            version: Some(document.version),
+            items,
+        };
+        self.diagnostics.put(snapshot.clone()).await;
+        Ok(snapshot)
     }
 }
 
@@ -234,6 +317,10 @@ impl LspServicePool {
             )
             .await?;
         let incremental_sync = text_sync_kind(&capabilities) == 2;
+        let pull_diagnostics = capabilities
+            .get("capabilities")
+            .and_then(|capabilities| capabilities.get("diagnosticProvider"))
+            .is_some();
         let workspace = Arc::new(LspWorkspace {
             key: key.clone(),
             process,
@@ -242,6 +329,7 @@ impl LspServicePool {
             diagnostics,
             request_timeout: Duration::from_secs(config.request_timeout_seconds),
             incremental_sync,
+            pull_diagnostics,
         });
         workspaces.insert(key, Arc::clone(&workspace));
         Ok(workspace)

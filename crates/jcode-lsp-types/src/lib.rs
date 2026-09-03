@@ -209,6 +209,22 @@ pub struct PublishDiagnosticsParams {
     pub version: Option<i64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticVerificationStatus {
+    Unavailable,
+    Stale,
+    Clean,
+    IssuesFound,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticVerification {
+    pub status: SemanticVerificationStatus,
+    pub document_version: Option<i64>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextEdit {
     pub range: Range,

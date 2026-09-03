@@ -169,6 +169,7 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     skills: Arc<RwLock<SkillRegistry>>,
     compaction: Arc<RwLock<CompactionManager>>,
+    lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
 }
 
 impl Clone for Registry {
@@ -179,6 +180,7 @@ impl Clone for Registry {
             // Each clone gets a fresh CompactionManager to prevent parallel
             // subagents from corrupting each other's message history
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            lsp_pool: self.lsp_pool.clone(),
         }
     }
 }
@@ -215,6 +217,7 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: Arc::new(RwLock::new(SkillRegistry::default())),
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            lsp_pool: None,
         }
     }
 
@@ -373,6 +376,7 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: skills.clone(),
             compaction: compaction.clone(),
+            lsp_pool: lsp_pool.clone(),
         };
         let registry_struct_ms = registry_struct_start.elapsed().as_millis();
 
@@ -806,7 +810,10 @@ impl Registry {
         );
 
         let started_at = std::time::Instant::now();
-        let result = tool.execute(input.clone(), ctx.clone()).await;
+        let mut result = tool.execute(input.clone(), ctx.clone()).await;
+        if let (Some(lsp_pool), Ok(output)) = (&self.lsp_pool, &mut result) {
+            lsp::attach_post_edit_feedback(resolved_name, output, &ctx, Arc::clone(lsp_pool)).await;
+        }
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
         crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);
