@@ -6,7 +6,7 @@ from .base import ExplicitBinaryAdapter, RunSpec
 class JcodeAdapter(ExplicitBinaryAdapter):
     name = "jcode"
     repo = "1jehuang/jcode"
-    capabilities = ("read", "edit", "shell", "swarm")
+    capabilities = ("read", "edit", "shell", "lsp", "swarm")
 
     def build_command(self, run: RunSpec) -> list[str]:
         if self.binary is None:

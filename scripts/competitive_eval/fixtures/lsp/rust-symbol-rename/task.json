@@ -1,0 +1,15 @@
+{
+  "id": "lsp-rust-symbol-rename",
+  "category": "lsp-semantic-refactor",
+  "description": "Rename a Rust symbol across definition and call sites through language intelligence.",
+  "fixture": {"source": "."},
+  "prompt_file": "prompt.md",
+  "verifier": {"command": "python3 verify.py", "timeout_seconds": 60},
+  "agent": {
+    "timeout_seconds": 180,
+    "max_cost_usd": 1.0,
+    "required_capabilities": ["read", "edit", "shell", "lsp"]
+  },
+  "expected": {"exit_code": 0, "forbidden_side_effects": []},
+  "tags": ["phase2", "lsp", "rust", "rename"]
+}
