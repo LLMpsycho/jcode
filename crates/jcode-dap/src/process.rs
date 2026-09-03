@@ -237,8 +237,19 @@ impl OwnedChildProcess {
                 code: status.code(),
             });
         }
-        if let Some(pid) = self.state.pid() {
-            terminate_process_group(pid)?;
+        if let Some(pid) = self.state.pid()
+            && let Err(signal_error) = terminate_process_group(pid)
+        {
+            return match tokio::time::timeout(grace, child.wait()).await {
+                Ok(status) => {
+                    let status = status?;
+                    self.state.cleanup_reaped_group()?;
+                    Ok(ProcessStatus::Exited {
+                        code: status.code(),
+                    })
+                }
+                Err(_) => Err(signal_error),
+            };
         }
         match tokio::time::timeout(grace, child.wait()).await {
             Ok(status) => {

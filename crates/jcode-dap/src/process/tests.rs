@@ -145,6 +145,24 @@ async fn graceful_termination_stops_an_owned_process() {
 }
 
 #[tokio::test]
+async fn termination_tolerates_transport_close_racing_natural_exit() {
+    for _ in 0..32 {
+        let process = AdapterProcess::spawn(
+            &AdapterCommand::new("/bin/sh", "/")
+                .with_arg("-c")
+                .with_arg("cat >/dev/null"),
+        )
+        .await
+        .unwrap();
+        process.client().close();
+        assert!(matches!(
+            process.terminate(Duration::from_secs(1)).await.unwrap(),
+            ProcessStatus::Exited { .. }
+        ));
+    }
+}
+
+#[tokio::test]
 async fn forced_group_cleanup_removes_descendants() {
     let process = AdapterProcess::spawn(
         &AdapterCommand::new("/bin/sh", "/")
