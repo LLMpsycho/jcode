@@ -3,8 +3,8 @@ use super::debug::{ClientConnectionInfo, ClientDebugState, handle_debug_client};
 use super::debug_jobs::DebugJob;
 use super::util::get_shared_mcp_pool;
 use super::{
-    AwaitMembersRuntime, FileTouchService, ServerIdentity, SessionInterruptQueues, SharedContext,
-    SwarmEvent, SwarmMutationRuntime, SwarmState,
+    AwaitMembersRuntime, FileSnapshotLedger, FileTouchService, ServerIdentity,
+    SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMutationRuntime, SwarmState,
 };
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
@@ -99,6 +99,9 @@ pub(super) struct ServerRuntime {
     swarm_state: SwarmState,
     shared_context: Arc<RwLock<HashMap<String, HashMap<String, SharedContext>>>>,
     file_touch: FileTouchService,
+    // Owned now so later tool integration does not need global state.
+    #[allow(dead_code)]
+    file_snapshots: FileSnapshotLedger,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -132,6 +135,7 @@ impl ServerRuntime {
             swarm_state: server.swarm_state.clone(),
             shared_context: Arc::clone(&server.shared_context),
             file_touch: server.file_touch.clone(),
+            file_snapshots: server.file_snapshots.clone(),
             channel_subscriptions: Arc::clone(&server.channel_subscriptions),
             channel_subscriptions_by_session: Arc::clone(&server.channel_subscriptions_by_session),
             client_debug_state: Arc::clone(&server.client_debug_state),

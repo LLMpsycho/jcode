@@ -89,6 +89,8 @@ jcode-build-meta = { path = "../jcode-build-meta" }
 jcode-base = { path = "../jcode-base", default-features = false }
 jcode-command-risk = { path = "../jcode-command-risk" }
 jcode-core = { path = "../jcode-core" }
+jcode-edit-core = { path = "../jcode-edit-core" }
+jcode-edit-types = { path = "../jcode-edit-types" }
 jcode-message-types = { path = "../jcode-message-types" }
 jcode-overnight-core = { path = "../jcode-overnight-core" }
 jcode-plan = { path = "../jcode-plan" }

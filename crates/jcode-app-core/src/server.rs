@@ -635,6 +635,9 @@ use self::file_activity::file_activity_scope_label;
 mod file_touch_service;
 pub(crate) use self::file_touch_service::FileTouchService;
 
+mod file_snapshot_ledger;
+pub(crate) use self::file_snapshot_ledger::FileSnapshotLedger;
+
 #[cfg(test)]
 mod socket_tests;
 
@@ -704,6 +707,8 @@ pub struct Server {
     client_connections: Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     /// File-touch tracking service (forward path index + reverse session index)
     file_touch: FileTouchService,
+    /// Shared file revisions and exact per-session read coverage.
+    file_snapshots: FileSnapshotLedger,
     /// Shared ownership of core swarm coordination state.
     swarm_state: SwarmState,
     /// Shared context by swarm (swarm_id -> key -> SharedContext)
@@ -803,6 +808,7 @@ impl Server {
             client_count: Arc::new(RwLock::new(0)),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touch: FileTouchService::new(),
+            file_snapshots: FileSnapshotLedger::new(),
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
