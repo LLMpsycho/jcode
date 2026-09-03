@@ -76,6 +76,13 @@ pub(crate) struct ExpiryReport {
     pub(crate) session_reads: usize,
 }
 
+/// Exact line exposure supplied when a text read is registered.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ReadCoverage {
+    pub(crate) ranges: Vec<LineRange>,
+    pub(crate) full_file: bool,
+}
+
 /// Errors produced before any ledger state is changed.
 #[derive(Debug)]
 pub(crate) enum FileSnapshotLedgerError {
@@ -203,11 +210,10 @@ impl FileSnapshotLedger {
         relative_path: &str,
         contents: &[u8],
         mtime_ns: Option<u128>,
-        ranges: Vec<LineRange>,
-        full_file: bool,
+        coverage: ReadCoverage,
     ) -> Result<ReadSnapshot, FileSnapshotLedgerError> {
         let prepared = prepare_observation(workspace_root, relative_path, contents, mtime_ns)?;
-        validate_ranges(relative_path, &ranges, prepared.line_count)?;
+        validate_ranges(relative_path, &coverage.ranges, prepared.line_count)?;
 
         let mut state = self.state.write().await;
         let record = upsert_snapshot(
@@ -241,9 +247,9 @@ impl FileSnapshotLedger {
                 full_file: false,
             };
         }
-        read.snapshot.ranges.extend(ranges);
+        read.snapshot.ranges.extend(coverage.ranges);
         merge_ranges(&mut read.snapshot.ranges);
-        read.snapshot.full_file |= full_file;
+        read.snapshot.full_file |= coverage.full_file;
         read.last_touched = now;
         Ok(read.snapshot.clone())
     }
@@ -564,6 +570,10 @@ mod tests {
         LineRange { start, end }
     }
 
+    fn coverage(ranges: Vec<LineRange>, full_file: bool) -> ReadCoverage {
+        ReadCoverage { ranges, full_file }
+    }
+
     #[tokio::test]
     async fn canonical_roots_share_normalized_monotonic_observations() {
         let workspace = tempfile::tempdir().unwrap();
@@ -624,8 +634,7 @@ mod tests {
                 "file.txt",
                 b"a\nb\nc\nd\n",
                 None,
-                vec![range(3, 3), range(1, 1)],
-                false,
+                coverage(vec![range(3, 3), range(1, 1)], false),
             )
             .await
             .unwrap();
@@ -636,8 +645,7 @@ mod tests {
                 "file.txt",
                 b"a\nb\nc\nd\n",
                 None,
-                vec![range(2, 2)],
-                false,
+                coverage(vec![range(2, 2)], false),
             )
             .await
             .unwrap();
@@ -651,8 +659,7 @@ mod tests {
                 "file.txt",
                 b"changed\n",
                 None,
-                vec![],
-                true,
+                coverage(vec![], true),
             )
             .await
             .unwrap();
@@ -672,8 +679,7 @@ mod tests {
                 "file.txt",
                 b"one\ntwo\n",
                 None,
-                vec![range(2, 3)],
-                false,
+                coverage(vec![range(2, 3)], false),
             )
             .await
             .unwrap_err();
@@ -739,8 +745,7 @@ mod tests {
                 "shared.txt",
                 b"before\n",
                 None,
-                vec![range(1, 1)],
-                false,
+                coverage(vec![range(1, 1)], false),
             )
             .await
             .unwrap();
@@ -826,8 +831,7 @@ mod tests {
                     "file.txt",
                     b"text\n",
                     None,
-                    vec![range(1, 1)],
-                    false,
+                    coverage(vec![range(1, 1)], false),
                 )
                 .await
                 .unwrap();
@@ -848,8 +852,7 @@ mod tests {
                 "file.txt",
                 b"text\n",
                 None,
-                vec![range(1, 1)],
-                false,
+                coverage(vec![range(1, 1)], false),
             )
             .await
             .unwrap();
