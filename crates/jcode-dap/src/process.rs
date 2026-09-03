@@ -80,6 +80,14 @@ impl ProcessState {
     fn mark_reaped(&self) {
         self.pid.store(0, Ordering::Release);
     }
+
+    fn cleanup_reaped_group(&self) -> Result<()> {
+        if let Some(pid) = self.pid() {
+            kill_process_group(pid)?;
+        }
+        self.mark_reaped();
+        Ok(())
+    }
 }
 
 impl AdapterProcess {
@@ -139,7 +147,7 @@ impl AdapterProcess {
     pub async fn status(&self) -> Result<ProcessStatus> {
         match self.state.child.lock().await.try_wait()? {
             Some(status) => {
-                self.state.mark_reaped();
+                self.state.cleanup_reaped_group()?;
                 Ok(ProcessStatus::Exited {
                     code: status.code(),
                 })
@@ -169,7 +177,7 @@ impl AdapterProcess {
     pub async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
         let mut child = self.state.child.lock().await;
         if let Some(status) = child.try_wait()? {
-            self.state.mark_reaped();
+            self.state.cleanup_reaped_group()?;
             return Ok(ProcessStatus::Exited {
                 code: status.code(),
             });
@@ -180,7 +188,7 @@ impl AdapterProcess {
         match tokio::time::timeout(grace, child.wait()).await {
             Ok(status) => {
                 let status = status?;
-                self.state.mark_reaped();
+                self.state.cleanup_reaped_group()?;
                 Ok(ProcessStatus::Exited {
                     code: status.code(),
                 })
@@ -192,7 +200,7 @@ impl AdapterProcess {
                 #[cfg(not(unix))]
                 child.start_kill()?;
                 let status = child.wait().await?;
-                self.state.mark_reaped();
+                self.state.cleanup_reaped_group()?;
                 Ok(ProcessStatus::Exited {
                     code: status.code(),
                 })

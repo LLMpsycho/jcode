@@ -36,7 +36,7 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - The controlled child environment contains only explicitly allowlisted non-secret keys plus the selected `PATH`.
 - Non-absolute executable and working-directory inputs are rejected.
 - Adapter stderr retains only the configured tail.
-- Graceful termination reaps an owned child. Forced cleanup and the object-drop backstop remove owned descendant process groups.
+- Graceful termination reaps an owned child. Forced cleanup, natural adapter-leader exit, and the object-drop backstop remove owned descendant process groups before the group identity is forgotten.
 
 Focused validation commands:
 
@@ -50,7 +50,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 34 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 466 lines and the largest DAP test file is 497 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 35 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 466 lines and the largest DAP test file is 497 lines, so this slice remains below the repository file budgets.
 
 ## Deliberately deferred
 

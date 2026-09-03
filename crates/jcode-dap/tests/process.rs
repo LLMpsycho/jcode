@@ -79,6 +79,55 @@ async fn captures_only_the_bounded_stderr_tail_and_reports_status() {
 }
 
 #[tokio::test]
+async fn reaping_an_exited_group_leader_cleans_live_descendants() {
+    let process = AdapterProcess::spawn(
+        &AdapterCommand::new("/bin/sh", "/")
+            .with_arg("-c")
+            .with_arg("/bin/sh -c 'trap \"\" HUP TERM; sleep 30' & echo $! >&2; exit 0"),
+    )
+    .await
+    .unwrap();
+    let mut descendant = None;
+    for _ in 0..100 {
+        let stderr = String::from_utf8_lossy(&process.recent_stderr())
+            .trim()
+            .to_owned();
+        if let Ok(pid) = stderr.parse::<i32>() {
+            descendant = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let descendant = descendant.expect("descendant PID should be reported within one second");
+
+    for _ in 0..100 {
+        if matches!(
+            process.status().await.unwrap(),
+            ProcessStatus::Exited { .. }
+        ) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(matches!(
+        process.status().await.unwrap(),
+        ProcessStatus::Exited { .. }
+    ));
+    for _ in 0..50 {
+        // SAFETY: signal 0 only checks whether this observed descendant PID still exists.
+        if unsafe { libc::kill(descendant, 0) } != 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // SAFETY: best-effort cleanup if the assertion below fails.
+    unsafe {
+        libc::kill(descendant, libc::SIGKILL);
+    }
+    panic!("descendant process {descendant} survived adapter leader reaping");
+}
+
+#[tokio::test]
 async fn graceful_termination_stops_an_owned_process() {
     let process = AdapterProcess::spawn(
         &AdapterCommand::new("/bin/sh", "/")
