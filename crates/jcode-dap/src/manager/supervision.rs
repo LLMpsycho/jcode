@@ -141,6 +141,7 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                     | DebugSessionState::Stopped(_)
             ) {
                 data.state = DebugSessionState::Stopped(stopped);
+                data.execution_revision = data.execution_revision.saturating_add(1);
             } else {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "stopped event arrived in an invalid session state".to_owned(),
@@ -153,11 +154,16 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                 DebugSessionState::Stopped(_) | DebugSessionState::Configuring
             ) {
                 data.state = DebugSessionState::Running;
+                data.execution_revision = data.execution_revision.saturating_add(1);
             } else if !matches!(data.state, DebugSessionState::Running) {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "continued event arrived in an invalid session state".to_owned(),
                 });
             }
+        }
+        SessionEvent::Breakpoint { seq, body } => {
+            let limit = entry.operations.max_queued_breakpoint_events;
+            super::breakpoints::queue_breakpoint_event(&mut data, seq, body, limit);
         }
         SessionEvent::Terminated => {
             return Some(DebugSessionEndReason::DebuggeeExited { exit_code: None });
@@ -210,4 +216,15 @@ pub(super) fn invalid_transition(
         state: data.state.kind(),
         operation,
     }
+}
+
+pub(super) fn notify(entry: &SessionEntry, data: &mut SessionData) {
+    data.change_generation = data.change_generation.saturating_add(1);
+    entry.changed.send_replace(data.change_generation);
+}
+
+pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

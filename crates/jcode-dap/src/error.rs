@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::{DebugSessionId, DebugSessionStateKind};
+use crate::{
+    DebugBreakpointId, DebugExecutionRevision, DebugSessionId, DebugSessionStateKind, DebugThreadId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DebugStartOperation {
@@ -108,6 +110,76 @@ pub enum DapError {
     DebugStartupFailed {
         message: String,
         adapter_stderr: String,
+    },
+    #[error("invalid debug source {path:?}: {message}")]
+    InvalidDebugSource { path: PathBuf, message: String },
+    #[error("debug source {path:?} is outside workspace {workspace:?}")]
+    DebugSourceOutsideWorkspace { path: PathBuf, workspace: PathBuf },
+    #[error("debug source {path:?} has {observed} bytes, exceeding limit {limit}")]
+    DebugSourceTooLarge {
+        path: PathBuf,
+        observed: u64,
+        limit: u64,
+    },
+    #[error("debug source revision mismatch for {path:?}")]
+    DebugSourceRevisionMismatch { path: PathBuf },
+    #[error("debug source changed during operation: {path:?}")]
+    DebugSourceChangedDuringOperation { path: PathBuf },
+    #[error("invalid breakpoint: {message}")]
+    InvalidBreakpoint { message: String },
+    #[error("breakpoint {breakpoint_id} was not found in debug session {session_id}")]
+    BreakpointNotFound {
+        session_id: DebugSessionId,
+        breakpoint_id: DebugBreakpointId,
+    },
+    #[error("breakpoint {scope} limit {limit} exceeded")]
+    BreakpointLimitExceeded { scope: &'static str, limit: usize },
+    #[error("DAP operation {operation} requires capability {capability}")]
+    UnsupportedDapCapability {
+        operation: &'static str,
+        capability: &'static str,
+    },
+    #[error("invalid setBreakpoints response: {message}")]
+    InvalidSetBreakpointsResponse { message: String },
+    #[error("breakpoint reconciliation for {path:?} is indeterminate: {message}")]
+    BreakpointReconciliationIndeterminate { path: PathBuf, message: String },
+    #[error("invalid threads response: {message}")]
+    InvalidThreadsResponse { message: String },
+    #[error("thread response contains {observed} threads, exceeding limit {limit}")]
+    ThreadLimitExceeded { observed: usize, limit: usize },
+    #[error("thread {thread_id} was not found in debug session {session_id}")]
+    ThreadNotFound {
+        session_id: DebugSessionId,
+        thread_id: DebugThreadId,
+    },
+    #[error(
+        "debug session {session_id} has no unambiguous stopped thread ({observed_threads} observed)"
+    )]
+    AmbiguousStoppedThread {
+        session_id: DebugSessionId,
+        observed_threads: usize,
+    },
+    #[error("debug session {session_id} has no available stopped thread")]
+    StoppedThreadUnavailable { session_id: DebugSessionId },
+    #[error(
+        "debug session {session_id} has ambiguous thread selection ({observed_threads} observed)"
+    )]
+    AmbiguousThreadSelection {
+        session_id: DebugSessionId,
+        observed_threads: usize,
+    },
+    #[error(
+        "stale execution revision for session {session_id}: expected {expected}, actual {actual}"
+    )]
+    StaleExecutionRevision {
+        session_id: DebugSessionId,
+        expected: DebugExecutionRevision,
+        actual: DebugExecutionRevision,
+    },
+    #[error("debug operation task {operation} failed: {message}")]
+    DebugOperationTaskFailed {
+        operation: &'static str,
+        message: String,
     },
 }
 

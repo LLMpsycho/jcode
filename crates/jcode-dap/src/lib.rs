@@ -8,7 +8,9 @@
 //! let _ = AdapterProcess::spawn(&AdapterCommand::new("/usr/bin/lldb-dap", "/"));
 //! ```
 
+mod breakpoints;
 mod client;
+mod control;
 mod error;
 mod framing;
 mod launch;
@@ -19,9 +21,11 @@ mod session;
 #[cfg(test)]
 mod testing;
 
+pub use breakpoints::*;
 pub(crate) use client::DapClient;
 #[cfg(test)]
 pub(crate) use client::{EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_SIZE};
+pub use control::*;
 pub use error::{DapError, DebugStartOperation, DebugStartupPhase, Result};
 pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,

@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
@@ -12,15 +13,15 @@ use crate::process::{OwnedChildObserver, OwnedTargetProcess};
 use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
 mod supervision;
 
-use supervision::{invalid_transition, supervise, transition};
+use supervision::{invalid_transition, lock, notify, supervise, transition};
 
 use crate::{
     AdapterCommand, AdapterProcess, Capabilities, DapClient, DapError, DebugAdapterConfig,
-    DebugCleanupFailure, DebugCleanupReport, DebugLaunchRequest, DebugOutputCursor,
-    DebugOutputPage, DebugOwnedAttachRequest, DebugSessionEnd, DebugSessionEndReason,
-    DebugSessionId, DebugSessionManagerConfig, DebugSessionSnapshot, DebugSessionStart,
-    DebugSessionState, DebugSessionStateKind, DebugStartOperation, DebugStartupPhase,
-    DebugWorkspaceKey, OwnerCleanupCause, ProcessStatus, Response, Result,
+    DebugCleanupFailure, DebugCleanupReport, DebugLaunchRequest, DebugOperationConfig,
+    DebugOutputCursor, DebugOutputPage, DebugOwnedAttachRequest, DebugSessionEnd,
+    DebugSessionEndReason, DebugSessionId, DebugSessionManagerConfig, DebugSessionSnapshot,
+    DebugSessionStart, DebugSessionState, DebugSessionStateKind, DebugStartOperation,
+    DebugStartupPhase, DebugWorkspaceKey, OwnerCleanupCause, ProcessStatus, Response, Result,
 };
 
 #[derive(Clone)]
@@ -30,10 +31,19 @@ pub struct DebugSessionManager {
 
 impl DebugSessionManager {
     pub fn new(config: DebugSessionManagerConfig) -> Result<Self> {
+        Self::new_with_operation_config(config, DebugOperationConfig::default())
+    }
+
+    pub fn new_with_operation_config(
+        config: DebugSessionManagerConfig,
+        operations: DebugOperationConfig,
+    ) -> Result<Self> {
         config.validate()?;
+        operations.validate()?;
         Ok(Self {
             core: Arc::new(ManagerCore {
                 config,
+                operations: Arc::new(operations),
                 manager_id: next_manager_id()?,
                 registry: Mutex::new(Registry::default()),
             }),
@@ -320,8 +330,13 @@ impl DebugSessionManager {
                 ),
                 supervisor: None,
                 change_generation: 0,
+                breakpoints: breakpoints::BreakpointRegistry::default(),
+                execution_revision: 0,
             }),
             finalization: AsyncMutex::new(()),
+            operation: AsyncMutex::new(()),
+            closed: AtomicBool::new(false),
+            operations: Arc::clone(&self.core.operations),
             changed,
         });
         registry.entries.insert(id, entry);
@@ -603,6 +618,7 @@ impl Drop for DebugSessionReservation {
 
 struct ManagerCore {
     config: DebugSessionManagerConfig,
+    operations: Arc<DebugOperationConfig>,
     #[allow(dead_code)]
     manager_id: u64,
     registry: Mutex<Registry>,
@@ -625,6 +641,9 @@ struct SessionEntry {
     adapter_id: String,
     data: Mutex<SessionData>,
     finalization: AsyncMutex<()>,
+    operation: AsyncMutex<()>,
+    closed: AtomicBool,
+    operations: Arc<DebugOperationConfig>,
     changed: watch::Sender<u64>,
 }
 
@@ -637,6 +656,8 @@ struct SessionData {
     output: OutputRing,
     supervisor: Option<JoinHandle<()>>,
     change_generation: u64,
+    breakpoints: breakpoints::BreakpointRegistry,
+    execution_revision: u64,
 }
 
 struct SessionTransport {
@@ -652,6 +673,8 @@ pub(crate) enum DebugTerminationPolicy {
     OwnedAttach,
 }
 
+mod breakpoints;
+mod control;
 mod startup;
 pub(crate) use startup::finish_start;
 #[cfg(test)]
@@ -694,6 +717,7 @@ impl ManagerCore {
 
     fn cancel_reservation_drop(self: &Arc<Self>, id: DebugSessionId) {
         let Ok(entry) = self.entry(id) else { return };
+        entry.closed.store(true, Ordering::Release);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let core = Arc::clone(self);
             handle.spawn(async move {
@@ -844,6 +868,7 @@ impl ManagerCore {
         abort_supervisor: bool,
     ) -> Result<()> {
         let _finalization = entry.finalization.lock().await;
+        entry.closed.store(true, Ordering::Release);
         let (transport, supervisor) = {
             let mut data = lock(&entry.data);
             if data.state.is_terminal() {
@@ -951,6 +976,7 @@ impl Drop for ManagerCore {
                 .collect::<Vec<_>>()
         };
         for entry in entries {
+            entry.closed.store(true, Ordering::Release);
             let mut data = lock(&entry.data);
             if let Some(handle) = data.supervisor.take() {
                 handle.abort();
@@ -960,17 +986,6 @@ impl Drop for ManagerCore {
             }
         }
     }
-}
-
-fn notify(entry: &SessionEntry, data: &mut SessionData) {
-    data.change_generation = data.change_generation.saturating_add(1);
-    entry.changed.send_replace(data.change_generation);
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]

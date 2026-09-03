@@ -377,6 +377,21 @@ struct StoppedBody {
     thread_id: Option<i64>,
     #[serde(default)]
     all_threads_stopped: bool,
+    #[serde(default)]
+    hit_breakpoint_ids: Vec<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContinuedBody {
+    #[serde(default)]
+    thread_id: Option<i64>,
+    #[serde(default = "default_true")]
+    all_threads_continued: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -390,6 +405,7 @@ pub(crate) enum SessionEvent {
     Initialized,
     Stopped(StoppedState),
     Continued,
+    Breakpoint { seq: i64, body: serde_json::Value },
     Terminated,
     Exited(Option<i64>),
     Ignore,
@@ -415,6 +431,13 @@ pub(crate) fn parse_event(event: Event) -> Result<SessionEvent> {
                     "stopped event reason is empty".to_owned(),
                 ));
             }
+            for id in &body.hit_breakpoint_ids {
+                i32::try_from(*id).map_err(|_| {
+                    DapError::InvalidMessage(
+                        "stopped hitBreakpointIds contains an out-of-range id".to_owned(),
+                    )
+                })?;
+            }
             Ok(SessionEvent::Stopped(StoppedState {
                 reason: body.reason,
                 description: body.description,
@@ -428,8 +451,24 @@ pub(crate) fn parse_event(event: Event) -> Result<SessionEvent> {
                     "malformed continued event body".to_owned(),
                 ));
             }
+            if !body.is_null() {
+                let parsed: ContinuedBody = serde_json::from_value(body)
+                    .map_err(|error| protocol_event_error("continued", error))?;
+                if let Some(id) = parsed.thread_id {
+                    i32::try_from(id).map_err(|_| {
+                        DapError::InvalidMessage(
+                            "continued threadId is outside signed 32-bit range".to_owned(),
+                        )
+                    })?;
+                }
+                let _ = parsed.all_threads_continued;
+            }
             Ok(SessionEvent::Continued)
         }
+        "breakpoint" => Ok(SessionEvent::Breakpoint {
+            seq: event.seq,
+            body,
+        }),
         "terminated" => Ok(SessionEvent::Terminated),
         "exited" => {
             let body: ExitedBody = serde_json::from_value(body)
