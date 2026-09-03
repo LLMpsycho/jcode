@@ -3,7 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -59,6 +59,10 @@ pub(crate) struct ChildStdio {
 pub(crate) struct OwnedChildProcess {
     state: Arc<OwnedChildState>,
 }
+#[derive(Clone)]
+pub(crate) struct OwnedChildObserver {
+    state: Weak<OwnedChildState>,
+}
 struct OwnedChildState {
     child: tokio::sync::Mutex<Child>,
     pid: AtomicU32,
@@ -89,6 +93,11 @@ impl OwnedChildState {
 }
 
 impl OwnedChildProcess {
+    pub(crate) fn observer(&self) -> OwnedChildObserver {
+        OwnedChildObserver {
+            state: Arc::downgrade(&self.state),
+        }
+    }
     pub(crate) async fn spawn_adapter(config: &AdapterCommand) -> Result<(Self, ChildStdio)> {
         if !config.command.is_absolute() {
             return Err(DapError::InvalidMessage(
@@ -229,6 +238,23 @@ impl OwnedChildProcess {
     }
 }
 
+impl OwnedChildObserver {
+    pub(crate) async fn status(&self) -> Result<Option<ProcessStatus>> {
+        let Some(state) = self.state.upgrade() else {
+            return Ok(None);
+        };
+        match state.child.lock().await.try_wait()? {
+            Some(status) => {
+                state.cleanup_reaped_group()?;
+                Ok(Some(ProcessStatus::Exited {
+                    code: status.code(),
+                }))
+            }
+            None => Ok(Some(ProcessStatus::Running)),
+        }
+    }
+}
+
 pub struct AdapterProcess {
     client: DapClient,
     process: OwnedChildProcess,
@@ -251,8 +277,8 @@ impl AdapterProcess {
     pub(crate) fn pid(&self) -> Option<u32> {
         self.process.pid()
     }
-    pub(crate) fn observer(&self) -> OwnedChildProcess {
-        self.process.clone()
+    pub(crate) fn observer(&self) -> OwnedChildObserver {
+        self.process.observer()
     }
     pub async fn status(&self) -> Result<ProcessStatus> {
         self.process.status().await
@@ -293,6 +319,9 @@ impl OwnedTargetProcess {
     }
     pub(crate) fn pid(&self) -> Option<u32> {
         self.process.pid()
+    }
+    pub(crate) fn observer(&self) -> OwnedChildObserver {
+        self.process.observer()
     }
     pub(crate) async fn status(&self) -> Result<ProcessStatus> {
         self.process.status().await

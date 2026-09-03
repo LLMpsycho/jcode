@@ -7,8 +7,8 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::client::DapClientStatus;
-use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program};
-use crate::process::OwnedTargetProcess;
+use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program, revalidate_program};
+use crate::process::{OwnedChildObserver, OwnedTargetProcess};
 use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
 use crate::{
     AdapterCommand, AdapterProcess, Capabilities, DapClient, DapError, DebugAdapterConfig,
@@ -148,13 +148,17 @@ impl DebugSessionManager {
         )
         .await?;
         reservation.attach_process(process, DebugTerminationPolicy::AdapterLaunched)?;
-        let result = start_protocol(
-            &reservation,
-            AdapterProfile::LldbDap,
-            "launch",
-            AdapterProfile::LldbDap.launch_arguments(&resolved),
-            deadline,
-        )
+        let result = async {
+            initialize(&reservation, AdapterProfile::LldbDap, deadline).await?;
+            revalidate_program(&workspace, &resolved.target)?;
+            start_after_initialize(
+                &reservation,
+                "launch",
+                AdapterProfile::LldbDap.launch_arguments(&resolved),
+                deadline,
+            )
+            .await
+        }
         .await;
         finish_start(reservation, result).await
     }
@@ -191,12 +195,13 @@ impl DebugSessionManager {
         if let Err(error) = initialize(&reservation, AdapterProfile::LldbDap, deadline).await {
             return finish_start(reservation, Err(error)).await;
         }
-        let adapter_pid =
-            reservation
-                .adapter_pid()
-                .ok_or_else(|| DapError::InvalidAdapterConfiguration {
-                    message: "adapter has no live process identifier".to_owned(),
-                })?;
+        let adapter_pid = match reservation.live_adapter_pid().await {
+            Ok(pid) => pid,
+            Err(error) => return finish_start(reservation, Err(error)).await,
+        };
+        if let Err(error) = revalidate_program(&workspace, &target_spec) {
+            return finish_start(reservation, Err(error)).await;
+        }
         let target = match deadline_result(
             deadline,
             DebugStartupPhase::StartRequest,
@@ -208,6 +213,19 @@ impl DebugSessionManager {
             Err(error) => return finish_start(reservation, Err(error)).await,
         };
         reservation.attach_target(target)?;
+        match reservation.live_adapter_pid().await {
+            Ok(pid) if pid == adapter_pid => {}
+            Ok(_) => {
+                return finish_start(
+                    reservation,
+                    Err(DapError::InvalidAdapterConfiguration {
+                        message: "adapter process identity changed during startup".to_owned(),
+                    }),
+                )
+                .await;
+            }
+            Err(error) => return finish_start(reservation, Err(error)).await,
+        }
         if let ProcessStatus::Exited { code } = reservation.target_status().await? {
             return finish_start(
                 reservation,
@@ -349,6 +367,15 @@ impl DebugSessionReservation {
         self.attach_transport(client, None, None)
     }
 
+    #[cfg(test)]
+    pub(crate) fn attach_start_client(
+        &mut self,
+        client: DapClient,
+        policy: DebugTerminationPolicy,
+    ) -> Result<()> {
+        self.attach_transport(client, None, Some(policy))
+    }
+
     fn attach_transport(
         &mut self,
         client: DapClient,
@@ -420,14 +447,37 @@ impl DebugSessionReservation {
             .ok_or_else(|| invalid_transition(&entry, &data, "access transport"))
     }
 
-    fn adapter_pid(&self) -> Option<u32> {
+    async fn live_adapter_pid(&self) -> Result<u32> {
+        let (pid, observer) = {
+            let entry = self.core.entry(self.id)?;
+            let data = lock(&entry.data);
+            let adapter = data
+                .transport
+                .as_ref()
+                .and_then(|transport| transport.adapter.as_ref())
+                .ok_or_else(|| invalid_transition(&entry, &data, "inspect adapter"))?;
+            let pid = adapter
+                .pid()
+                .ok_or_else(|| DapError::InvalidAdapterConfiguration {
+                    message: "adapter has no live process identifier".to_owned(),
+                })?;
+            (pid, adapter.observer())
+        };
+        match observer.status().await? {
+            Some(ProcessStatus::Running) => Ok(pid),
+            Some(ProcessStatus::Exited { .. }) | None => {
+                Err(DapError::InvalidAdapterConfiguration {
+                    message: "adapter exited during owned-attach startup".to_owned(),
+                })
+            }
+        }
+    }
+
+    fn adapter_stderr(&self) -> Option<String> {
         let entry = self.core.entry(self.id).ok()?;
-        lock(&entry.data)
-            .transport
-            .as_ref()?
-            .adapter
-            .as_ref()?
-            .pid()
+        let data = lock(&entry.data);
+        let bytes = data.transport.as_ref()?.adapter.as_ref()?.recent_stderr();
+        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     fn target_pid(&self) -> Option<u32> {
@@ -624,10 +674,11 @@ pub(crate) enum DebugTerminationPolicy {
 }
 
 mod startup;
+pub(crate) use startup::finish_start;
+#[cfg(test)]
 pub(crate) use startup::start_protocol;
 use startup::{
-    deadline_result, deny_unsupported, finish_start, initialize, start_after_initialize,
-    startup_deadline,
+    deadline_result, deny_unsupported, initialize, start_after_initialize, startup_deadline,
 };
 
 impl SessionEntry {
@@ -922,7 +973,7 @@ async fn supervise(
     mut events: broadcast::Receiver<crate::Event>,
     mut status: watch::Receiver<DapClientStatus>,
     mut observed: DapClientStatus,
-    process: Option<crate::process::OwnedChildProcess>,
+    process: Option<OwnedChildObserver>,
 ) {
     if observed.dropped_output_events > 0 {
         let mut data = lock(&entry.data);
@@ -958,7 +1009,7 @@ async fn supervise(
             let data = lock(&entry.data);
             data.transport
                 .as_ref()
-                .and_then(|transport| transport.target.clone())
+                .and_then(|transport| transport.target.as_ref().map(OwnedTargetProcess::observer))
         };
         let end = tokio::select! {
             event = events.recv() => match event {
@@ -991,22 +1042,23 @@ async fn supervise(
             _ = interval.tick(), if process.is_some() || target.is_some() => {
                 if let Some(target) = target {
                     match target.status().await {
-                        Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::DebuggeeExited { exit_code: code.map(i64::from) }),
+                        Ok(Some(ProcessStatus::Exited { code })) => Some(DebugSessionEndReason::DebuggeeExited { exit_code: code.map(i64::from) }),
                         Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
-                        Ok(ProcessStatus::Running) => match process.as_ref() {
+                        Ok(Some(ProcessStatus::Running)) => match process.as_ref() {
                             Some(process) => match process.status().await {
-                                Ok(ProcessStatus::Running) => None,
-                                Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
+                                Ok(Some(ProcessStatus::Running)) | Ok(None) => None,
+                                Ok(Some(ProcessStatus::Exited { code })) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
                                 Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
                             },
                             None => None,
                         },
+                        Ok(None) => None,
                     }
                 } else {
                     match process.as_ref() {
                         Some(process) => match process.status().await {
-                            Ok(ProcessStatus::Running) => None,
-                            Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
+                            Ok(Some(ProcessStatus::Running)) | Ok(None) => None,
+                            Ok(Some(ProcessStatus::Exited { code })) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
                             Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
                         },
                         None => None,

@@ -131,7 +131,7 @@ fn program_symlink_escape_is_rejected_before_adapter_spawn() {
 }
 
 #[test]
-fn no_start_path_accepts_a_caller_pid() {
+fn owned_attach_pid_is_not_request_input_data() {
     let request = DebugOwnedAttachRequest::new("program").with_arg("1234");
     assert_eq!(request.args(), &["1234"]);
 }

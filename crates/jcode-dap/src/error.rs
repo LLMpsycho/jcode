@@ -104,6 +104,11 @@ pub enum DapError {
         session_id: DebugSessionId,
         message: String,
     },
+    #[error("debug startup failed: {message}; adapter stderr: {adapter_stderr}")]
+    DebugStartupFailed {
+        message: String,
+        adapter_stderr: String,
+    },
 }
 
 impl From<std::io::Error> for DapError {

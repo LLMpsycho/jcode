@@ -53,7 +53,20 @@ impl DebugAdapterConfig {
         &self.executable
     }
     pub(crate) fn revalidate(&self) -> Result<()> {
-        validate_executable(&self.executable).map_err(|message| DapError::AdapterUnavailable {
+        let canonical =
+            self.executable
+                .canonicalize()
+                .map_err(|error| DapError::AdapterUnavailable {
+                    path: self.executable.clone(),
+                    message: error.to_string(),
+                })?;
+        if canonical != self.executable {
+            return Err(DapError::AdapterUnavailable {
+                path: self.executable.clone(),
+                message: "canonical adapter identity changed".to_owned(),
+            });
+        }
+        validate_executable(&canonical).map_err(|message| DapError::AdapterUnavailable {
             path: self.executable.clone(),
             message,
         })
@@ -176,6 +189,48 @@ pub(crate) fn resolve_program(
     })
 }
 
+pub(crate) fn revalidate_program(
+    workspace: &DebugWorkspaceKey,
+    target: &ResolvedProgram,
+) -> Result<()> {
+    let root = workspace.canonical_root();
+    let program = target
+        .program
+        .canonicalize()
+        .map_err(|error| DapError::InvalidDebugProgram {
+            path: target.program.clone(),
+            message: error.to_string(),
+        })?;
+    if program != target.program || !program.starts_with(root) {
+        return Err(DapError::DebugPathOutsideWorkspace {
+            path: program,
+            workspace: root.to_path_buf(),
+        });
+    }
+    validate_program(&program)?;
+    let cwd =
+        target
+            .cwd
+            .canonicalize()
+            .map_err(|error| DapError::InvalidDebugWorkingDirectory {
+                path: target.cwd.clone(),
+                message: error.to_string(),
+            })?;
+    if cwd != target.cwd || !cwd.starts_with(root) {
+        return Err(DapError::DebugPathOutsideWorkspace {
+            path: cwd,
+            workspace: root.to_path_buf(),
+        });
+    }
+    if !target.cwd.is_dir() {
+        return Err(DapError::InvalidDebugWorkingDirectory {
+            path: target.cwd.clone(),
+            message: "path is not a directory".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 pub(crate) enum AdapterProfile {
     LldbDap,
 }
@@ -250,5 +305,7 @@ fn validate_program(path: &Path) -> Result<()> {
 // Keep public API references anchored in this module's contract.
 const _: Option<fn() -> (DebugSessionSnapshot, DebugWorkspaceKey)> = None;
 
+#[cfg(test)]
+mod contract_tests;
 #[cfg(test)]
 mod tests;

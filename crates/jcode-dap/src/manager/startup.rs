@@ -68,6 +68,7 @@ pub(super) async fn initialize(
     reservation.set_capabilities(capabilities)
 }
 
+#[cfg(test)]
 pub(crate) async fn start_protocol(
     reservation: &DebugSessionReservation,
     profile: AdapterProfile,
@@ -135,7 +136,7 @@ pub(super) async fn start_after_initialize(
     reservation.complete_start()
 }
 
-pub(super) async fn finish_start(
+pub(crate) async fn finish_start(
     reservation: DebugSessionReservation,
     result: Result<()>,
 ) -> Result<DebugSessionSnapshot> {
@@ -149,6 +150,13 @@ pub(super) async fn finish_start(
                 .ok_or(DapError::SessionNotFound { session_id: id })
         }
         Err(error) => {
+            let error = match reservation.adapter_stderr() {
+                Some(adapter_stderr) => DapError::DebugStartupFailed {
+                    message: error.to_string(),
+                    adapter_stderr,
+                },
+                None => error,
+            };
             reservation.cancel_start().await?;
             Err(error)
         }
