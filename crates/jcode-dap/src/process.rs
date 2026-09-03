@@ -49,7 +49,6 @@ pub enum ProcessStatus {
     Exited { code: Option<i32> },
 }
 
-#[derive(Clone)]
 pub struct AdapterProcess {
     client: DapClient,
     state: Arc<ProcessState>,

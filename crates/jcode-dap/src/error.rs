@@ -1,4 +1,8 @@
+use std::path::PathBuf;
+
 use thiserror::Error;
+
+use crate::{DebugSessionId, DebugSessionStateKind};
 
 pub type Result<T> = std::result::Result<T, DapError>;
 
@@ -32,6 +36,34 @@ pub enum DapError {
     Response { command: String, message: String },
     #[error("DAP child process did not expose its {stream} pipe")]
     MissingProcessPipe { stream: &'static str },
+    #[error("invalid DAP session manager configuration: {message}")]
+    InvalidManagerConfiguration { message: String },
+    #[error("invalid debug workspace {path:?}: {message}")]
+    InvalidWorkspace { path: PathBuf, message: String },
+    #[error("DAP session capacity {limit} has been reached")]
+    SessionCapacityExceeded { limit: usize },
+    #[error("DAP session identifier space is exhausted")]
+    SessionIdExhausted,
+    #[error("owner session {owner_session_id} already has active debug session {session_id}")]
+    OwnerAlreadyHasActiveSession {
+        owner_session_id: String,
+        session_id: DebugSessionId,
+    },
+    #[error("debug session {session_id} was not found")]
+    SessionNotFound { session_id: DebugSessionId },
+    #[error("access to debug session {session_id} is denied")]
+    SessionAccessDenied { session_id: DebugSessionId },
+    #[error("cannot {operation} debug session {session_id} while it is {state:?}")]
+    InvalidSessionTransition {
+        session_id: DebugSessionId,
+        state: DebugSessionStateKind,
+        operation: &'static str,
+    },
+    #[error("failed to clean debug session {session_id}: {message}")]
+    SessionCleanupFailed {
+        session_id: DebugSessionId,
+        message: String,
+    },
 }
 
 impl From<std::io::Error> for DapError {

@@ -56,6 +56,14 @@ struct Shared {
     next_seq: AtomicI64,
     enqueue: AsyncMutex<()>,
     serializer: Arc<Semaphore>,
+    status: watch::Sender<DapClientStatus>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DapClientStatus {
+    pub closed: bool,
+    pub dropped_output_events: u64,
+    pub dropped_non_output_events: u64,
 }
 
 struct ClientInner {
@@ -99,6 +107,7 @@ impl DapClient {
         let (reverse_response_tx, reverse_response_rx) =
             mpsc::channel(REVERSE_RESPONSE_QUEUE_CAPACITY);
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let (status, _) = watch::channel(DapClientStatus::default());
         let shared = Arc::new(Shared {
             pending,
             closed: AtomicBool::new(false),
@@ -106,6 +115,7 @@ impl DapClient {
             next_seq: AtomicI64::new(1),
             enqueue: AsyncMutex::new(()),
             serializer: Arc::new(Semaphore::new(1)),
+            status,
         });
         let writer_task = tokio::spawn(write_loop(
             writer,
@@ -155,6 +165,10 @@ impl DapClient {
 
     pub fn close(&self) {
         close_inner(&self.inner);
+    }
+
+    pub(crate) fn subscribe_status(&self) -> watch::Receiver<DapClientStatus> {
+        self.inner.shared.status.subscribe()
     }
 
     pub async fn request(
@@ -290,6 +304,10 @@ impl DapClient {
 
 fn close_inner(inner: &ClientInner) {
     if !inner.shared.closed.swap(true, Ordering::AcqRel) {
+        inner
+            .shared
+            .status
+            .send_modify(|status| status.closed = true);
         fail_pending(&inner.shared.pending, DapError::TransportClosed);
         let _ignored = inner.shared.shutdown.send(true);
     }
@@ -395,6 +413,16 @@ async fn read_loop<R>(
                 Message::Event(event) => {
                     if frame.len() <= MAX_RETAINED_EVENT_SIZE {
                         let _ignored = events.send(event);
+                    } else {
+                        shared.status.send_modify(|status| {
+                            if event.event == "output" {
+                                status.dropped_output_events =
+                                    status.dropped_output_events.saturating_add(1);
+                            } else {
+                                status.dropped_non_output_events =
+                                    status.dropped_non_output_events.saturating_add(1);
+                            }
+                        });
                     }
                 }
                 Message::Request(request) => {
@@ -507,6 +535,7 @@ fn handle_response(pending: &Pending, response: Response) {
 
 fn terminate_transport(shared: &Shared, error: DapError) {
     if !shared.closed.swap(true, Ordering::AcqRel) {
+        shared.status.send_modify(|status| status.closed = true);
         fail_pending(&shared.pending, error);
         let _ignored = shared.shutdown.send(true);
     }

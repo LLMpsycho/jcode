@@ -1,6 +1,6 @@
 # Phase 3 DAP protocol foundation
 
-This branch implements only the first approved Phase 3 slice from the OMP overtake master plan. It establishes stable Debug Adapter Protocol contracts and a dependency-light runtime foundation. It does not register an agent tool or launch a real debugger session.
+This branch implements the DAP protocol foundation and the owner-scoped Phase 3 session-manager slice from the OMP overtake master plan. It does not register an agent tool or launch or attach a real debugger session.
 
 ## Implemented
 
@@ -18,6 +18,14 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - An owned adapter-process abstraction with absolute executable and working-directory validation, a controlled allowlisted environment, private process identity, Unix process-group ownership, graceful termination, forced descendant cleanup, bounded stderr retention, and explicit process status.
 - Framing compacts consumed bytes once per input batch rather than once per frame, avoiding quadratic behavior for batches containing many small frames.
 - Reaped process identities are cleared so later object destruction cannot signal a reused process-group id. Unix termination tolerates the normal already-exited `ESRCH` race.
+- A public `DebugSessionManager` exposes immutable owner-authorized snapshots, lists, bounded output pages, termination, owner cleanup, and shutdown without exposing raw clients, processes, or mutable session entries.
+- Opaque process-unique session IDs, canonical workspace keys, one active root per trusted owner, a global active cap, owner reverse indexes, and bounded terminal-history retention are enforced under one short-held registry mutex.
+- Session state is validated across reserved, initialization, configuration, running, stopped, terminating, and ended states. Illegal transitions return structured errors, while stale events cannot reactivate terminal sessions.
+- Cancellation-safe reservations synchronously release every index and close attached transports when abandoned. A start barrier prevents already-closed attachment from racing supervision before its task handle is stored.
+- Per-entry state locks and an async finalization lock keep registry locks out of I/O. Finalization releases active ownership, closes the client, and uses the owned process abstraction for graceful then forced process-group cleanup.
+- Supervisors consume output and lifecycle events, observe transport closure and adapter exit, fail closed on receiver lag or non-output source loss, and keep request timeout recoverable.
+- Output retention is bounded by event count and UTF-8 bytes, keeps the newest UTF-8-safe tail, advances monotonic cursors through eviction, and reports ring eviction separately from oversized source loss.
+- Supervisor tasks hold weak manager references, so dropping the final manager synchronously closes transports and leaves process Drop only as the forced-cleanup backstop.
 
 ## Verified behavior
 
@@ -40,6 +48,11 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - Non-absolute executable and working-directory inputs are rejected.
 - Adapter stderr retains only the configured tail.
 - Graceful termination reaps an owned child. Forced cleanup, natural adapter-leader exit, and the object-drop backstop remove owned descendant process groups before the group identity is forgotten.
+- Owner isolation is verified across list, snapshot, request, output, and terminate. Wrong-owner termination produces no adapter traffic or state change.
+- Capacity, one-active-per-owner, cancellation release, replacement, terminal pruning, owner cleanup, and shutdown index repair are deterministic.
+- Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
+- Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
+- Recoverable request timeout, authorized request round trip, concurrent transport failure plus termination, final-manager-drop closure, and extreme configuration durations are covered.
 
 Focused validation commands:
 
@@ -53,17 +66,17 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 40 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 543 lines and the largest DAP test file is 617 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 70 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 
 - Real adapter discovery or debugger launch.
 - Agent tool registration and TUI integration.
-- Launch, attach, breakpoint, stepping, stack, variable, evaluate, output, and session policy.
+- Real launch/attach semantics, breakpoint, stepping, stack, variable, evaluate, and debug policy.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
-- Persistent debug-session ownership and authorization checks.
+- App-core ownership wiring, agent-facing operations, and persistent cross-process debug-session recovery.
 - DAP competitive benchmark tasks.
 
 Before real debugger launch or reverse process requests are enabled on Windows, the runtime needs owned process-tree containment such as a Job Object. The current non-Unix fallback guarantees direct-child cleanup only and does not claim descendant-tree containment.

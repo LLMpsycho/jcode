@@ -1,0 +1,452 @@
+use std::time::Duration;
+
+use serde_json::json;
+use tokio::time::{sleep, timeout};
+
+use super::*;
+use crate::testing::FakeAdapter;
+use crate::{
+    Capabilities, DapError, DebugSessionStateKind, Event, Message, StoppedState, encode_message,
+};
+
+fn manager() -> DebugSessionManager {
+    DebugSessionManager::new(DebugSessionManagerConfig {
+        termination_grace: Duration::from_millis(10),
+        process_poll_interval: Duration::from_millis(5),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn spec(owner: &str) -> NewDebugSession {
+    NewDebugSession {
+        owner_session_id: owner.into(),
+        workspace: DebugWorkspaceKey::new(std::path::Path::new("."), owner).unwrap(),
+        adapter_id: "fake".into(),
+    }
+}
+
+fn attached(manager: &DebugSessionManager, owner: &str) -> (DebugSessionId, FakeAdapter) {
+    let (client, adapter) = FakeAdapter::pair(1024 * 1024);
+    let mut reservation = manager.reserve(spec(owner)).unwrap();
+    reservation.attach_client(client).unwrap();
+    let id = reservation.commit().unwrap();
+    (id, adapter)
+}
+
+async fn wait_for(
+    manager: &DebugSessionManager,
+    owner: &str,
+    id: DebugSessionId,
+    predicate: impl Fn(&DebugSessionState) -> bool,
+) -> DebugSessionSnapshot {
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(snapshot) = manager.snapshot(owner, id)
+                && predicate(&snapshot.state)
+            {
+                return snapshot;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[test]
+fn ids_capacity_and_one_active_owner_are_atomic() {
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        max_active_sessions: 2,
+        ..Default::default()
+    })
+    .unwrap();
+    let first = manager.reserve(spec("a")).unwrap();
+    let first_id = first.id();
+    assert!(matches!(
+        manager.reserve(spec("a")),
+        Err(DapError::OwnerAlreadyHasActiveSession { .. })
+    ));
+    let second = manager.reserve(spec("b")).unwrap();
+    assert_ne!(first_id, second.id());
+    assert!(matches!(
+        manager.reserve(spec("c")),
+        Err(DapError::SessionCapacityExceeded { limit: 2 })
+    ));
+}
+
+#[test]
+fn reservation_drop_releases_owner_slot() {
+    let manager = manager();
+    let first = manager.reserve(spec("a")).unwrap().id();
+    let second = manager.reserve(spec("a")).unwrap();
+    assert_ne!(first, second.id());
+}
+
+#[test]
+fn legal_and_illegal_transitions_are_structured() {
+    let manager = manager();
+    let reservation = manager.reserve(spec("a")).unwrap();
+    assert!(matches!(
+        reservation.mark_running(),
+        Err(DapError::InvalidSessionTransition {
+            state: DebugSessionStateKind::Reserved,
+            ..
+        })
+    ));
+    drop(reservation);
+}
+
+#[test]
+fn extreme_config_durations_are_rejected() {
+    assert!(matches!(
+        DebugSessionManager::new(DebugSessionManagerConfig {
+            termination_grace: Duration::MAX,
+            ..Default::default()
+        }),
+        Err(DapError::InvalidManagerConfiguration { .. })
+    ));
+}
+
+#[tokio::test]
+async fn explicit_lifecycle_methods_follow_legal_flow() {
+    let manager = manager();
+    let (client, _adapter) = FakeAdapter::pair(1024);
+    let mut reservation = manager.reserve(spec("a")).unwrap();
+    reservation.attach_client(client).unwrap();
+    reservation
+        .set_capabilities(Capabilities {
+            supports_cancel_request: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    reservation.mark_configuring().unwrap();
+    reservation.mark_running().unwrap();
+    let id = reservation.commit().unwrap();
+    assert_eq!(
+        manager.snapshot("a", id).unwrap().state,
+        DebugSessionState::Running
+    );
+}
+
+#[tokio::test]
+async fn attaching_an_already_closed_client_cannot_strand_initializing() {
+    let manager = manager();
+    let (client, _adapter) = FakeAdapter::pair(1024);
+    client.close();
+    let mut reservation = manager.reserve(spec("a")).unwrap();
+    reservation.attach_client(client).unwrap();
+    let id = reservation.commit().unwrap();
+    let snapshot = wait_for(&manager, "a", id, DebugSessionState::is_terminal).await;
+    assert!(matches!(snapshot.state, DebugSessionState::Ended(_)));
+}
+
+#[tokio::test]
+async fn wrong_owner_cannot_get_list_request_output_or_terminate() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    assert!(manager.sessions("b").is_empty());
+    assert!(matches!(
+        manager.snapshot("b", id),
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(matches!(
+        manager.output("b", id, None, 1),
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(matches!(
+        manager
+            .request("b", id, "threads", None, Duration::from_millis(10))
+            .await,
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(matches!(
+        manager.terminate("b", id).await,
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(
+        timeout(Duration::from_millis(20), adapter.recv())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        manager.snapshot("a", id).unwrap().state,
+        DebugSessionState::Initializing
+    );
+}
+
+#[tokio::test]
+async fn supervisor_handles_stopped_continued_exited_and_stale_events() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    adapter.event("initialized", None).await.unwrap();
+    adapter
+        .event("stopped", Some(json!({"reason":"breakpoint","threadId":9})))
+        .await
+        .unwrap();
+    let stopped = wait_for(&manager, "a", id, |state| {
+        matches!(state, DebugSessionState::Stopped(_))
+    })
+    .await;
+    assert!(matches!(
+        stopped.state,
+        DebugSessionState::Stopped(StoppedState {
+            thread_id: Some(9),
+            ..
+        })
+    ));
+    adapter
+        .event("continued", Some(json!({"threadId":9})))
+        .await
+        .unwrap();
+    wait_for(&manager, "a", id, |state| {
+        matches!(state, DebugSessionState::Running)
+    })
+    .await;
+    adapter
+        .event("exited", Some(json!({"exitCode":3})))
+        .await
+        .unwrap();
+    let ended = wait_for(&manager, "a", id, DebugSessionState::is_terminal).await;
+    assert!(matches!(
+        ended.state,
+        DebugSessionState::Ended(DebugSessionEnd {
+            reason: DebugSessionEndReason::DebuggeeExited { exit_code: Some(3) },
+            ..
+        })
+    ));
+    let _ = adapter.event("continued", None).await;
+    sleep(Duration::from_millis(10)).await;
+    assert!(manager.snapshot("a", id).unwrap().state.is_terminal());
+}
+
+#[tokio::test]
+async fn output_bounds_paging_and_utf8_are_enforced() {
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        output_max_events: 2,
+        output_max_bytes: 5,
+        output_page_limit: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let (id, mut adapter) = attached(&manager, "a");
+    for value in ["a", "bb", "é😊"] {
+        adapter
+            .event("output", Some(json!({"output":value})))
+            .await
+            .unwrap();
+    }
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if manager.output("a", id, None, 9).unwrap().status.next_cursor == DebugOutputCursor(4)
+            {
+                break;
+            }
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let page = manager
+        .output("a", id, Some(DebugOutputCursor(1)), 9)
+        .unwrap();
+    assert_eq!(page.records.len(), 1);
+    assert!(page.requested_history_was_evicted);
+    assert!(page.status.retained_bytes <= 5);
+    assert!(page.status.evicted_events > 0);
+}
+
+#[tokio::test]
+async fn oversized_output_is_counted_and_non_output_loss_is_terminal() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    adapter
+        .event(
+            "output",
+            Some(json!({"output":"x".repeat(crate::MAX_RETAINED_EVENT_SIZE)})),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        while manager
+            .output("a", id, None, 1)
+            .unwrap()
+            .status
+            .source_dropped_events
+            == 0
+        {
+            sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        manager
+            .output("a", id, None, 1)
+            .unwrap()
+            .status
+            .retained_events,
+        0
+    );
+
+    adapter
+        .event(
+            "stopped",
+            Some(json!({"reason":"x".repeat(crate::MAX_RETAINED_EVENT_SIZE)})),
+        )
+        .await
+        .unwrap();
+    let ended = wait_for(&manager, "a", id, DebugSessionState::is_terminal).await;
+    assert!(matches!(
+        ended.state,
+        DebugSessionState::Ended(DebugSessionEnd {
+            reason: DebugSessionEndReason::ProtocolError { .. },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn transport_close_ends_session_without_pending_request() {
+    let manager = manager();
+    let (id, adapter) = attached(&manager, "a");
+    drop(adapter);
+    let ended = wait_for(&manager, "a", id, DebugSessionState::is_terminal).await;
+    assert!(matches!(
+        ended.state,
+        DebugSessionState::Ended(DebugSessionEnd {
+            reason: DebugSessionEndReason::TransportClosed,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn broadcast_lag_ends_session_with_exact_loss() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    let mut frames = Vec::new();
+    for seq in 1..=(crate::EVENT_CHANNEL_CAPACITY as i64 + 1) {
+        frames.extend(encode_message(&Event::new(seq, "custom", None)).unwrap());
+    }
+    adapter.send_raw(&frames).await.unwrap();
+    let snapshot = wait_for(&manager, "a", id, DebugSessionState::is_terminal).await;
+    assert!(matches!(
+        snapshot.state,
+        DebugSessionState::Ended(DebugSessionEnd {
+            reason: DebugSessionEndReason::EventStreamLagged { skipped: 1 },
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn request_timeout_is_recoverable() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    let result = manager
+        .request("a", id, "threads", None, Duration::from_millis(10))
+        .await;
+    assert!(matches!(result, Err(DapError::RequestTimeout { .. })));
+    assert!(!manager.snapshot("a", id).unwrap().state.is_terminal());
+    let request = match adapter.recv().await.unwrap() {
+        Message::Request(request) => request,
+        _ => panic!(),
+    };
+    let response =
+        tokio::spawn(async move { adapter.respond_ok(&request, Some(json!({"ok":true}))).await });
+    let _ = response.await;
+}
+
+#[tokio::test]
+async fn terminate_releases_owner_and_retains_terminal_snapshot() {
+    let manager = manager();
+    let (id, _adapter) = attached(&manager, "a");
+    let snapshot = manager.terminate("a", id).await.unwrap();
+    assert!(snapshot.state.is_terminal());
+    assert!(manager.reserve(spec("a")).is_ok());
+    assert_eq!(manager.snapshot("a", id).unwrap().id, id);
+}
+
+#[tokio::test]
+async fn concurrent_transport_failure_and_terminate_finalize_once() {
+    let manager = manager();
+    let (id, adapter) = attached(&manager, "a");
+    let other = manager.clone();
+    let terminate = tokio::spawn(async move { other.terminate("a", id).await });
+    drop(adapter);
+    let _ = terminate.await.unwrap();
+    let snapshot = manager.snapshot("a", id).unwrap();
+    assert!(snapshot.state.is_terminal());
+    assert!(!matches!(snapshot.state, DebugSessionState::Terminating));
+}
+
+#[tokio::test]
+async fn cleanup_owner_and_shutdown_remove_visibility() {
+    let manager = manager();
+    let (_a, _adapter_a) = attached(&manager, "a");
+    let (b, _adapter_b) = attached(&manager, "b");
+    let report = manager
+        .cleanup_owner("a", OwnerCleanupCause::Disconnected)
+        .await;
+    assert_eq!(report.cleaned, 1);
+    assert!(manager.sessions("a").is_empty());
+    assert_eq!(manager.snapshot("b", b).unwrap().id, b);
+    let report = manager.shutdown_all().await;
+    assert_eq!(report.cleaned, 1);
+    assert!(manager.sessions("b").is_empty());
+}
+
+#[tokio::test]
+async fn terminal_retention_prunes_oldest_and_repairs_indexes() {
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        max_retained_ended_sessions: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let (first, _adapter) = attached(&manager, "a");
+    manager.terminate("a", first).await.unwrap();
+    let (second, _adapter) = attached(&manager, "a");
+    manager.terminate("a", second).await.unwrap();
+    assert!(matches!(
+        manager.snapshot("a", first),
+        Err(DapError::SessionNotFound { .. })
+    ));
+    assert_eq!(manager.sessions("a").len(), 1);
+}
+
+#[tokio::test]
+async fn dropping_last_manager_closes_fake_transport() {
+    let manager = manager();
+    let (_id, mut adapter) = attached(&manager, "a");
+    drop(manager);
+    assert!(matches!(
+        timeout(Duration::from_secs(1), adapter.recv())
+            .await
+            .unwrap(),
+        Err(DapError::TransportClosed)
+    ));
+}
+
+#[tokio::test]
+async fn owner_authorized_request_round_trips() {
+    let manager = manager();
+    let (id, mut adapter) = attached(&manager, "a");
+    let request_task = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .request("a", id, "threads", None, Duration::from_secs(1))
+                .await
+        })
+    };
+    let request = match adapter.recv().await.unwrap() {
+        Message::Request(request) => request,
+        _ => panic!(),
+    };
+    adapter
+        .respond_ok(&request, Some(json!({"threads":[]})))
+        .await
+        .unwrap();
+    assert!(request_task.await.unwrap().is_ok());
+}
