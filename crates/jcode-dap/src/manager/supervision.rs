@@ -179,12 +179,12 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                     | DebugSessionState::Running
                     | DebugSessionState::Stopped(_)
             ) {
-                data.state = DebugSessionState::Stopped(stopped);
                 if !entry.advance_execution(&mut data) {
                     return Some(DebugSessionEndReason::ProtocolError {
                         message: "execution revision exhausted".to_owned(),
                     });
                 }
+                data.state = DebugSessionState::Stopped(stopped);
             } else {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "stopped event arrived in an invalid session state".to_owned(),
@@ -196,12 +196,12 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
                 data.state,
                 DebugSessionState::Stopped(_) | DebugSessionState::Configuring
             ) {
-                data.state = DebugSessionState::Running;
                 if !entry.advance_execution(&mut data) {
                     return Some(DebugSessionEndReason::ProtocolError {
                         message: "execution revision exhausted".to_owned(),
                     });
                 }
+                data.state = DebugSessionState::Running;
             } else if !matches!(data.state, DebugSessionState::Running) {
                 return Some(DebugSessionEndReason::ProtocolError {
                     message: "continued event arrived in an invalid session state".to_owned(),

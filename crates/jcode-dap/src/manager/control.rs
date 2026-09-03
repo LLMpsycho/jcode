@@ -180,10 +180,10 @@ async fn control_owned(
                 | DebugControlOperation::StepOut
         )
     {
-        data.state = DebugSessionState::Running;
         if !entry.advance_execution(&mut data) {
             return Err(DapError::TransportClosed);
         }
+        data.state = DebugSessionState::Running;
         notify(&entry, &mut data);
     }
     Ok(DebugControlResult {
@@ -469,8 +469,9 @@ fn commit_running_if_current(entry: &SessionEntry, revision: DebugExecutionRevis
         && data.execution_revision == revision.0
         && matches!(data.state, DebugSessionState::Stopped(_))
     {
-        data.state = DebugSessionState::Running;
-        let _advanced = entry.advance_execution(&mut data);
+        if entry.advance_execution(&mut data) {
+            data.state = DebugSessionState::Running;
+        }
         notify(entry, &mut data)
     }
 }
