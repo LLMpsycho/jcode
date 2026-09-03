@@ -14,8 +14,11 @@ use crate::{DapClient, DapError, Result};
 
 const DEFAULT_STDERR_LIMIT: usize = 64 * 1024;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug)]
-pub struct AdapterCommand {
+pub(crate) struct AdapterCommand {
     command: PathBuf,
     args: Vec<OsString>,
     cwd: PathBuf,
@@ -33,18 +36,20 @@ impl AdapterCommand {
             stderr_limit: DEFAULT_STDERR_LIMIT,
         }
     }
-    pub fn with_arg(mut self, arg: impl Into<OsString>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_arg(mut self, arg: impl Into<OsString>) -> Self {
         self.args.push(arg.into());
         self
     }
-    pub fn with_stderr_limit(mut self, limit: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_stderr_limit(mut self, limit: usize) -> Self {
         self.stderr_limit = limit;
         self
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ProcessStatus {
+pub(crate) enum ProcessStatus {
     Running,
     Exited { code: Option<i32> },
 }
@@ -323,7 +328,7 @@ impl OwnedChildObserver {
     }
 }
 
-pub struct AdapterProcess {
+pub(crate) struct AdapterProcess {
     client: DapClient,
     process: OwnedChildProcess,
     stderr: Arc<Mutex<BoundedOutput>>,
@@ -348,10 +353,12 @@ impl AdapterProcess {
     pub(crate) fn observer(&self) -> OwnedChildObserver {
         self.process.observer()
     }
-    pub async fn status(&self) -> Result<ProcessStatus> {
+    #[cfg(test)]
+    pub(crate) async fn status(&self) -> Result<ProcessStatus> {
         self.process.status().await
     }
-    pub fn stderr_capture_error(&self) -> Option<String> {
+    #[cfg(test)]
+    pub(crate) fn stderr_capture_error(&self) -> Option<String> {
         self.stderr
             .lock()
             .unwrap_or_else(|p| p.into_inner())

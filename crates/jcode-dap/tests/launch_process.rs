@@ -381,7 +381,19 @@ async fn real_process_target_exit_during_attach_finalizes_once() {
         )
         .await;
     assert!(result.is_err());
-    let target_pid: u32 = fs::read_to_string(pid_marker).unwrap().parse().unwrap();
+    let target_pid = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(pid) = fs::read_to_string(&pid_marker)
+                .unwrap_or_default()
+                .parse::<u32>()
+            {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     wait_group_gone(target_pid).await;
     let adapter_pid = logged_pid(&root, "adapter_pid");
     wait_group_gone(adapter_pid).await;

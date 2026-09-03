@@ -3,7 +3,8 @@
 use std::ffi::OsStr;
 use std::time::Duration;
 
-use jcode_dap::{AdapterCommand, AdapterProcess, DapError, ProcessStatus, controlled_environment};
+use super::{AdapterCommand, AdapterProcess, ProcessStatus, controlled_environment};
+use crate::DapError;
 
 #[test]
 fn controlled_environment_has_only_allowlisted_non_secret_keys() {

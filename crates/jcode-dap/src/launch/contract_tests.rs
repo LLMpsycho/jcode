@@ -10,6 +10,7 @@ use crate::manager::{DebugTerminationPolicy, NewDebugSession, finish_start, star
 use crate::testing::FakeAdapter;
 use crate::{
     Capabilities, DebugSessionManager, DebugSessionManagerConfig, DebugSessionState, Message,
+    ProcessStatus,
 };
 
 fn fixture(name: &str) -> (PathBuf, DebugWorkspaceKey, PathBuf) {
@@ -503,44 +504,85 @@ fn windows_denial_occurs_before_reservation_or_process_spawn() {
 
 #[tokio::test]
 async fn target_exit_during_attach_cleans_target_adapter_and_owner_slot() {
-    let (_, workspace, program) = fixture("target-exit");
+    let (root, workspace, program) = fixture("target-exit");
+    let marker = root.join("exit-now");
+    let target_spec = ResolvedProgram {
+        program: PathBuf::from("/bin/sh").canonicalize().unwrap(),
+        args: vec![
+            "-c".into(),
+            format!("while [ ! -f '{}' ]; do :; done", marker.display()),
+        ],
+        cwd: root.clone(),
+    };
+    let target = crate::process::OwnedTargetProcess::spawn(&target_spec, None)
+        .await
+        .unwrap();
+    let observer = target.observer();
     let manager =
         DebugSessionManager::new(config(Duration::from_secs(1), Duration::from_millis(5))).unwrap();
-    let (client, adapter) = FakeAdapter::pair(1024);
-    let mut r = manager
+    let (client, mut adapter) = FakeAdapter::pair(1024);
+    let mut reservation = manager
         .reserve(NewDebugSession {
             owner_session_id: "owner".into(),
             workspace: workspace.clone(),
-            adapter_id: "x".into(),
-            start: Some(DebugSessionStart::Launch {
-                program: program.clone(),
-                cwd: program.parent().unwrap().into(),
-            }),
+            adapter_id: "lldb".into(),
+            start: None,
         })
         .unwrap();
-    r.attach_client(client).unwrap();
-    drop(adapter);
-    let id = r.commit().unwrap();
+    reservation
+        .attach_start_client(client, DebugTerminationPolicy::OwnedAttach)
+        .unwrap();
+    reservation.attach_target(target).unwrap();
+    let pid = reservation.target_pid().unwrap();
+    reservation
+        .set_start(DebugSessionStart::OwnedAttach {
+            program: program.clone(),
+            cwd: root,
+            pid,
+        })
+        .unwrap();
+    let task = tokio::spawn(async move {
+        let result = start_protocol(
+            &reservation,
+            AdapterProfile::LldbDap,
+            "attach",
+            AdapterProfile::LldbDap.attach_arguments(pid),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await;
+        finish_start(reservation, result).await
+    });
+    let initialize = recv_request(&mut adapter, "initialize").await;
+    adapter
+        .respond_ok(&initialize, Some(json!({})))
+        .await
+        .unwrap();
+    let _attach = recv_request(&mut adapter, "attach").await;
+    fs::write(&marker, b"").unwrap();
+    assert!(task.await.unwrap().is_err());
     timeout(Duration::from_secs(1), async {
-        loop {
-            if manager.snapshot("owner", id).unwrap().state.is_terminal() {
-                break;
-            }
-            tokio::task::yield_now().await
+        while !matches!(
+            observer.status().await.unwrap(),
+            None | Some(ProcessStatus::Exited { .. })
+        ) {
+            tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
+    let ended = manager.sessions("owner");
+    assert_eq!(ended.len(), 1);
+    assert!(matches!(ended[0].state, DebugSessionState::Ended(_)));
     assert!(
         manager
             .reserve(NewDebugSession {
                 owner_session_id: "owner".into(),
                 workspace,
-                adapter_id: "x".into(),
+                adapter_id: "lldb".into(),
                 start: Some(DebugSessionStart::Launch {
                     program: program.clone(),
                     cwd: program.parent().unwrap().into()
-                })
+                }),
             })
             .is_ok()
     );

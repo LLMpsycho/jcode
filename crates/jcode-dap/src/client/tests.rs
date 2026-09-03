@@ -4,16 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use jcode_dap::testing::FakeAdapter;
-use jcode_dap::{
-    DapClient, DapError, EVENT_CHANNEL_CAPACITY, FrameDecoder, MAX_RETAINED_EVENT_BYTES,
-    MAX_RETAINED_EVENT_SIZE, Message, Request, Response, decode_message, encode_message,
-};
+use super::{DapClient, EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_BYTES, MAX_RETAINED_EVENT_SIZE};
+use crate::testing::FakeAdapter;
+use crate::{DapError, FrameDecoder, Message, Request, Response, decode_message, encode_message};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::sync::oneshot;
 
-fn request(message: Message) -> jcode_dap::Request {
+fn request(message: Message) -> crate::Request {
     match message {
         Message::Request(request) => request,
         other => panic!("expected request, got {other:?}"),

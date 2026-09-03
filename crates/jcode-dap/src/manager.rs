@@ -241,13 +241,35 @@ impl DebugSessionManager {
             cwd: target_spec.cwd.clone(),
             pid,
         })?;
-        let result = start_after_initialize(
-            &reservation,
-            "attach",
-            AdapterProfile::LldbDap.attach_arguments(pid),
-            deadline,
-        )
-        .await;
+        let result = {
+            let start = start_after_initialize(
+                &reservation,
+                "attach",
+                AdapterProfile::LldbDap.attach_arguments(pid),
+                deadline,
+            );
+            tokio::pin!(start);
+            let target_exit = reservation.wait_for_target_exit(deadline);
+            tokio::pin!(target_exit);
+            tokio::select! {
+                biased;
+                exit = &mut target_exit => match exit {
+                    Ok(code) => Err(DapError::DebugTargetExitedBeforeAttach { exit_code: code }),
+                    Err(error) => Err(error),
+                },
+                result = &mut start => result,
+            }
+        };
+        let result = match result {
+            Ok(()) => match reservation.target_status().await {
+                Ok(ProcessStatus::Running) => Ok(()),
+                Ok(ProcessStatus::Exited { code }) => {
+                    Err(DapError::DebugTargetExitedBeforeAttach { exit_code: code })
+                }
+                Err(error) => Err(error),
+            },
+            error => error,
+        };
         finish_start(reservation, result).await
     }
 
@@ -447,64 +469,6 @@ impl DebugSessionReservation {
             .ok_or_else(|| invalid_transition(&entry, &data, "access transport"))
     }
 
-    async fn live_adapter_pid(&self) -> Result<u32> {
-        let (pid, observer) = {
-            let entry = self.core.entry(self.id)?;
-            let data = lock(&entry.data);
-            let adapter = data
-                .transport
-                .as_ref()
-                .and_then(|transport| transport.adapter.as_ref())
-                .ok_or_else(|| invalid_transition(&entry, &data, "inspect adapter"))?;
-            let pid = adapter
-                .pid()
-                .ok_or_else(|| DapError::InvalidAdapterConfiguration {
-                    message: "adapter has no live process identifier".to_owned(),
-                })?;
-            (pid, adapter.observer())
-        };
-        match observer.status().await? {
-            Some(ProcessStatus::Running) => Ok(pid),
-            Some(ProcessStatus::Exited { .. }) | None => {
-                Err(DapError::InvalidAdapterConfiguration {
-                    message: "adapter exited during owned-attach startup".to_owned(),
-                })
-            }
-        }
-    }
-
-    fn adapter_stderr(&self) -> Option<String> {
-        let entry = self.core.entry(self.id).ok()?;
-        let data = lock(&entry.data);
-        let bytes = data.transport.as_ref()?.adapter.as_ref()?.recent_stderr();
-        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
-    }
-
-    fn target_pid(&self) -> Option<u32> {
-        let entry = self.core.entry(self.id).ok()?;
-        lock(&entry.data).transport.as_ref()?.target.as_ref()?.pid()
-    }
-
-    async fn target_status(&self) -> Result<ProcessStatus> {
-        let target = {
-            let entry = self.core.entry(self.id)?;
-            let data = lock(&entry.data);
-            data.transport
-                .as_ref()
-                .and_then(|transport| transport.target.clone())
-                .ok_or_else(|| invalid_transition(&entry, &data, "inspect target"))?
-        };
-        target.status().await
-    }
-
-    fn set_start(&self, start: DebugSessionStart) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let mut data = lock(&entry.data);
-        data.start = Some(start);
-        notify(&entry, &mut data);
-        Ok(())
-    }
-
     pub(crate) async fn wait_until_configurable(
         &self,
         deadline: tokio::time::Instant,
@@ -608,7 +572,18 @@ impl DebugSessionReservation {
     }
 
     pub(crate) fn commit(mut self) -> Result<DebugSessionId> {
-        self.core.entry(self.id)?;
+        let entry = self.core.entry(self.id)?;
+        let data = lock(&entry.data);
+        if matches!(
+            data.state,
+            DebugSessionState::Terminating | DebugSessionState::Ended(_)
+        ) {
+            return Err(DapError::SessionEndedDuringStartup {
+                session_id: self.id,
+                message: format!("state is {:?}", data.state.kind()),
+            });
+        }
+        drop(data);
         self.committed = true;
         Ok(self.id)
     }
@@ -617,7 +592,7 @@ impl DebugSessionReservation {
 impl Drop for DebugSessionReservation {
     fn drop(&mut self) {
         if !self.committed {
-            self.core.cancel_reservation(self.id);
+            self.core.cancel_reservation_drop(self.id);
         }
     }
 }
@@ -713,22 +688,35 @@ impl ManagerCore {
         Ok(entry)
     }
 
-    fn cancel_reservation(&self, id: DebugSessionId) {
-        let entry = self.remove_entry(id);
-        if let Some(entry) = entry {
+    fn cancel_reservation_drop(self: &Arc<Self>, id: DebugSessionId) {
+        let Ok(entry) = self.entry(id) else { return };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let core = Arc::clone(self);
+            handle.spawn(async move {
+                let _ = core
+                    .finalize_owned(entry, DebugSessionEndReason::LaunchCancelled, false, true)
+                    .await;
+            });
+            return;
+        }
+
+        let transport = {
             let mut data = lock(&entry.data);
+            if data.transport.is_none() {
+                drop(data);
+                self.remove_entry(id);
+                return;
+            }
             if let Some(handle) = data.supervisor.take() {
                 handle.abort();
             }
-            if let Some(transport) = data.transport.take() {
-                transport.client.close();
-            }
-            data.state = DebugSessionState::Ended(DebugSessionEnd {
-                reason: DebugSessionEndReason::LaunchCancelled,
-                cleanup_error: None,
-            });
-            notify(&entry, &mut data);
+            data.transport.take()
+        };
+        if let Some(transport) = transport {
+            transport.client.close();
+            drop(transport);
         }
+        self.remove_entry(id);
     }
 
     fn remove_entry(&self, id: DebugSessionId) -> Option<Arc<SessionEntry>> {
@@ -902,6 +890,8 @@ impl ManagerCore {
         self.release_active(&entry);
         if retain {
             self.record_terminal(&entry);
+        } else {
+            self.remove_entry(entry.id);
         }
         if let Some(message) = cleanup_error {
             Err(DapError::SessionCleanupFailed {

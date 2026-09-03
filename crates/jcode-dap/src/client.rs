@@ -14,6 +14,9 @@ use crate::{
     encode_message,
 };
 
+#[cfg(test)]
+mod tests;
+
 const MAX_PENDING_REQUESTS: usize = 1024;
 const WRITER_QUEUE_CAPACITY: usize = 32;
 const REVERSE_RESPONSE_QUEUE_CAPACITY: usize = 32;
@@ -71,6 +74,7 @@ struct ClientInner {
     writer: Mutex<Option<mpsc::Sender<WriteCommand>>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     events: broadcast::Sender<Event>,
+    #[allow(dead_code)]
     reverse_requests: broadcast::Sender<Request>,
     supports_cancel: AtomicBool,
 }
@@ -82,12 +86,13 @@ impl Drop for ClientInner {
 }
 
 #[derive(Clone)]
-pub struct DapClient {
+pub(crate) struct DapClient {
     inner: Arc<ClientInner>,
 }
 
 impl DapClient {
-    pub fn start<T>(transport: T) -> Self
+    #[cfg(test)]
+    pub(crate) fn start<T>(transport: T) -> Self
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
@@ -153,7 +158,8 @@ impl DapClient {
         self.inner.events.subscribe()
     }
 
-    pub fn subscribe_reverse_requests(&self) -> broadcast::Receiver<Request> {
+    #[cfg(test)]
+    pub(crate) fn subscribe_reverse_requests(&self) -> broadcast::Receiver<Request> {
         self.inner.reverse_requests.subscribe()
     }
 

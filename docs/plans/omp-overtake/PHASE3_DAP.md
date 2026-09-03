@@ -53,11 +53,12 @@ This branch implements the DAP protocol foundation, owner-scoped session manager
 - Adapter stderr retains only the configured tail.
 - Graceful termination reaps an owned child. Forced cleanup, natural adapter-leader exit, and the object-drop backstop remove owned descendant process groups before the group identity is forgotten.
 - Owner isolation is verified across list, snapshot, request, output, and terminate. Wrong-owner termination produces no adapter traffic or state change.
+- `DapClient`, adapter command/process ownership, and fake transport injection are crate-private; compile-fail doctests prove external callers cannot construct them or send raw `attach` PID JSON.
 - Capacity, one-active-per-owner, cancellation release, replacement, terminal pruning, owner cleanup, and shutdown index repair are deterministic.
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
 - Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
-- Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, deadline cleanup, and scoped Linux ptracer arguments. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and target-exit finalization.
+- Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, serialized reservation-drop cleanup, deadline cleanup, scoped Linux ptracer arguments, and owned-target exit during attach. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and a reaped target exit that cannot commit a Running session.
 
 Focused validation commands:
 
@@ -71,7 +72,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 110 tests: 59 library tests, 19 client integration tests, 10 framing/protocol tests, 11 real launch-process tests, 8 owned-process tests, and 3 DAP type tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 111 tests: 87 crate-internal library/client/process tests, 10 framing/protocol integration tests, 11 real launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 

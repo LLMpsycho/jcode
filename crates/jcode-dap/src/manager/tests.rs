@@ -575,6 +575,58 @@ async fn terminating_keeps_the_owner_slot_until_ended() {
     assert!(manager.reserve(spec("a")).is_ok());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn reservation_drop_waits_for_finalization_lock_before_cleanup_and_slot_release() {
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        termination_grace: Duration::from_millis(20),
+        process_poll_interval: Duration::from_millis(5),
+        ..Default::default()
+    })
+    .unwrap();
+    let process = AdapterProcess::spawn(
+        &AdapterCommand::new("/bin/sh", "/")
+            .with_arg("-c")
+            .with_arg("trap '' TERM; while :; do sleep 1; done"),
+    )
+    .await
+    .unwrap();
+    let observer = process.observer();
+    let mut reservation = manager.reserve(spec("drop-race")).unwrap();
+    let entry = manager.core.entry(reservation.id()).unwrap();
+    reservation
+        .attach_transport(process.client().clone(), Some(process), None)
+        .unwrap();
+    let finalization = entry.finalization.lock().await;
+    drop(reservation);
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(matches!(
+        manager.reserve(spec("drop-race")),
+        Err(DapError::OwnerAlreadyHasActiveSession { .. })
+    ));
+    assert!(matches!(
+        observer.status().await.unwrap(),
+        Some(ProcessStatus::Running)
+    ));
+    drop(finalization);
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if manager.reserve(spec("drop-race")).is_ok() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        observer.status().await.unwrap(),
+        None | Some(ProcessStatus::Exited { .. })
+    ));
+}
+
 #[tokio::test]
 async fn cleanup_owner_and_shutdown_remove_visibility() {
     let manager = manager();
