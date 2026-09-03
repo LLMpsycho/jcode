@@ -16,6 +16,7 @@ use crate::{
 
 const MAX_PENDING_REQUESTS: usize = 1024;
 const WRITER_QUEUE_CAPACITY: usize = 32;
+const REVERSE_RESPONSE_QUEUE_CAPACITY: usize = 32;
 pub const EVENT_CHANNEL_CAPACITY: usize = 128;
 pub const MAX_RETAINED_EVENT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_RETAINED_EVENT_SIZE: usize = MAX_RETAINED_EVENT_BYTES / EVENT_CHANNEL_CAPACITY;
@@ -94,6 +95,8 @@ impl DapClient {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let (reverse_requests, _) = broadcast::channel(32);
         let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
+        let (reverse_response_tx, reverse_response_rx) =
+            mpsc::channel(REVERSE_RESPONSE_QUEUE_CAPACITY);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let shared = Arc::new(Shared {
             pending,
@@ -110,9 +113,15 @@ impl DapClient {
         ));
         let reader_task = tokio::spawn(read_loop(
             reader,
-            writer_tx.clone(),
+            reverse_response_tx,
             events.clone(),
             reverse_requests.clone(),
+            Arc::clone(&shared),
+            shutdown_rx.clone(),
+        ));
+        let reverse_response_task = tokio::spawn(reverse_response_loop(
+            writer_tx.clone(),
+            reverse_response_rx,
             Arc::clone(&shared),
             shutdown_rx,
         ));
@@ -120,7 +129,7 @@ impl DapClient {
             inner: Arc::new(ClientInner {
                 shared,
                 writer: Mutex::new(Some(writer_tx)),
-                tasks: Mutex::new(vec![reader_task, writer_task]),
+                tasks: Mutex::new(vec![reader_task, writer_task, reverse_response_task]),
                 events,
                 reverse_requests,
                 supports_cancel: AtomicBool::new(false),
@@ -332,7 +341,7 @@ async fn write_loop<W>(
 
 async fn read_loop<R>(
     mut reader: R,
-    writer: mpsc::Sender<WriteCommand>,
+    reverse_responses: mpsc::Sender<Request>,
     events: broadcast::Sender<Event>,
     reverse_requests: broadcast::Sender<Request>,
     shared: Arc<Shared>,
@@ -374,30 +383,7 @@ async fn read_loop<R>(
                 }
                 Message::Request(request) => {
                     let _ignored = reverse_requests.send(request.clone());
-                    let Ok(_enqueue) = shared.enqueue.try_lock() else {
-                        break 'transport DapError::TransportClosed;
-                    };
-                    let seq = match next_sequence(&shared.next_seq) {
-                        Ok(seq) => seq,
-                        Err(error) => break 'transport error,
-                    };
-                    let response = Response::error(
-                        seq,
-                        request.seq,
-                        request.command,
-                        "reverse requests are not supported",
-                    );
-                    let frame = match encode_message(&response) {
-                        Ok(frame) => frame,
-                        Err(error) => break 'transport error,
-                    };
-                    if writer
-                        .try_send(WriteCommand {
-                            frame,
-                            completed: None,
-                        })
-                        .is_err()
-                    {
+                    if reverse_responses.try_send(request).is_err() {
                         break 'transport DapError::TransportClosed;
                     }
                 }
@@ -405,6 +391,80 @@ async fn read_loop<R>(
         }
     };
     terminate_transport(&shared, terminal_error);
+}
+
+async fn reverse_response_loop(
+    writer: mpsc::Sender<WriteCommand>,
+    mut requests: mpsc::Receiver<Request>,
+    shared: Arc<Shared>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        let request = tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+            request = requests.recv() => match request {
+                Some(request) => request,
+                None => return,
+            },
+        };
+        let enqueue = tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+            enqueue = shared.enqueue.lock() => enqueue,
+        };
+        if shared.closed.load(Ordering::Acquire) {
+            return;
+        }
+        let seq = match next_sequence(&shared.next_seq) {
+            Ok(seq) => seq,
+            Err(error) => {
+                terminate_transport(&shared, error);
+                return;
+            }
+        };
+        let response = Response::error(
+            seq,
+            request.seq,
+            request.command,
+            "reverse requests are not supported",
+        );
+        let frame = match encode_message(&response) {
+            Ok(frame) => frame,
+            Err(error) => {
+                terminate_transport(&shared, error);
+                return;
+            }
+        };
+        let result = tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
+                continue;
+            }
+            result = writer.send(WriteCommand {
+                frame,
+                completed: None,
+            }) => result,
+        };
+        drop(enqueue);
+        if result.is_err() {
+            terminate_transport(&shared, DapError::TransportClosed);
+            return;
+        }
+    }
 }
 
 fn handle_response(pending: &Pending, response: Response) {

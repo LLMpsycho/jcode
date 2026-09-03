@@ -524,6 +524,68 @@ async fn reverse_request_does_not_hide_following_eof_behind_blocked_outbound_wri
 }
 
 #[tokio::test]
+async fn reverse_request_waits_for_blocked_write_then_receives_correlated_rejection() {
+    let (transport, mut adapter) = tokio::io::duplex(64);
+    let client = DapClient::start(transport);
+    let mut reverse = client.subscribe_reverse_requests();
+
+    let pending = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request(
+                    "large",
+                    Some(json!({"payload": "x".repeat(64 * 1024)})),
+                    Duration::from_secs(2),
+                )
+                .await
+        }
+    });
+
+    let mut decoder = FrameDecoder::default();
+    let mut first_byte = [0_u8; 1];
+    adapter.read_exact(&mut first_byte).await.unwrap();
+    assert!(decoder.push(&first_byte).unwrap().is_empty());
+
+    adapter
+        .write_all(&encode_message(&Request::new(41, "runInTerminal", None)).unwrap())
+        .await
+        .unwrap();
+    adapter.flush().await.unwrap();
+    assert_eq!(reverse.recv().await.unwrap().seq, 41);
+
+    let outbound = request(recv_framed(&mut adapter, &mut decoder).await);
+    assert_eq!(outbound.command, "large");
+    let Message::Response(rejection) = tokio::time::timeout(
+        Duration::from_secs(1),
+        recv_framed(&mut adapter, &mut decoder),
+    )
+    .await
+    .expect("reverse rejection should follow the blocked outbound frame")
+    else {
+        panic!("expected reverse rejection response")
+    };
+    assert_eq!(rejection.request_seq, 41);
+    assert_eq!(rejection.command, "runInTerminal");
+    assert!(!rejection.success);
+
+    adapter
+        .write_all(
+            &encode_message(&Response::success(
+                42,
+                outbound.seq,
+                outbound.command,
+                None,
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    adapter.flush().await.unwrap();
+    assert!(pending.await.unwrap().is_ok());
+}
+
+#[tokio::test]
 async fn dropping_last_client_closes_transport() {
     let (client, mut adapter) = FakeAdapter::pair(4096);
     let clone = client.clone();
