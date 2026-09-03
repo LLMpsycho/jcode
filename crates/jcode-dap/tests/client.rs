@@ -7,7 +7,7 @@ use std::time::Duration;
 use jcode_dap::testing::FakeAdapter;
 use jcode_dap::{
     DapClient, DapError, EVENT_CHANNEL_CAPACITY, FrameDecoder, MAX_RETAINED_EVENT_BYTES,
-    MAX_RETAINED_EVENT_SIZE, Message, Response, decode_message, encode_message,
+    MAX_RETAINED_EVENT_SIZE, Message, Request, Response, decode_message, encode_message,
 };
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
@@ -480,6 +480,47 @@ async fn reader_eof_interrupts_a_blocked_writer_and_pending_request() {
 
     client.close();
     drop(client);
+}
+
+#[tokio::test]
+async fn reverse_request_does_not_hide_following_eof_behind_blocked_outbound_write() {
+    let (transport, adapter) = tokio::io::duplex(64);
+    let (mut adapter_read, mut adapter_write) = tokio::io::split(adapter);
+    let client = DapClient::start(transport);
+    let mut reverse = client.subscribe_reverse_requests();
+
+    let pending = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request(
+                    "large",
+                    Some(json!({"payload": "x".repeat(64 * 1024)})),
+                    Duration::from_millis(200),
+                )
+                .await
+        }
+    });
+
+    let mut first_byte = [0_u8; 1];
+    adapter_read.read_exact(&mut first_byte).await.unwrap();
+
+    adapter_write
+        .write_all(&encode_message(&Request::new(1, "runInTerminal", None)).unwrap())
+        .await
+        .unwrap();
+    adapter_write.flush().await.unwrap();
+    adapter_write.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(1), reverse.recv())
+        .await
+        .expect("reverse request should be observed")
+        .expect("reverse channel should stay open");
+
+    assert_eq!(
+        pending.await.unwrap().unwrap_err(),
+        DapError::TransportClosed,
+        "EOF after a reverse request must interrupt the blocked write, not wait for its deadline"
+    );
 }
 
 #[tokio::test]

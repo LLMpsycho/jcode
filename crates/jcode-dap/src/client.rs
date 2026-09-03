@@ -374,7 +374,9 @@ async fn read_loop<R>(
                 }
                 Message::Request(request) => {
                     let _ignored = reverse_requests.send(request.clone());
-                    let _enqueue = shared.enqueue.lock().await;
+                    let Ok(_enqueue) = shared.enqueue.try_lock() else {
+                        break 'transport DapError::TransportClosed;
+                    };
                     let seq = match next_sequence(&shared.next_seq) {
                         Ok(seq) => seq,
                         Err(error) => break 'transport error,
@@ -390,11 +392,10 @@ async fn read_loop<R>(
                         Err(error) => break 'transport error,
                     };
                     if writer
-                        .send(WriteCommand {
+                        .try_send(WriteCommand {
                             frame,
                             completed: None,
                         })
-                        .await
                         .is_err()
                     {
                         break 'transport DapError::TransportClosed;

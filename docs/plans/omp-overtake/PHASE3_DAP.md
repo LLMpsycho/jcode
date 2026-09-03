@@ -11,7 +11,7 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - A bounded dedicated writer actor owns the transport writer. Once a complete encoded frame enters its queue, caller cancellation cannot cancel that frame midway through `write_all` and corrupt subsequent framing.
 - Explicit client close and last-client-drop shutdown abort the owned reader and writer tasks, fail pending requests, and release both halves of the transport.
 - Event retention is bounded by both 128 events and an 8 MiB serialized-byte ceiling. Events larger than the per-slot 64 KiB ceiling are dropped without terminating the transport, while flooding uses the broadcast channel's deterministic lag signal.
-- Reverse adapter requests are observable by callers, then rejected with a correctly correlated DAP error response. They are not executed in this slice.
+- Reverse adapter requests are observable by callers, then rejected with a correctly correlated DAP error response when the bounded writer is available. Backpressured rejection closes the transport fail-closed without blocking the reader from observing EOF. Reverse requests are not executed in this slice.
 - A public in-memory fake adapter for protocol and client integration tests.
 - An owned adapter-process abstraction with absolute executable and working-directory validation, a controlled allowlisted environment, private process identity, Unix process-group ownership, graceful termination, forced descendant cleanup, bounded stderr retention, and explicit process status.
 - Framing compacts consumed bytes once per input batch rather than once per frame, avoiding quadratic behavior for batches containing many small frames.
@@ -26,7 +26,7 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - Protocol decoding rejects invalid JSON, unknown message types, non-positive sequences, empty command/event identifiers, and invalid response correlation identifiers.
 - Concurrent requests receive out-of-order responses correctly and retain strictly increasing client sequence numbers in actual writer-queue order.
 - Events are delivered independently of responses.
-- Reverse `runInTerminal` requests are published for observation and receive a fail-closed rejection response with the adapter request sequence and command.
+- Reverse `runInTerminal` requests are published for observation and receive a fail-closed rejection response with the adapter request sequence and command. A reverse request followed by EOF while an outbound write is blocked terminates the pending request as transport closure rather than hiding EOF behind writer backpressure.
 - A request timeout covers writer-queue admission, writer backpressure, complete frame write and flush, and response waiting under one deadline. Timeout cleanup removes pending state, and any advertised DAP `cancel` is attempted with `try_send`, so cancellation cannot block or extend the deadline.
 - Dropping or aborting request futures releases their pending correlation slots, preventing abandoned callers from exhausting the bounded client capacity.
 - Aborting a request while its large frame is blocked on a tiny transport still lets the writer actor finish that frame; the following request remains decodable and correlated.
@@ -50,7 +50,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 35 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 466 lines and the largest DAP test file is 497 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 36 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 467 lines and the largest DAP test file is 538 lines, so this slice remains below the repository file budgets.
 
 ## Deliberately deferred
 
