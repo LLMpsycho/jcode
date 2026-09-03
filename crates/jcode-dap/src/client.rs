@@ -183,11 +183,23 @@ impl DapClient {
                 pending: Arc::clone(&self.inner.shared.pending),
                 seq,
             };
-            self.queue_frame(frame).await?;
-            drop(_enqueue);
-            match receiver.await {
-                Ok(result) => result,
-                Err(_) => Err(DapError::TransportClosed),
+            let mut receiver = receiver;
+            tokio::select! {
+                write_result = self.queue_frame(frame) => {
+                    write_result?;
+                    drop(_enqueue);
+                    match receiver.await {
+                        Ok(result) => result,
+                        Err(_) => Err(DapError::TransportClosed),
+                    }
+                }
+                response = &mut receiver => {
+                    drop(_enqueue);
+                    match response {
+                        Ok(result) => result,
+                        Err(_) => Err(DapError::TransportClosed),
+                    }
+                }
             }
         })
         .await;
@@ -252,11 +264,10 @@ impl DapClient {
 }
 
 fn close_inner(inner: &ClientInner) {
-    if inner.shared.closed.swap(true, Ordering::AcqRel) {
-        return;
+    if !inner.shared.closed.swap(true, Ordering::AcqRel) {
+        fail_pending(&inner.shared.pending, DapError::TransportClosed);
+        let _ignored = inner.shared.shutdown.send(true);
     }
-    fail_pending(&inner.shared.pending, DapError::TransportClosed);
-    let _ignored = inner.shared.shutdown.send(true);
     lock_writer(&inner.writer).take();
     for task in lock_tasks(&inner.tasks).drain(..) {
         task.abort();
@@ -295,12 +306,20 @@ async fn write_loop<W>(
                 None => break,
             },
         };
-        let result = async {
-            writer.write_all(&command.frame).await?;
-            writer.flush().await?;
-            Ok(())
-        }
-        .await;
+        let result = tokio::select! {
+            biased;
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+                continue;
+            }
+            result = async {
+                writer.write_all(&command.frame).await?;
+                writer.flush().await?;
+                Ok(())
+            } => result,
+        };
         if let Some(completed) = command.completed {
             let _ignored = completed.send(result.clone());
         }

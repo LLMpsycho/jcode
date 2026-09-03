@@ -1,3 +1,7 @@
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use jcode_dap::testing::FakeAdapter;
@@ -6,7 +10,8 @@ use jcode_dap::{
     MAX_RETAINED_EVENT_SIZE, Message, Response, decode_message, encode_message,
 };
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+use tokio::sync::oneshot;
 
 fn request(message: Message) -> jcode_dap::Request {
     match message {
@@ -23,6 +28,52 @@ async fn recv_framed(stream: &mut DuplexStream, decoder: &mut FrameDecoder) -> M
         if let Some(frame) = decoder.push(&buffer[..count]).unwrap().into_iter().next() {
             return decode_message(&frame).unwrap();
         }
+    }
+}
+
+struct ControlledEof {
+    ready: oneshot::Receiver<()>,
+}
+
+impl AsyncRead for ControlledEof {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        _buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.ready).poll(cx).map(|_| Ok(()))
+    }
+}
+
+struct BlockingWriter {
+    started: Option<oneshot::Sender<()>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl AsyncWrite for BlockingWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        _buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        if let Some(started) = self.started.take() {
+            let _ignored = started.send(());
+        }
+        Poll::Pending
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for BlockingWriter {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
     }
 }
 
@@ -385,6 +436,50 @@ async fn explicit_close_fails_pending_and_closes_transport() {
             .unwrap_err(),
         DapError::TransportClosed
     );
+}
+
+#[tokio::test]
+async fn reader_eof_interrupts_a_blocked_writer_and_pending_request() {
+    let (eof_sender, eof_receiver) = oneshot::channel();
+    let (started_sender, started_receiver) = oneshot::channel();
+    let writer_dropped = Arc::new(AtomicBool::new(false));
+    let client = DapClient::start_split(
+        ControlledEof {
+            ready: eof_receiver,
+        },
+        BlockingWriter {
+            started: Some(started_sender),
+            dropped: Arc::clone(&writer_dropped),
+        },
+    );
+    let request = tokio::spawn({
+        let client = client.clone();
+        async move { client.request("blocked", None, Duration::from_secs(5)).await }
+    });
+    tokio::time::timeout(Duration::from_secs(1), started_receiver)
+        .await
+        .unwrap()
+        .unwrap();
+
+    eof_sender.send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err(),
+        DapError::TransportClosed
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !writer_dropped.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    client.close();
+    drop(client);
 }
 
 #[tokio::test]

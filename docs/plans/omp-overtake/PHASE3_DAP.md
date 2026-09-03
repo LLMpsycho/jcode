@@ -32,7 +32,7 @@ This branch implements only the first approved Phase 3 slice from the OMP overta
 - Aborting a request while its large frame is blocked on a tiny transport still lets the writer actor finish that frame; the following request remains decodable and correlated.
 - Oversized events are discarded safely, and a 129-event flood against the 128-event retained channel reports exactly one lagged event without unbounded retention.
 - Explicit close fails pending and future requests and closes the fake transport. Dropping non-final clones keeps it open, while dropping the final client closes it automatically.
-- Response command mismatches, malformed adapter payloads, EOF, and process exit fail affected pending requests. A terminal transport rejects future requests.
+- Response command mismatches, malformed adapter payloads, EOF, and process exit fail affected pending requests. Reader EOF also interrupts an active blocked write, releases the writer transport, and rejects future requests without waiting for the request deadline.
 - The controlled child environment contains only explicitly allowlisted non-secret keys plus the selected `PATH`.
 - Non-absolute executable and working-directory inputs are rejected.
 - Adapter stderr retains only the configured tail.
@@ -50,7 +50,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 33 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 447 lines and the largest DAP test file is 402 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 34 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 466 lines and the largest DAP test file is 497 lines, so this slice remains below the repository file budgets.
 
 ## Deliberately deferred
 
