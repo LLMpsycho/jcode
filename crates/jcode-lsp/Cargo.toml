@@ -1,0 +1,19 @@
+[package]
+name = "jcode-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "LSP protocol, framing, and lifecycle foundation for Jcode"
+publish = false
+
+[lib]
+name = "jcode_lsp"
+path = "src/lib.rs"
+
+[dependencies]
+jcode-lsp-types = { path = "../jcode-lsp-types" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+serde_json = "1"

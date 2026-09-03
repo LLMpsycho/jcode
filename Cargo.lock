@@ -3414,6 +3414,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-lsp"
+version = "0.1.0"
+dependencies = [
+ "jcode-lsp-types",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jcode-lsp-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jcode-memory-types"
 version = "0.1.0"
 dependencies = [
