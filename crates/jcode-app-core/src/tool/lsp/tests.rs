@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::message::{Message, ToolDefinition};
 use crate::provider::{EventStream, Provider};
@@ -107,6 +106,40 @@ fn rename_preview_summarizes_workspace_edits_without_dumping_protocol_json() {
     assert!(!text.contains("newText"));
     assert_eq!(files.len(), 2);
     assert_eq!(count, 2);
+}
+
+#[test]
+fn expanded_read_actions_are_advertised_and_shaped_without_raw_payloads() {
+    let tool = LspTool::with_config(Arc::new(LspServicePool::new()), LspConfig::default());
+    let schema = tool.parameters_schema();
+    let actions = schema["properties"]["action"]["enum"].as_array().unwrap();
+    for action in [
+        "implementation",
+        "type_definition",
+        "signature_help",
+        "incoming_calls",
+        "outgoing_calls",
+        "code_actions",
+    ] {
+        assert!(
+            actions.iter().any(|value| value == action),
+            "missing {action}"
+        );
+    }
+
+    assert_eq!(
+        render_signature_help(&json!({"signatures": [{"label": "fn run(value: u32)"}]})),
+        ("fn run(value: u32)".to_owned(), 1)
+    );
+    assert_eq!(
+        render_code_actions(&json!([{"title": "Import item", "kind": "quickfix"}])),
+        ("1. Import item [quickfix]".to_owned(), 1)
+    );
+    let calls = json!([{"from": {"name": "caller", "uri": "file:///workspace/src/lib.rs"}}]);
+    assert_eq!(
+        render_call_hierarchy(&calls, Path::new("/workspace"), LspAction::IncomingCalls),
+        ("caller — src/lib.rs".to_owned(), 1)
+    );
 }
 
 #[tokio::test]

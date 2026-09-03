@@ -9,8 +9,8 @@ use tokio::sync::Mutex;
 use crate::document_sync::file_uri;
 use crate::{
     DiagnosticSnapshot, DiagnosticsCache, DocumentState, DocumentSync, LspConfig, LspError,
-    LspProcess, Position, ProcessStatus, Result, SemanticVerification, SemanticVerificationStatus,
-    config_digest, diagnostic_delta,
+    LspProcess, Position, ProcessStatus, Range, Result, SemanticVerification,
+    SemanticVerificationStatus, config_digest, diagnostic_delta,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -181,6 +181,44 @@ impl LspWorkspace {
         .await
     }
 
+    pub async fn implementation(&self, path: &Path, position: Position) -> Result<Value> {
+        self.position_request("textDocument/implementation", path, position, None)
+            .await
+    }
+
+    pub async fn type_definition(&self, path: &Path, position: Position) -> Result<Value> {
+        self.position_request("textDocument/typeDefinition", path, position, None)
+            .await
+    }
+
+    pub async fn signature_help(&self, path: &Path, position: Position) -> Result<Value> {
+        self.position_request("textDocument/signatureHelp", path, position, None)
+            .await
+    }
+
+    pub async fn code_actions(&self, path: &Path, range: Range) -> Result<Value> {
+        let uri = file_uri(&path.canonicalize()?)?;
+        self.request_with_content_modified_retry(
+            "textDocument/codeAction",
+            serde_json::json!({
+                "textDocument": {"uri": uri},
+                "range": range,
+                "context": {"diagnostics": []}
+            }),
+        )
+        .await
+    }
+
+    pub async fn incoming_calls(&self, path: &Path, position: Position) -> Result<Value> {
+        self.call_hierarchy("callHierarchy/incomingCalls", path, position)
+            .await
+    }
+
+    pub async fn outgoing_calls(&self, path: &Path, position: Position) -> Result<Value> {
+        self.call_hierarchy("callHierarchy/outgoingCalls", path, position)
+            .await
+    }
+
     pub async fn prepare_rename(&self, path: &Path, position: Position) -> Result<Value> {
         for attempt in 0..60 {
             match self
@@ -260,6 +298,17 @@ impl LspWorkspace {
             params["context"] = context;
         }
         self.request_with_content_modified_retry(method, params)
+            .await
+    }
+
+    async fn call_hierarchy(&self, method: &str, path: &Path, position: Position) -> Result<Value> {
+        let items = self
+            .position_request("textDocument/prepareCallHierarchy", path, position, None)
+            .await?;
+        let Some(item) = items.as_array().and_then(|items| items.first()).cloned() else {
+            return Ok(serde_json::json!([]));
+        };
+        self.request_with_content_modified_retry(method, serde_json::json!({"item": item}))
             .await
     }
 

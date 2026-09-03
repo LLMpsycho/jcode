@@ -6,7 +6,8 @@ use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use jcode_lsp::{
     Diagnostic, DiagnosticSeverity, LspConfig, LspError, LspServicePool, LspWorkspace, Position,
-    PostEditDiagnosticsMode, SemanticVerification, SemanticVerificationStatus, discover_executable,
+    PostEditDiagnosticsMode, Range, SemanticVerification, SemanticVerificationStatus,
+    discover_executable,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -59,6 +60,12 @@ enum LspAction {
     WorkspaceSymbols,
     Capabilities,
     Rename,
+    Implementation,
+    TypeDefinition,
+    SignatureHelp,
+    IncomingCalls,
+    OutgoingCalls,
+    CodeActions,
 }
 
 impl LspAction {
@@ -73,6 +80,12 @@ impl LspAction {
             Self::WorkspaceSymbols => "workspace_symbols",
             Self::Capabilities => "capabilities",
             Self::Rename => "rename",
+            Self::Implementation => "implementation",
+            Self::TypeDefinition => "type_definition",
+            Self::SignatureHelp => "signature_help",
+            Self::IncomingCalls => "incoming_calls",
+            Self::OutgoingCalls => "outgoing_calls",
+            Self::CodeActions => "code_actions",
         }
     }
 }
@@ -114,7 +127,9 @@ impl Tool for LspTool {
                     "type": "string",
                     "enum": [
                         "status", "diagnostics", "hover", "definition", "references",
-                        "document_symbols", "workspace_symbols", "capabilities", "rename"
+                        "document_symbols", "workspace_symbols", "capabilities", "rename",
+                        "implementation", "type_definition", "signature_help", "incoming_calls",
+                        "outgoing_calls", "code_actions"
                     ]
                 },
                 "file": {"type": ["string", "null"], "description": "Workspace-relative source file."},
@@ -248,17 +263,43 @@ impl Tool for LspTool {
                             freshness,
                         ))
                     }
-                    LspAction::Hover | LspAction::Definition | LspAction::References => {
+                    LspAction::Hover
+                    | LspAction::Definition
+                    | LspAction::References
+                    | LspAction::Implementation
+                    | LspAction::TypeDefinition
+                    | LspAction::SignatureHelp
+                    | LspAction::IncomingCalls
+                    | LspAction::OutgoingCalls => {
                         let position = one_based_position(params.line, params.character)?;
                         let value = match action {
                             LspAction::Hover => workspace.hover(file, position).await?,
                             LspAction::Definition => workspace.definition(file, position).await?,
                             LspAction::References => workspace.references(file, position).await?,
+                            LspAction::Implementation => {
+                                workspace.implementation(file, position).await?
+                            }
+                            LspAction::TypeDefinition => {
+                                workspace.type_definition(file, position).await?
+                            }
+                            LspAction::SignatureHelp => {
+                                workspace.signature_help(file, position).await?
+                            }
+                            LspAction::IncomingCalls => {
+                                workspace.incoming_calls(file, position).await?
+                            }
+                            LspAction::OutgoingCalls => {
+                                workspace.outgoing_calls(file, position).await?
+                            }
                             _ => unreachable!(),
                         };
                         let (text, count) = match action {
                             LspAction::Hover => {
                                 (render_hover(&value), usize::from(!value.is_null()))
+                            }
+                            LspAction::SignatureHelp => render_signature_help(&value),
+                            LspAction::IncomingCalls | LspAction::OutgoingCalls => {
+                                render_call_hierarchy(&value, &root, action)
                             }
                             _ => render_locations(&value, &root),
                         };
@@ -281,6 +322,28 @@ impl Tool for LspTool {
                             Some(document.version),
                             text,
                             json!({"count": count}),
+                            max_chars,
+                            "fresh",
+                        ))
+                    }
+                    LspAction::CodeActions => {
+                        let position = one_based_position(params.line, params.character)?;
+                        let value = workspace
+                            .code_actions(
+                                file,
+                                Range {
+                                    start: position,
+                                    end: position,
+                                },
+                            )
+                            .await?;
+                        let (text, count) = render_code_actions(&value);
+                        Ok(shaped_output(
+                            action,
+                            &workspace,
+                            Some(document.version),
+                            text,
+                            json!({"count": count, "applied": false}),
                             max_chars,
                             "fresh",
                         ))
@@ -577,6 +640,78 @@ fn render_hover(value: &Value) -> String {
         }
     }
     "Hover information was returned in an unsupported shape.".to_owned()
+}
+
+fn render_signature_help(value: &Value) -> (String, usize) {
+    let signatures = value
+        .get("signatures")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let lines = signatures
+        .iter()
+        .filter_map(|signature| signature.get("label").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let count = lines.len();
+    if lines.is_empty() {
+        ("No signature help.".to_owned(), 0)
+    } else {
+        (lines.join("\n"), count)
+    }
+}
+
+fn render_call_hierarchy(value: &Value, root: &Path, action: LspAction) -> (String, usize) {
+    let entries = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let key = if matches!(action, LspAction::IncomingCalls) {
+        "from"
+    } else {
+        "to"
+    };
+    let lines = entries
+        .iter()
+        .filter_map(|entry| entry.get(key))
+        .filter_map(|item| {
+            let name = item.get("name").and_then(Value::as_str)?;
+            let uri = item.get("uri").and_then(Value::as_str)?;
+            Some(format!("{name} — {}", display_uri(uri, root)))
+        })
+        .collect::<Vec<_>>();
+    let count = lines.len();
+    if lines.is_empty() {
+        ("No calls found.".to_owned(), 0)
+    } else {
+        (lines.join("\n"), count)
+    }
+}
+
+fn render_code_actions(value: &Value) -> (String, usize) {
+    let actions = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let lines = actions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, action)| {
+            let title = action.get("title").and_then(Value::as_str)?;
+            let kind = action
+                .get("kind")
+                .and_then(Value::as_str)
+                .map(|kind| format!(" [{kind}]"))
+                .unwrap_or_default();
+            let disabled = action
+                .get("disabled")
+                .and_then(|value| value.get("reason"))
+                .and_then(Value::as_str)
+                .map(|reason| format!(" (disabled: {reason})"))
+                .unwrap_or_default();
+            Some(format!("{}. {title}{kind}{disabled}", index + 1))
+        })
+        .collect::<Vec<_>>();
+    let count = lines.len();
+    if lines.is_empty() {
+        ("No code actions.".to_owned(), 0)
+    } else {
+        (lines.join("\n"), count)
+    }
 }
 
 fn render_symbols(value: &Value, root: &Path) -> (String, usize) {
