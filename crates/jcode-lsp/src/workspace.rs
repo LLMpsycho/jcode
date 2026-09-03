@@ -222,6 +222,11 @@ impl LspWorkspace {
         .await
     }
 
+    pub async fn resolve_code_action(&self, action: Value) -> Result<Value> {
+        self.request_with_content_modified_retry("codeAction/resolve", action)
+            .await
+    }
+
     pub async fn incoming_calls(&self, path: &Path, position: Position) -> Result<Value> {
         self.call_hierarchy("callHierarchy/incomingCalls", path, position)
             .await

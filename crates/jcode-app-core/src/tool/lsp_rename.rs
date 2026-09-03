@@ -39,9 +39,20 @@ pub(crate) async fn apply_workspace_edit(
     ledger: FileSnapshotLedger,
     intent: String,
 ) -> Result<RenameApplyResult> {
+    apply_workspace_edit_for_operation(edit, root, ctx, ledger, intent, "semantic rename").await
+}
+
+pub(crate) async fn apply_workspace_edit_for_operation(
+    edit: &Value,
+    root: &Path,
+    ctx: &ToolContext,
+    ledger: FileSnapshotLedger,
+    intent: String,
+    operation: &str,
+) -> Result<RenameApplyResult> {
     let edits = collect_workspace_edits(edit)?;
     if edits.is_empty() {
-        bail!("language server returned an empty rename edit");
+        bail!("language server returned an empty workspace edit");
     }
 
     let strict_policy = crate::config::ReadGuardConfig {
@@ -139,7 +150,7 @@ pub(crate) async fn apply_workspace_edit(
                 path: target.path.clone(),
                 op: FileOp::Edit,
                 intent: intent.clone(),
-                summary: Some(format!("LSP semantic rename ({} edits)", target.edit_count)),
+                summary: Some(format!("LSP {operation} ({} edits)", target.edit_count)),
                 detail: None,
             }));
             json!({
@@ -152,10 +163,18 @@ pub(crate) async fn apply_workspace_edit(
         })
         .collect::<Vec<_>>();
 
+    let mut metadata = json!({
+        "files": files,
+        "workspace_edit_applied": true,
+        "operation": operation
+    });
+    if operation == "semantic rename" {
+        metadata["rename_applied"] = json!(true);
+    }
     Ok(RenameApplyResult {
         file_count: targets.len(),
         edit_count,
-        metadata: json!({"files": files, "rename_applied": true}),
+        metadata,
     })
 }
 
@@ -394,6 +413,46 @@ mod tests {
                 0o640
             );
         }
+    }
+
+    #[tokio::test]
+    async fn applies_code_action_edit_through_the_same_snapshot_transaction() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("a.rs"), "let value = 1;\n").unwrap();
+        let canonical = root.path().canonicalize().unwrap();
+        let ledger = FileSnapshotLedger::new();
+        record_full_read(&ledger, &canonical, "a.rs").await;
+        let uri = url::Url::from_file_path(canonical.join("a.rs")).unwrap();
+        let edit = json!({
+            "changes": {
+                uri.as_str(): [{
+                    "range": {
+                        "start": {"line": 0, "character": 4},
+                        "end": {"line": 0, "character": 9}
+                    },
+                    "newText": "renamed"
+                }]
+            }
+        });
+
+        let result = apply_workspace_edit_for_operation(
+            &edit,
+            &canonical,
+            &context(&canonical),
+            ledger,
+            "Apply selected quick fix".to_owned(),
+            "code action",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(canonical.join("a.rs")).unwrap(),
+            "let renamed = 1;\n"
+        );
+        assert_eq!(result.metadata["operation"], "code action");
+        assert_eq!(result.metadata["workspace_edit_applied"], true);
+        assert!(result.metadata.get("rename_applied").is_none());
     }
 
     #[tokio::test]

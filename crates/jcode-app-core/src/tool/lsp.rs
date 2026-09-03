@@ -107,6 +107,8 @@ struct LspInput {
     new_name: Option<String>,
     #[serde(default)]
     apply: bool,
+    #[serde(default)]
+    selector: Option<String>,
     intent: String,
 }
 
@@ -139,7 +141,8 @@ impl Tool for LspTool {
                 "character": {"type": ["integer", "null"], "minimum": 1, "description": "One-based UTF-16 character offset."},
                 "query": {"type": ["string", "null"], "description": "Workspace-symbol query."},
                 "new_name": {"type": ["string", "null"], "description": "New symbol name for rename preview."},
-                "apply": {"type": "boolean", "default": false, "description": "Rename application is not enabled yet; false returns a preview."},
+                "selector": {"type": ["string", "null"], "description": "Exact code-action title or one-based list index to apply."},
+                "apply": {"type": "boolean", "default": false, "description": "Apply a semantic rename or explicitly selected code action through the snapshot guard."},
                 "intent": super::intent_schema_property()
             },
             "additionalProperties": false
@@ -374,13 +377,77 @@ impl Tool for LspTool {
                                 },
                             )
                             .await?;
-                        let (text, count) = render_code_actions(&value);
+                        let (text, actions) = render_code_actions(&value);
+                        if params.apply {
+                            let selector = params
+                                .selector
+                                .as_deref()
+                                .filter(|selector| !selector.trim().is_empty())
+                                .ok_or_else(|| {
+                                    anyhow!(
+                                        "applying a code action requires an explicit `selector`"
+                                    )
+                                })?;
+                            let selected = select_code_action(&value, selector)?;
+                            let title = selected
+                                .get("title")
+                                .and_then(Value::as_str)
+                                .unwrap_or("selected code action")
+                                .to_owned();
+                            let resolved = if selected.get("edit").is_some() {
+                                selected
+                            } else {
+                                workspace.resolve_code_action(selected).await?
+                            };
+                            let edit = resolved.get("edit").ok_or_else(|| {
+                                anyhow!(
+                                    "code action `{title}` has no WorkspaceEdit; command-only actions must run through normal tool permissions"
+                                )
+                            })?;
+                            let command_skipped = resolved.get("command").is_some();
+                            let applied = super::lsp_rename::apply_workspace_edit_for_operation(
+                                edit,
+                                &root,
+                                &ctx,
+                                self.file_snapshots.clone(),
+                                params.intent.clone(),
+                                "code action",
+                            )
+                            .await?;
+                            let mut metadata = applied.metadata;
+                            if let Some(metadata) = metadata.as_object_mut() {
+                                metadata.insert("code_action".to_owned(), json!(title));
+                                metadata.insert("selector".to_owned(), json!(selector));
+                                metadata
+                                    .insert("command_skipped".to_owned(), json!(command_skipped));
+                            }
+                            let mut output = ToolOutput::new(format!(
+                                "Applied code action `{title}` to {} file(s), {} edit(s).{}",
+                                applied.file_count,
+                                applied.edit_count,
+                                if command_skipped {
+                                    " The action's command was not run; execute it separately through normal tool permissions."
+                                } else {
+                                    ""
+                                }
+                            ))
+                            .with_title("lsp code_actions")
+                            .with_metadata(metadata);
+                            attach_post_edit_feedback(
+                                "anchored_edit",
+                                &mut output,
+                                &ctx,
+                                Arc::clone(&self.pool),
+                            )
+                            .await;
+                            return Ok(output);
+                        }
                         Ok(shaped_output(
                             action,
                             &workspace,
                             Some(document.version),
                             text,
-                            json!({"count": count, "applied": false}),
+                            json!({"count": actions.len(), "actions": actions, "applied": false}),
                             max_chars,
                             "fresh",
                         ))
@@ -755,12 +822,25 @@ fn render_call_hierarchy(value: &Value, root: &Path, action: LspAction) -> (Stri
     }
 }
 
-fn render_code_actions(value: &Value) -> (String, usize) {
+fn render_code_actions(value: &Value) -> (String, Vec<Value>) {
     let actions = value.as_array().map(Vec::as_slice).unwrap_or_default();
-    let lines = actions
+    let summaries = actions
         .iter()
         .enumerate()
         .filter_map(|(index, action)| {
+            let title = action.get("title").and_then(Value::as_str)?;
+            Some(json!({
+                "index": index + 1,
+                "title": title,
+                "kind": action.get("kind"),
+                "disabled_reason": action.get("disabled").and_then(|value| value.get("reason"))
+            }))
+        })
+        .collect::<Vec<_>>();
+    let lines = summaries
+        .iter()
+        .filter_map(|action| {
+            let index = action.get("index").and_then(Value::as_u64)?;
             let title = action.get("title").and_then(Value::as_str)?;
             let kind = action
                 .get("kind")
@@ -768,20 +848,49 @@ fn render_code_actions(value: &Value) -> (String, usize) {
                 .map(|kind| format!(" [{kind}]"))
                 .unwrap_or_default();
             let disabled = action
-                .get("disabled")
-                .and_then(|value| value.get("reason"))
+                .get("disabled_reason")
                 .and_then(Value::as_str)
                 .map(|reason| format!(" (disabled: {reason})"))
                 .unwrap_or_default();
-            Some(format!("{}. {title}{kind}{disabled}", index + 1))
+            Some(format!("{index}. {title}{kind}{disabled}"))
         })
         .collect::<Vec<_>>();
-    let count = lines.len();
     if lines.is_empty() {
-        ("No code actions.".to_owned(), 0)
+        ("No code actions.".to_owned(), summaries)
     } else {
-        (lines.join("\n"), count)
+        (lines.join("\n"), summaries)
     }
+}
+
+fn select_code_action(value: &Value, selector: &str) -> Result<Value> {
+    let actions = value
+        .as_array()
+        .ok_or_else(|| anyhow!("language server returned an invalid code-action list"))?;
+    let selector = selector.trim();
+    let selected = selector
+        .strip_prefix('#')
+        .unwrap_or(selector)
+        .parse::<usize>()
+        .ok()
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|index| actions.get(index))
+        .cloned()
+        .or_else(|| {
+            let matches = actions
+                .iter()
+                .filter(|action| action.get("title").and_then(Value::as_str) == Some(selector))
+                .collect::<Vec<_>>();
+            (matches.len() == 1).then(|| matches[0].clone())
+        })
+        .ok_or_else(|| anyhow!("code-action selector `{selector}` matched no unique action"))?;
+    if let Some(reason) = selected
+        .get("disabled")
+        .and_then(|disabled| disabled.get("reason"))
+        .and_then(Value::as_str)
+    {
+        bail!("selected code action is disabled: {reason}");
+    }
+    Ok(selected)
 }
 
 fn render_symbols(value: &Value, root: &Path) -> (String, usize) {

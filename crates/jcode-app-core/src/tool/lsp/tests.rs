@@ -145,6 +145,32 @@ fn rename_preview_summarizes_workspace_edits_without_dumping_protocol_json() {
 }
 
 #[test]
+fn code_actions_require_an_explicit_unique_enabled_selector() {
+    let actions = json!([
+        {"title": "Import Arc", "kind": "quickfix", "edit": {"changes": {}}},
+        {"title": "Disabled", "disabled": {"reason": "not applicable"}},
+        {"title": "Duplicate"},
+        {"title": "Duplicate"}
+    ]);
+    assert_eq!(
+        select_code_action(&actions, "Import Arc").unwrap()["title"],
+        "Import Arc"
+    );
+    assert_eq!(
+        select_code_action(&actions, "#1").unwrap()["title"],
+        "Import Arc"
+    );
+    assert!(select_code_action(&actions, "Disabled").is_err());
+    assert!(select_code_action(&actions, "Duplicate").is_err());
+    assert!(select_code_action(&actions, "99").is_err());
+
+    let (text, summaries) = render_code_actions(&actions);
+    assert!(text.contains("1. Import Arc [quickfix]"));
+    assert_eq!(summaries.len(), 4);
+    assert_eq!(summaries[0]["title"], "Import Arc");
+}
+
+#[test]
 fn expanded_read_actions_are_advertised_and_shaped_without_raw_payloads() {
     let tool = LspTool::with_config(Arc::new(LspServicePool::new()), LspConfig::default());
     let schema = tool.parameters_schema();
@@ -167,10 +193,11 @@ fn expanded_read_actions_are_advertised_and_shaped_without_raw_payloads() {
         render_signature_help(&json!({"signatures": [{"label": "fn run(value: u32)"}]})),
         ("fn run(value: u32)".to_owned(), 1)
     );
-    assert_eq!(
-        render_code_actions(&json!([{"title": "Import item", "kind": "quickfix"}])),
-        ("1. Import item [quickfix]".to_owned(), 1)
-    );
+    let (text, actions) =
+        render_code_actions(&json!([{"title": "Import item", "kind": "quickfix"}]));
+    assert_eq!(text, "1. Import item [quickfix]");
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0]["title"], "Import item");
     let calls = json!([{"from": {"name": "caller", "uri": "file:///workspace/src/lib.rs"}}]);
     assert_eq!(
         render_call_hierarchy(&calls, Path::new("/workspace"), LspAction::IncomingCalls),
