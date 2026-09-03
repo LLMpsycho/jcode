@@ -365,6 +365,24 @@ args = []
 root_markers = ["Cargo.toml", "rust-project.json"]
 file_extensions = ["rs"]
 
+[lsp.servers.typescript-language-server]
+command = "typescript-language-server"
+args = ["--stdio"]
+root_markers = ["tsconfig.json", "jsconfig.json", "package.json"]
+file_extensions = ["ts", "tsx", "js", "jsx"]
+
+[lsp.servers.pyright]
+command = "pyright-langserver"
+args = ["--stdio"]
+root_markers = ["pyproject.toml", "setup.py", "requirements.txt"]
+file_extensions = ["py"]
+
+[lsp.servers.gopls]
+command = "gopls"
+args = []
+root_markers = ["go.mod", "go.work"]
+file_extensions = ["go"]
+
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.
 # standard emits only spec-compatible ACP messages.

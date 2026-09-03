@@ -51,6 +51,44 @@ impl Default for LspConfig {
                 file_extensions: vec!["rs".to_owned()],
             },
         );
+        servers.insert(
+            "typescript-language-server".to_owned(),
+            LspServerConfig {
+                command: "typescript-language-server".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                root_markers: vec![
+                    "tsconfig.json".to_owned(),
+                    "jsconfig.json".to_owned(),
+                    "package.json".to_owned(),
+                ],
+                file_extensions: ["ts", "tsx", "js", "jsx"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            },
+        );
+        servers.insert(
+            "pyright".to_owned(),
+            LspServerConfig {
+                command: "pyright-langserver".to_owned(),
+                args: vec!["--stdio".to_owned()],
+                root_markers: vec![
+                    "pyproject.toml".to_owned(),
+                    "setup.py".to_owned(),
+                    "requirements.txt".to_owned(),
+                ],
+                file_extensions: vec!["py".to_owned()],
+            },
+        );
+        servers.insert(
+            "gopls".to_owned(),
+            LspServerConfig {
+                command: "gopls".to_owned(),
+                args: Vec::new(),
+                root_markers: vec!["go.mod".to_owned(), "go.work".to_owned()],
+                file_extensions: vec!["go".to_owned()],
+            },
+        );
         Self {
             enabled: true,
             shared: true,
@@ -88,6 +126,17 @@ impl LspConfig {
             }) {
                 issues.push(format!(
                     "lsp.servers.{server_id}.file_extensions must contain bare extensions"
+                ));
+            }
+            if server.root_markers.iter().any(|marker| {
+                marker.is_empty()
+                    || std::path::Path::new(marker).is_absolute()
+                    || std::path::Path::new(marker)
+                        .components()
+                        .any(|component| matches!(component, std::path::Component::ParentDir))
+            }) {
+                issues.push(format!(
+                    "lsp.servers.{server_id}.root_markers must contain safe relative paths"
                 ));
             }
         }
@@ -299,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn lsp_defaults_match_the_documented_rust_mvp() {
+    fn lsp_defaults_match_the_documented_language_order() {
         let config = LspConfig::default();
         assert!(config.enabled);
         assert!(config.shared);
@@ -307,6 +356,12 @@ mod tests {
         let rust = &config.servers["rust-analyzer"];
         assert_eq!(rust.command, "rust-analyzer");
         assert_eq!(rust.file_extensions, ["rs"]);
+        assert_eq!(
+            config.servers["typescript-language-server"].file_extensions,
+            ["ts", "tsx", "js", "jsx"]
+        );
+        assert_eq!(config.servers["pyright"].file_extensions, ["py"]);
+        assert_eq!(config.servers["gopls"].file_extensions, ["go"]);
         assert!(config.validation_issues().is_empty());
     }
 
@@ -323,6 +378,7 @@ mod tests {
                 LspServerConfig {
                     command: String::new(),
                     file_extensions: vec!["src/rs".to_owned()],
+                    root_markers: vec!["../Cargo.toml".to_owned()],
                     ..LspServerConfig::default()
                 },
             )]),
@@ -336,5 +392,6 @@ mod tests {
         );
         assert!(issues.iter().any(|issue| issue.contains("command")));
         assert!(issues.iter().any(|issue| issue.contains("file_extensions")));
+        assert!(issues.iter().any(|issue| issue.contains("root_markers")));
     }
 }

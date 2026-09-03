@@ -336,3 +336,155 @@ async fn rust_cross_file_rename_returns_edits_for_definition_and_reference() {
     assert_eq!(touched.len(), 2, "workspace edit: {edit}");
     pool.shutdown_all(Duration::from_secs(5)).await;
 }
+
+#[tokio::test]
+async fn installed_typescript_server_resolves_definition() {
+    let current = std::env::current_dir().unwrap();
+    let config = LspConfig::default();
+    let server = &config.servers["typescript-language-server"];
+    if discover_executable(
+        &server.command,
+        std::env::var_os("PATH").as_deref(),
+        &current,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("src")).unwrap();
+    let typescript_root = std::env::var_os("JCODE_TEST_TYPESCRIPT_ROOT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            discover_executable("tsc", std::env::var_os("PATH").as_deref(), &current)
+                .ok()
+                .and_then(|path| path.canonicalize().ok())
+                .and_then(|path| path.parent().and_then(Path::parent).map(Path::to_owned))
+        });
+    let Some(typescript_root) =
+        typescript_root.filter(|root| root.join("lib/tsserver.js").is_file())
+    else {
+        return;
+    };
+    std::fs::create_dir(project.path().join("node_modules")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        &typescript_root,
+        project.path().join("node_modules/typescript"),
+    )
+    .unwrap();
+    #[cfg(not(unix))]
+    return;
+    std::fs::write(
+        project.path().join("package.json"),
+        r#"{"name":"lsp-typescript-fixture","private":true}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true},"include":["src"]}"#,
+    )
+    .unwrap();
+    let source_path = project.path().join("src/lib.ts");
+    let source = "export function target(): number { return 1; }\nexport const value = target();\n";
+    std::fs::write(&source_path, source).unwrap();
+
+    let pool = LspServicePool::new();
+    let workspace = pool
+        .get_or_start(
+            project.path(),
+            "typescript-fixture",
+            "typescript-language-server",
+            &config,
+        )
+        .await
+        .unwrap();
+    workspace
+        .sync_document_from_disk(&source_path, "typescript")
+        .await
+        .unwrap();
+    let column = source.lines().nth(1).unwrap().find("target").unwrap() as u32;
+    let definition = workspace
+        .definition(
+            &source_path,
+            Position {
+                line: 1,
+                character: column,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        !definition.is_null() && definition.as_array().is_none_or(|items| !items.is_empty()),
+        "typescript definition was empty; stderr: {}",
+        workspace.process().recent_stderr()
+    );
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
+async fn installed_pyright_reports_a_type_error() {
+    let current = std::env::current_dir().unwrap();
+    let config = LspConfig::default();
+    let server = &config.servers["pyright"];
+    if discover_executable(
+        &server.command,
+        std::env::var_os("PATH").as_deref(),
+        &current,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("pyproject.toml"),
+        "[tool.pyright]\ntypeCheckingMode = \"strict\"\n",
+    )
+    .unwrap();
+    let source_path = project.path().join("main.py");
+    std::fs::write(&source_path, "value: int = \"wrong\"\n").unwrap();
+
+    let pool = LspServicePool::new();
+    let workspace = pool
+        .get_or_start(project.path(), "python-fixture", "pyright", &config)
+        .await
+        .unwrap();
+    let document = workspace
+        .sync_document_from_disk(&source_path, "python")
+        .await
+        .unwrap();
+    let mut diagnostics = workspace
+        .current_diagnostics(&document, Duration::from_secs(10))
+        .await
+        .unwrap();
+    if diagnostics.is_none() {
+        for _ in 0..100 {
+            diagnostics = workspace.diagnostics(&source_path).await.unwrap();
+            if diagnostics
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.items.is_empty())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    let diagnostics = diagnostics.unwrap_or_else(|| {
+        panic!(
+            "pyright did not publish diagnostics; stderr: {}",
+            workspace.process().recent_stderr()
+        )
+    });
+    assert!(
+        diagnostics
+            .items
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR)),
+        "expected a pyright type error, got {:?}",
+        diagnostics.items
+    );
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}

@@ -93,6 +93,58 @@ fn non_shared_configuration_isolates_session_workspace_identity() {
 }
 
 #[test]
+fn language_selection_is_extension_driven_or_explicit() {
+    let config = LspConfig::default();
+    assert_eq!(
+        select_server(&config, None, Some(Path::new("src/lib.rs"))).unwrap(),
+        "rust-analyzer"
+    );
+    assert_eq!(
+        select_server(&config, None, Some(Path::new("src/app.tsx"))).unwrap(),
+        "typescript-language-server"
+    );
+    assert_eq!(
+        select_server(&config, None, Some(Path::new("src/app.py"))).unwrap(),
+        "pyright"
+    );
+    assert!(select_server(&config, None, None).is_err());
+    assert_eq!(
+        select_server(&config, Some("rust-analyzer"), None).unwrap(),
+        "rust-analyzer"
+    );
+    assert!(
+        select_server(
+            &config,
+            Some("rust-analyzer"),
+            Some(Path::new("src/app.py"))
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn nearest_configured_root_marker_scopes_the_language_server() {
+    let session = tempfile::tempdir().unwrap();
+    let project = session.path().join("nested/project");
+    let source = project.join("src/lib.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(project.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(&source, "pub fn value() {}\n").unwrap();
+    let session_root = session.path().canonicalize().unwrap();
+    let source = source.canonicalize().unwrap();
+    let config = LspConfig::default();
+
+    assert_eq!(
+        discover_server_root(
+            &session_root,
+            Some(&source),
+            &config.servers["rust-analyzer"]
+        ),
+        project.canonicalize().unwrap()
+    );
+}
+
+#[test]
 fn renders_locations_without_raw_protocol_payloads() {
     let root = Path::new("/workspace");
     let value = json!([{

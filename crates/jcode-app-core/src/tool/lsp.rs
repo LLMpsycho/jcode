@@ -1,17 +1,21 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
 use jcode_lsp::{
-    Diagnostic, DiagnosticSeverity, LspConfig, LspError, LspServicePool, LspWorkspace, Position,
+    Diagnostic, DiagnosticSeverity, LspConfig, LspError, LspServicePool, LspWorkspace,
     PostEditDiagnosticsMode, Range, SemanticVerification, SemanticVerificationStatus,
     discover_executable,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::lsp_support::{
+    discover_server_root, language_id, one_based_position, resolve_file, select_server,
+    workspace_root,
+};
 use super::{Tool, ToolContext, ToolOutput};
 
 pub struct LspTool {
@@ -96,6 +100,8 @@ impl LspAction {
 struct LspInput {
     action: LspAction,
     #[serde(default)]
+    server: Option<String>,
+    #[serde(default)]
     file: Option<String>,
     #[serde(default)]
     line: Option<u32>,
@@ -136,6 +142,7 @@ impl Tool for LspTool {
                         "outgoing_calls", "code_actions", "reload"
                     ]
                 },
+                "server": {"type": ["string", "null"], "description": "Configured server id. Required for workspace-only actions when multiple servers exist."},
                 "file": {"type": ["string", "null"], "description": "Workspace-relative source file."},
                 "line": {"type": ["integer", "null"], "minimum": 1, "description": "One-based source line."},
                 "character": {"type": ["integer", "null"], "minimum": 1, "description": "One-based UTF-16 character offset."},
@@ -172,12 +179,20 @@ impl Tool for LspTool {
             .as_deref()
             .map(|file| resolve_file(&root, file))
             .transpose()?;
-        let server_id = select_server(&config, file.as_deref())?;
+        let server_id = select_server(&config, params.server.as_deref(), file.as_deref())?;
+        let service_root = discover_server_root(
+            &root,
+            file.as_deref(),
+            config
+                .servers
+                .get(&server_id)
+                .ok_or_else(|| anyhow!("LSP server `{server_id}` is not configured"))?,
+        );
         if matches!(params.action, LspAction::Reload) {
             let workspace_identity = workspace_identity(&config, &root, &ctx.session_id);
             return match self
                 .pool
-                .reload(&root, workspace_identity, &server_id, &config)
+                .reload(&service_root, workspace_identity, &server_id, &config)
                 .await
             {
                 Ok(workspace) => Ok(shaped_output(
@@ -205,7 +220,7 @@ impl Tool for LspTool {
         let workspace_identity = workspace_identity(&config, &root, &ctx.session_id);
         let workspace = match self
             .pool
-            .get_or_start(&root, workspace_identity, &server_id, &config)
+            .get_or_start(&service_root, workspace_identity, &server_id, &config)
             .await
         {
             Ok(workspace) => workspace,
@@ -504,69 +519,6 @@ impl Tool for LspTool {
             }
         }
     }
-}
-
-fn workspace_root(ctx: &ToolContext) -> Result<PathBuf> {
-    ctx.working_dir
-        .as_deref()
-        .ok_or_else(|| anyhow!("lsp requires a session working directory"))?
-        .canonicalize()
-        .map_err(Into::into)
-}
-
-fn resolve_file(root: &Path, file: &str) -> Result<PathBuf> {
-    let path = root.join(file).canonicalize()?;
-    if !path.starts_with(root) {
-        bail!("LSP file must remain inside the workspace");
-    }
-    Ok(path)
-}
-
-fn select_server(config: &LspConfig, file: Option<&Path>) -> Result<String> {
-    if let Some(extension) = file
-        .and_then(Path::extension)
-        .and_then(|value| value.to_str())
-    {
-        if let Some((server_id, _)) = config.servers.iter().find(|(_, server)| {
-            server
-                .file_extensions
-                .iter()
-                .any(|candidate| candidate == extension)
-        }) {
-            return Ok(server_id.clone());
-        }
-        bail!("no LSP server is configured for .{extension} files");
-    }
-    config
-        .servers
-        .keys()
-        .next()
-        .cloned()
-        .ok_or_else(|| anyhow!("no LSP servers are configured"))
-}
-
-fn language_id(path: &Path) -> &str {
-    match path.extension().and_then(|value| value.to_str()) {
-        Some("rs") => "rust",
-        Some("ts") => "typescript",
-        Some("tsx") => "typescriptreact",
-        Some("js") => "javascript",
-        Some("jsx") => "javascriptreact",
-        Some("py") => "python",
-        Some("go") => "go",
-        _ => "plaintext",
-    }
-}
-
-fn one_based_position(line: Option<u32>, character: Option<u32>) -> Result<Position> {
-    let line = line.ok_or_else(|| anyhow!("this LSP action requires `line`"))?;
-    if line == 0 || character == Some(0) {
-        bail!("LSP line and character values are one-based");
-    }
-    Ok(Position {
-        line: line - 1,
-        character: character.unwrap_or(1) - 1,
-    })
 }
 
 async fn render_status(
@@ -1120,11 +1072,21 @@ async fn verify_written_file(
             path: path.display().to_string(),
         });
     }
-    let server_id = select_server(config, Some(&path))
+    let server_id = select_server(config, None, Some(&path))
         .map_err(|error| LspError::InvalidConfig(error.to_string()))?;
+    let service_root = discover_server_root(
+        root,
+        Some(&path),
+        config
+            .servers
+            .get(&server_id)
+            .ok_or_else(|| LspError::UnknownServer {
+                server_id: server_id.clone(),
+            })?,
+    );
     let workspace_identity = workspace_identity(config, root, session_id);
     let workspace = pool
-        .get_or_start(root, workspace_identity, &server_id, config)
+        .get_or_start(&service_root, workspace_identity, &server_id, config)
         .await?;
     workspace
         .verify_disk_change(

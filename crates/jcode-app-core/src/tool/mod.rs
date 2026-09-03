@@ -27,6 +27,7 @@ mod jcode_docs;
 mod ls;
 mod lsp;
 mod lsp_rename;
+mod lsp_support;
 pub mod mcp;
 mod memory;
 mod multiedit;

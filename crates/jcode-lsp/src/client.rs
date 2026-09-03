@@ -151,15 +151,25 @@ async fn read_loop<R>(
                     let _ = notifications.send(notification);
                 }
                 IncomingMessage::Request(request) => {
+                    let (result, error) = match safe_server_request_result(
+                        &request.method,
+                        request.params.as_ref(),
+                    ) {
+                        Some(result) => (Some(result), None),
+                        None => (
+                            None,
+                            Some(ResponseError {
+                                code: -32601,
+                                message: format!("unsupported server request: {}", request.method),
+                                data: None,
+                            }),
+                        ),
+                    };
                     let response = ResponseMessage {
                         jsonrpc: crate::JSON_RPC_VERSION.to_owned(),
                         id: request.id,
-                        result: None,
-                        error: Some(ResponseError {
-                            code: -32601,
-                            message: format!("unsupported server request: {}", request.method),
-                            data: None,
-                        }),
+                        result,
+                        error,
                     };
                     if write_message(&writer, &response).await.is_err() {
                         break;
@@ -177,6 +187,32 @@ async fn read_loop<R>(
         .collect::<Vec<_>>();
     for sender in senders {
         let _ = sender.send(Err(LspError::TransportClosed));
+    }
+}
+
+fn safe_server_request_result(method: &str, params: Option<&Value>) -> Option<Value> {
+    match method {
+        "workspace/configuration" => {
+            let count = params
+                .and_then(|params| params.get("items"))
+                .and_then(Value::as_array)
+                .map(Vec::len)
+                .unwrap_or(0);
+            Some(Value::Array(vec![Value::Null; count]))
+        }
+        "workspace/workspaceFolders" | "window/showMessageRequest" => Some(Value::Null),
+        "client/registerCapability"
+        | "client/unregisterCapability"
+        | "window/workDoneProgress/create"
+        | "workspace/codeLens/refresh"
+        | "workspace/semanticTokens/refresh"
+        | "workspace/inlayHint/refresh"
+        | "workspace/diagnostic/refresh" => Some(Value::Null),
+        "workspace/applyEdit" => Some(serde_json::json!({
+            "applied": false,
+            "failureReason": "Jcode requires explicit, snapshot-guarded edit application"
+        })),
+        _ => None,
     }
 }
 
@@ -255,10 +291,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_server_request_receives_method_not_found() {
+    async fn common_server_requests_receive_safe_responses() {
         let (_client, mut server) = FakeLspServer::pair(4096);
         server
-            .request(RequestId::Number(99), "workspace/configuration", None)
+            .request(
+                RequestId::Number(99),
+                "workspace/configuration",
+                Some(json!({"items": [{"section": "typescript"}, {"section": "python"}]})),
+            )
             .await
             .unwrap();
         let response = server.recv().await.unwrap();
@@ -266,6 +306,33 @@ mod tests {
             panic!("expected response");
         };
         assert_eq!(response.id, RequestId::Number(99));
+        assert_eq!(response.result, Some(json!([null, null])));
+        assert!(response.error.is_none());
+
+        server
+            .request(
+                RequestId::Number(100),
+                "workspace/applyEdit",
+                Some(json!({"edit": {"changes": {}}})),
+            )
+            .await
+            .unwrap();
+        let IncomingMessage::Response(response) = server.recv().await.unwrap() else {
+            panic!("expected response");
+        };
+        assert_eq!(response.result.unwrap()["applied"], false);
+    }
+
+    #[tokio::test]
+    async fn unsupported_server_request_receives_method_not_found() {
+        let (_client, mut server) = FakeLspServer::pair(4096);
+        server
+            .request(RequestId::Number(99), "custom/unsupported", None)
+            .await
+            .unwrap();
+        let IncomingMessage::Response(response) = server.recv().await.unwrap() else {
+            panic!("expected response");
+        };
         assert_eq!(response.error.unwrap().code, -32601);
     }
 
