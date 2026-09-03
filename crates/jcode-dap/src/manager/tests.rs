@@ -75,12 +75,22 @@ fn ids_capacity_and_one_active_owner_are_atomic() {
     ));
 }
 
-#[test]
-fn reservation_drop_releases_owner_slot() {
+#[tokio::test]
+async fn reservation_drop_releases_owner_slot_and_closes_transport() {
     let manager = manager();
-    let first = manager.reserve(spec("a")).unwrap().id();
+    let (client, mut adapter) = FakeAdapter::pair(1024);
+    let mut first = manager.reserve(spec("a")).unwrap();
+    let first_id = first.id();
+    first.attach_client(client).unwrap();
+    drop(first);
+    assert!(matches!(
+        timeout(Duration::from_secs(1), adapter.recv())
+            .await
+            .unwrap(),
+        Err(DapError::TransportClosed)
+    ));
     let second = manager.reserve(spec("a")).unwrap();
-    assert_ne!(first, second.id());
+    assert_ne!(first_id, second.id());
 }
 
 #[test]
@@ -127,6 +137,29 @@ async fn explicit_lifecycle_methods_follow_legal_flow() {
         manager.snapshot("a", id).unwrap().state,
         DebugSessionState::Running
     );
+}
+
+#[tokio::test]
+async fn lifecycle_methods_are_idempotent_after_early_adapter_events() {
+    let manager = manager();
+    let (client, mut adapter) = FakeAdapter::pair(1024);
+    let mut reservation = manager.reserve(spec("a")).unwrap();
+    reservation.attach_client(client).unwrap();
+    let id = reservation.id();
+
+    adapter.event("initialized", None).await.unwrap();
+    wait_for(&manager, "a", id, |state| {
+        matches!(state, DebugSessionState::Configuring)
+    })
+    .await;
+    reservation.mark_configuring().unwrap();
+
+    adapter.event("continued", None).await.unwrap();
+    wait_for(&manager, "a", id, |state| {
+        matches!(state, DebugSessionState::Running)
+    })
+    .await;
+    reservation.mark_running().unwrap();
 }
 
 #[tokio::test]
@@ -343,19 +376,50 @@ async fn broadcast_lag_ends_session_with_exact_loss() {
 #[tokio::test]
 async fn request_timeout_is_recoverable() {
     let manager = manager();
-    let (id, mut adapter) = attached(&manager, "a");
+    let (client, mut adapter) = FakeAdapter::pair(1024);
+    let mut reservation = manager.reserve(spec("a")).unwrap();
+    reservation.attach_client(client).unwrap();
+    reservation
+        .set_capabilities(Capabilities {
+            supports_cancel_request: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    let id = reservation.commit().unwrap();
+
     let result = manager
         .request("a", id, "threads", None, Duration::from_millis(10))
         .await;
     assert!(matches!(result, Err(DapError::RequestTimeout { .. })));
     assert!(!manager.snapshot("a", id).unwrap().state.is_terminal());
-    let request = match adapter.recv().await.unwrap() {
+    let timed_out = match adapter.recv().await.unwrap() {
         Message::Request(request) => request,
         _ => panic!(),
     };
-    let response =
-        tokio::spawn(async move { adapter.respond_ok(&request, Some(json!({"ok":true}))).await });
-    let _ = response.await;
+    let cancel = match adapter.recv().await.unwrap() {
+        Message::Request(request) => request,
+        _ => panic!(),
+    };
+    assert_eq!(cancel.command, "cancel");
+    assert_eq!(cancel.arguments, Some(json!({"requestId": timed_out.seq})));
+
+    let request_task = {
+        let manager = manager.clone();
+        tokio::spawn(async move {
+            manager
+                .request("a", id, "threads", None, Duration::from_secs(1))
+                .await
+        })
+    };
+    let retry = match adapter.recv().await.unwrap() {
+        Message::Request(request) => request,
+        _ => panic!(),
+    };
+    adapter
+        .respond_ok(&retry, Some(json!({"threads":[]})))
+        .await
+        .unwrap();
+    assert!(request_task.await.unwrap().is_ok());
 }
 
 #[tokio::test]

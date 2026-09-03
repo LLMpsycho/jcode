@@ -20,7 +20,7 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Reaped process identities are cleared so later object destruction cannot signal a reused process-group id. Unix termination tolerates the normal already-exited `ESRCH` race.
 - A public `DebugSessionManager` exposes immutable owner-authorized snapshots, lists, bounded output pages, termination, owner cleanup, and shutdown without exposing raw clients, processes, or mutable session entries.
 - Opaque process-unique session IDs, canonical workspace keys, one active root per trusted owner, a global active cap, owner reverse indexes, and bounded terminal-history retention are enforced under one short-held registry mutex.
-- Session state is validated across reserved, initialization, configuration, running, stopped, terminating, and ended states. Illegal transitions return structured errors, while stale events cannot reactivate terminal sessions.
+- Session state is validated across reserved, initialization, configuration, running, stopped, terminating, and ended states. Illegal transitions return structured errors, adapter events that race later handshake markers are idempotent, and stale events cannot reactivate terminal sessions.
 - Cancellation-safe reservations synchronously release every index and close attached transports when abandoned. A start barrier prevents already-closed attachment from racing supervision before its task handle is stored.
 - Per-entry state locks and an async finalization lock keep registry locks out of I/O. Finalization releases active ownership, closes the client, and uses the owned process abstraction for graceful then forced process-group cleanup.
 - Supervisors consume output and lifecycle events, observe transport closure and adapter exit, fail closed on receiver lag or non-output source loss, and keep request timeout recoverable.
@@ -52,7 +52,7 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Capacity, one-active-per-owner, cancellation release, replacement, terminal pruning, owner cleanup, and shutdown index repair are deterministic.
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
-- Recoverable request timeout, authorized request round trip, concurrent transport failure plus termination, final-manager-drop closure, and extreme configuration durations are covered.
+- Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
 
 Focused validation commands:
 
@@ -66,7 +66,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 70 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 71 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 

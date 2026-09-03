@@ -282,6 +282,9 @@ impl DebugSessionReservation {
     pub(crate) fn mark_configuring(&self) -> Result<()> {
         let entry = self.core.entry(self.id)?;
         let mut data = lock(&entry.data);
+        if matches!(data.state, DebugSessionState::Configuring) {
+            return Ok(());
+        }
         transition(
             &entry,
             &mut data,
@@ -293,6 +296,9 @@ impl DebugSessionReservation {
     pub(crate) fn mark_running(&self) -> Result<()> {
         let entry = self.core.entry(self.id)?;
         let mut data = lock(&entry.data);
+        if matches!(data.state, DebugSessionState::Running) {
+            return Ok(());
+        }
         transition(&entry, &mut data, DebugSessionState::Running, "run")
     }
 
