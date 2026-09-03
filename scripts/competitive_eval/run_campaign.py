@@ -7,18 +7,29 @@ import os
 import platform
 import random
 import re
+import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adapters.base import AgentAdapter
-from .adapters.jcode import JcodeAdapter
-from .adapters.mock import MockAdapter
-from .adapters.omp import OmpAdapter
-from .manifest import load_task_manifest, validate_baseline_lock, validate_manifest
-from .run_one import TrialConfig, atomic_write_json, run_trial
-from .redact import redact_text, sensitive_values
+if __package__:
+    from .adapters.base import AgentAdapter
+    from .adapters.jcode import JcodeAdapter
+    from .adapters.mock import MockAdapter
+    from .adapters.omp import OmpAdapter
+    from .manifest import load_task_manifest, validate_baseline_lock, validate_manifest
+    from .redact import redact_text, sensitive_values
+    from .run_one import TrialConfig, atomic_write_json, run_trial
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.competitive_eval.adapters.base import AgentAdapter
+    from scripts.competitive_eval.adapters.jcode import JcodeAdapter
+    from scripts.competitive_eval.adapters.mock import MockAdapter
+    from scripts.competitive_eval.adapters.omp import OmpAdapter
+    from scripts.competitive_eval.manifest import load_task_manifest, validate_baseline_lock, validate_manifest
+    from scripts.competitive_eval.redact import redact_text, sensitive_values
+    from scripts.competitive_eval.run_one import TrialConfig, atomic_write_json, run_trial
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

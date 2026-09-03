@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from .summarize import load_results
+if __package__:
+    from .summarize import load_results
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.competitive_eval.summarize import load_results
 
 
 def compare_results(results: list[dict[str, Any]], left: str = "jcode", right: str = "omp") -> dict[str, Any]:

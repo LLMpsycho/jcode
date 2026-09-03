@@ -14,7 +14,7 @@ from scripts.competitive_eval.manifest import (
 )
 from scripts.competitive_eval.run_one import atomic_write_json
 
-from .helpers import write_fixture
+from scripts.competitive_eval.tests.helpers import write_fixture
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]

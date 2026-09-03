@@ -9,7 +9,7 @@ from scripts.competitive_eval.adapters.mock import MockAdapter
 from scripts.competitive_eval.manifest import load_task_manifest
 from scripts.competitive_eval.run_one import TrialConfig, run_trial
 
-from .helpers import write_fixture
+from scripts.competitive_eval.tests.helpers import write_fixture
 
 
 class MockOutcomeTests(unittest.TestCase):

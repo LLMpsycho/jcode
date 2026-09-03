@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass
@@ -13,13 +14,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .adapters.base import AgentAdapter, ArtifactSet, RunSpec
-from .adapters.jcode import JcodeAdapter
-from .adapters.mock import MockAdapter
-from .adapters.omp import OmpAdapter
-from .manifest import load_task_manifest, validate_manifest
-from .process_metrics import ProcessOutcome, run_process
-from .redact import redact_mapping, redact_text, sensitive_values
+if __package__:
+    from .adapters.base import AgentAdapter, ArtifactSet, RunSpec
+    from .adapters.jcode import JcodeAdapter
+    from .adapters.mock import MockAdapter
+    from .adapters.omp import OmpAdapter
+    from .manifest import load_task_manifest, validate_manifest
+    from .process_metrics import ProcessOutcome, run_process
+    from .redact import redact_mapping, redact_text, sensitive_values
+else:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from scripts.competitive_eval.adapters.base import AgentAdapter, ArtifactSet, RunSpec
+    from scripts.competitive_eval.adapters.jcode import JcodeAdapter
+    from scripts.competitive_eval.adapters.mock import MockAdapter
+    from scripts.competitive_eval.adapters.omp import OmpAdapter
+    from scripts.competitive_eval.manifest import load_task_manifest, validate_manifest
+    from scripts.competitive_eval.process_metrics import ProcessOutcome, run_process
+    from scripts.competitive_eval.redact import redact_mapping, redact_text, sensitive_values
 
 
 @dataclass(frozen=True)
