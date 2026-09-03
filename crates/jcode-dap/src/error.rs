@@ -4,6 +4,20 @@ use thiserror::Error;
 
 use crate::{DebugSessionId, DebugSessionStateKind};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DebugStartOperation {
+    Launch,
+    OwnedAttach,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DebugStartupPhase {
+    Initialize,
+    StartRequest,
+    AwaitInitialized,
+    ConfigurationDone,
+}
+
 pub type Result<T> = std::result::Result<T, DapError>;
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -61,6 +75,32 @@ pub enum DapError {
     },
     #[error("failed to clean debug session {session_id}: {message}")]
     SessionCleanupFailed {
+        session_id: DebugSessionId,
+        message: String,
+    },
+    #[error("invalid debug adapter configuration: {message}")]
+    InvalidAdapterConfiguration { message: String },
+    #[error("debug adapter executable {path:?} is unavailable: {message}")]
+    AdapterUnavailable { path: PathBuf, message: String },
+    #[error("invalid debug program path {path:?}: {message}")]
+    InvalidDebugProgram { path: PathBuf, message: String },
+    #[error("debug path {path:?} is outside workspace {workspace:?}")]
+    DebugPathOutsideWorkspace { path: PathBuf, workspace: PathBuf },
+    #[error("debug working directory {path:?} is invalid: {message}")]
+    InvalidDebugWorkingDirectory { path: PathBuf, message: String },
+    #[error("{operation:?} cannot provide owned process containment on {platform}")]
+    ProcessContainmentUnavailable {
+        operation: DebugStartOperation,
+        platform: &'static str,
+    },
+    #[error("debug session startup timed out during {phase:?}")]
+    DebugStartupTimeout { phase: DebugStartupPhase },
+    #[error("invalid DAP initialize response: {message}")]
+    InvalidInitializeResponse { message: String },
+    #[error("owned debug target exited before attach with code {exit_code:?}")]
+    DebugTargetExitedBeforeAttach { exit_code: Option<i32> },
+    #[error("debug session {session_id} ended during startup: {message}")]
+    SessionEndedDuringStartup {
         session_id: DebugSessionId,
         message: String,
     },

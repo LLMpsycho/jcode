@@ -88,6 +88,8 @@ pub struct DebugSessionManagerConfig {
     pub output_page_limit: usize,
     pub termination_grace: Duration,
     pub process_poll_interval: Duration,
+    pub startup_timeout: Duration,
+    pub disconnect_timeout: Duration,
 }
 
 impl Default for DebugSessionManagerConfig {
@@ -100,6 +102,8 @@ impl Default for DebugSessionManagerConfig {
             output_page_limit: 256,
             termination_grace: Duration::from_secs(2),
             process_poll_interval: Duration::from_millis(250),
+            startup_timeout: Duration::from_secs(30),
+            disconnect_timeout: Duration::from_secs(2),
         }
     }
 }
@@ -119,6 +123,8 @@ impl DebugSessionManagerConfig {
         let now = std::time::Instant::now();
         if now.checked_add(self.termination_grace).is_none()
             || now.checked_add(self.process_poll_interval).is_none()
+            || now.checked_add(self.startup_timeout).is_none()
+            || now.checked_add(self.disconnect_timeout).is_none()
         {
             return Err(DapError::InvalidManagerConfiguration {
                 message: "termination and polling durations must fit the platform instant range"
@@ -240,6 +246,7 @@ pub struct DebugSessionSnapshot {
     pub id: DebugSessionId,
     pub workspace: DebugWorkspaceKey,
     pub adapter_id: String,
+    pub start: crate::DebugSessionStart,
     pub state: DebugSessionState,
     pub capabilities: Capabilities,
     pub output: DebugOutputStatus,

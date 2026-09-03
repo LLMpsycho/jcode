@@ -24,6 +24,10 @@ fn spec(owner: &str) -> NewDebugSession {
         owner_session_id: owner.into(),
         workspace: DebugWorkspaceKey::new(std::path::Path::new("."), owner).unwrap(),
         adapter_id: "fake".into(),
+        start: Some(DebugSessionStart::Launch {
+            program: std::env::current_dir().unwrap(),
+            cwd: std::env::current_dir().unwrap(),
+        }),
     }
 }
 
@@ -465,7 +469,9 @@ async fn cancelling_cleanup_callers_does_not_strand_sessions() {
         .await
         .unwrap();
         let mut reservation = manager.reserve(spec(owner)).unwrap();
-        reservation.attach_process(process).unwrap();
+        reservation
+            .attach_transport(process.client().clone(), Some(process), None)
+            .unwrap();
         reservation.commit().unwrap()
     }
 
@@ -499,7 +505,10 @@ async fn cancelling_cleanup_callers_does_not_strand_sessions() {
         })
     };
     timeout(Duration::from_secs(2), async {
-        while !matches!(entry.snapshot().state, DebugSessionState::Terminating) {
+        while !matches!(
+            entry.snapshot().unwrap().state,
+            DebugSessionState::Terminating
+        ) {
             sleep(Duration::from_millis(1)).await;
         }
     })
@@ -508,7 +517,7 @@ async fn cancelling_cleanup_callers_does_not_strand_sessions() {
     cleanup.abort();
     assert!(cleanup.await.unwrap_err().is_cancelled());
     timeout(Duration::from_secs(2), async {
-        while !entry.snapshot().state.is_terminal() {
+        while !entry.snapshot().unwrap().state.is_terminal() {
             sleep(Duration::from_millis(1)).await;
         }
     })
@@ -523,7 +532,10 @@ async fn cancelling_cleanup_callers_does_not_strand_sessions() {
         tokio::spawn(async move { manager.shutdown_all().await })
     };
     timeout(Duration::from_secs(2), async {
-        while !matches!(entry.snapshot().state, DebugSessionState::Terminating) {
+        while !matches!(
+            entry.snapshot().unwrap().state,
+            DebugSessionState::Terminating
+        ) {
             sleep(Duration::from_millis(1)).await;
         }
     })
@@ -532,7 +544,7 @@ async fn cancelling_cleanup_callers_does_not_strand_sessions() {
     shutdown.abort();
     assert!(shutdown.await.unwrap_err().is_cancelled());
     timeout(Duration::from_secs(2), async {
-        while !entry.snapshot().state.is_terminal() {
+        while !entry.snapshot().unwrap().state.is_terminal() {
             sleep(Duration::from_millis(1)).await;
         }
     })

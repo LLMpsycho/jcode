@@ -9,6 +9,12 @@ publish = false
 name = "jcode_dap"
 path = "src/lib.rs"
 
+[[bin]]
+name = "jcode-fake-dap-adapter"
+path = "src/bin/fake_dap_adapter.rs"
+test = false
+bench = false
+
 [dependencies]
 jcode-dap-types = { path = "../jcode-dap-types" }
 serde = { version = "1", features = ["derive"] }

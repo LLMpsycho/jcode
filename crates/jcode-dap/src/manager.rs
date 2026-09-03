@@ -7,12 +7,16 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::client::DapClientStatus;
+use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program};
+use crate::process::OwnedTargetProcess;
 use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
 use crate::{
-    AdapterProcess, Capabilities, DapClient, DapError, DebugCleanupFailure, DebugCleanupReport,
-    DebugOutputCursor, DebugOutputPage, DebugSessionEnd, DebugSessionEndReason, DebugSessionId,
-    DebugSessionManagerConfig, DebugSessionSnapshot, DebugSessionState, DebugWorkspaceKey,
-    OwnerCleanupCause, ProcessStatus, Response, Result,
+    AdapterCommand, AdapterProcess, Capabilities, DapClient, DapError, DebugAdapterConfig,
+    DebugCleanupFailure, DebugCleanupReport, DebugLaunchRequest, DebugOutputCursor,
+    DebugOutputPage, DebugOwnedAttachRequest, DebugSessionEnd, DebugSessionEndReason,
+    DebugSessionId, DebugSessionManagerConfig, DebugSessionSnapshot, DebugSessionStart,
+    DebugSessionState, DebugSessionStateKind, DebugStartOperation, DebugStartupPhase,
+    DebugWorkspaceKey, OwnerCleanupCause, ProcessStatus, Response, Result,
 };
 
 #[derive(Clone)]
@@ -43,7 +47,10 @@ impl DebugSessionManager {
                 .filter_map(|id| registry.entries.get(id).cloned())
                 .collect::<Vec<_>>()
         };
-        entries.iter().map(|entry| entry.snapshot()).collect()
+        entries
+            .iter()
+            .filter_map(|entry| entry.snapshot())
+            .collect()
     }
 
     pub fn snapshot(
@@ -51,7 +58,10 @@ impl DebugSessionManager {
         owner_session_id: &str,
         id: DebugSessionId,
     ) -> Result<DebugSessionSnapshot> {
-        Ok(self.core.authorized_entry(owner_session_id, id)?.snapshot())
+        self.core
+            .authorized_entry(owner_session_id, id)?
+            .snapshot()
+            .ok_or(DapError::SessionNotFound { session_id: id })
     }
 
     pub fn output(
@@ -77,7 +87,9 @@ impl DebugSessionManager {
         self.core
             .finalize(entry.clone(), DebugSessionEndReason::Requested, true, true)
             .await?;
-        Ok(entry.snapshot())
+        entry
+            .snapshot()
+            .ok_or(DapError::SessionNotFound { session_id: id })
     }
 
     pub async fn cleanup_owner(
@@ -98,6 +110,127 @@ impl DebugSessionManager {
         self.core
             .finalize_many(entries, DebugSessionEndReason::ServerShutdown)
             .await
+    }
+
+    pub async fn launch(
+        &self,
+        owner_session_id: &str,
+        workspace: DebugWorkspaceKey,
+        adapter: &DebugAdapterConfig,
+        request: DebugLaunchRequest,
+    ) -> Result<DebugSessionSnapshot> {
+        deny_unsupported(DebugStartOperation::Launch)?;
+        adapter.revalidate()?;
+        let target = resolve_program(&workspace, request.program(), request.args(), request.cwd())?;
+        let start = DebugSessionStart::Launch {
+            program: target.program.clone(),
+            cwd: target.cwd.clone(),
+        };
+        let resolved = ResolvedLaunch {
+            target,
+            stop_on_entry: request.stop_on_entry(),
+        };
+        let mut reservation = self.reserve(NewDebugSession {
+            owner_session_id: owner_session_id.to_owned(),
+            workspace: workspace.clone(),
+            adapter_id: adapter.adapter_id().to_owned(),
+            start: Some(start),
+        })?;
+        let deadline = startup_deadline(self.core.config.startup_timeout)?;
+        adapter.revalidate()?;
+        let process = deadline_result(
+            deadline,
+            DebugStartupPhase::Initialize,
+            AdapterProcess::spawn(&AdapterCommand::new(
+                adapter.executable(),
+                workspace.canonical_root(),
+            )),
+        )
+        .await?;
+        reservation.attach_process(process, DebugTerminationPolicy::AdapterLaunched)?;
+        let result = start_protocol(
+            &reservation,
+            AdapterProfile::LldbDap,
+            "launch",
+            AdapterProfile::LldbDap.launch_arguments(&resolved),
+            deadline,
+        )
+        .await;
+        finish_start(reservation, result).await
+    }
+
+    pub async fn spawn_and_attach(
+        &self,
+        owner_session_id: &str,
+        workspace: DebugWorkspaceKey,
+        adapter: &DebugAdapterConfig,
+        request: DebugOwnedAttachRequest,
+    ) -> Result<DebugSessionSnapshot> {
+        deny_unsupported(DebugStartOperation::OwnedAttach)?;
+        adapter.revalidate()?;
+        let target_spec =
+            resolve_program(&workspace, request.program(), request.args(), request.cwd())?;
+        let mut reservation = self.reserve(NewDebugSession {
+            owner_session_id: owner_session_id.to_owned(),
+            workspace: workspace.clone(),
+            adapter_id: adapter.adapter_id().to_owned(),
+            start: None,
+        })?;
+        let deadline = startup_deadline(self.core.config.startup_timeout)?;
+        adapter.revalidate()?;
+        let process = deadline_result(
+            deadline,
+            DebugStartupPhase::Initialize,
+            AdapterProcess::spawn(&AdapterCommand::new(
+                adapter.executable(),
+                workspace.canonical_root(),
+            )),
+        )
+        .await?;
+        reservation.attach_process(process, DebugTerminationPolicy::OwnedAttach)?;
+        if let Err(error) = initialize(&reservation, AdapterProfile::LldbDap, deadline).await {
+            return finish_start(reservation, Err(error)).await;
+        }
+        let adapter_pid =
+            reservation
+                .adapter_pid()
+                .ok_or_else(|| DapError::InvalidAdapterConfiguration {
+                    message: "adapter has no live process identifier".to_owned(),
+                })?;
+        let target = match deadline_result(
+            deadline,
+            DebugStartupPhase::StartRequest,
+            OwnedTargetProcess::spawn(&target_spec, Some(adapter_pid)),
+        )
+        .await
+        {
+            Ok(target) => target,
+            Err(error) => return finish_start(reservation, Err(error)).await,
+        };
+        reservation.attach_target(target)?;
+        if let ProcessStatus::Exited { code } = reservation.target_status().await? {
+            return finish_start(
+                reservation,
+                Err(DapError::DebugTargetExitedBeforeAttach { exit_code: code }),
+            )
+            .await;
+        }
+        let pid = reservation
+            .target_pid()
+            .ok_or(DapError::DebugTargetExitedBeforeAttach { exit_code: None })?;
+        reservation.set_start(DebugSessionStart::OwnedAttach {
+            program: target_spec.program.clone(),
+            cwd: target_spec.cwd.clone(),
+            pid,
+        })?;
+        let result = start_after_initialize(
+            &reservation,
+            "attach",
+            AdapterProfile::LldbDap.attach_arguments(pid),
+            deadline,
+        )
+        .await;
+        finish_start(reservation, result).await
     }
 
     #[allow(dead_code)]
@@ -133,6 +266,8 @@ impl DebugSessionManager {
             adapter_id: spec.adapter_id,
             data: Mutex::new(SessionData {
                 state: DebugSessionState::Reserved,
+                start: spec.start,
+                initialized_seen: false,
                 capabilities: Capabilities::default(),
                 transport: None,
                 output: OutputRing::new(
@@ -184,6 +319,7 @@ pub(crate) struct NewDebugSession {
     pub owner_session_id: String,
     pub workspace: DebugWorkspaceKey,
     pub adapter_id: String,
+    pub start: Option<DebugSessionStart>,
 }
 
 pub(crate) struct DebugSessionReservation {
@@ -199,21 +335,27 @@ impl DebugSessionReservation {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn attach_process(&mut self, process: AdapterProcess) -> Result<()> {
-        let process = Arc::new(process);
-        self.attach_transport(process.client().clone(), Some(process))
+    pub(crate) fn attach_process(
+        &mut self,
+        process: AdapterProcess,
+        termination_policy: DebugTerminationPolicy,
+    ) -> Result<()> {
+        let client = process.client().clone();
+        self.attach_transport(client, Some(process), Some(termination_policy))
     }
 
     #[cfg(test)]
     pub(crate) fn attach_client(&mut self, client: DapClient) -> Result<()> {
-        self.attach_transport(client, None)
+        self.attach_transport(client, None, None)
     }
 
     fn attach_transport(
         &mut self,
         client: DapClient,
-        process: Option<Arc<AdapterProcess>>,
+        process: Option<AdapterProcess>,
+        termination_policy: Option<DebugTerminationPolicy>,
     ) -> Result<()> {
+        let supervised_process = process.as_ref().map(AdapterProcess::observer);
         let entry = self.core.entry(self.id)?;
         let events = client.subscribe_events();
         let status = client.subscribe_status();
@@ -228,12 +370,13 @@ impl DebugSessionReservation {
             )?;
             data.transport = Some(SessionTransport {
                 client: client.clone(),
-                process: process.clone(),
+                adapter: process,
+                target: None,
+                termination_policy,
             });
         }
         let core = Arc::downgrade(&self.core);
         let supervised = entry.clone();
-        let supervised_process = process.as_ref().map(Arc::downgrade);
         let (start, ready) = oneshot::channel();
         let handle = tokio::spawn(async move {
             if ready.await.is_err() {
@@ -252,6 +395,118 @@ impl DebugSessionReservation {
         lock(&entry.data).supervisor = Some(handle);
         let _ignored = start.send(());
         Ok(())
+    }
+
+    pub(crate) fn attach_target(&mut self, target: OwnedTargetProcess) -> Result<()> {
+        let entry = self.core.entry(self.id)?;
+        let mut data = lock(&entry.data);
+        if data
+            .transport
+            .as_ref()
+            .is_none_or(|transport| transport.target.is_some())
+        {
+            return Err(invalid_transition(&entry, &data, "attach target"));
+        }
+        data.transport.as_mut().unwrap().target = Some(target);
+        Ok(())
+    }
+
+    fn client(&self) -> Result<DapClient> {
+        let entry = self.core.entry(self.id)?;
+        let data = lock(&entry.data);
+        data.transport
+            .as_ref()
+            .map(|transport| transport.client.clone())
+            .ok_or_else(|| invalid_transition(&entry, &data, "access transport"))
+    }
+
+    fn adapter_pid(&self) -> Option<u32> {
+        let entry = self.core.entry(self.id).ok()?;
+        lock(&entry.data)
+            .transport
+            .as_ref()?
+            .adapter
+            .as_ref()?
+            .pid()
+    }
+
+    fn target_pid(&self) -> Option<u32> {
+        let entry = self.core.entry(self.id).ok()?;
+        lock(&entry.data).transport.as_ref()?.target.as_ref()?.pid()
+    }
+
+    async fn target_status(&self) -> Result<ProcessStatus> {
+        let target = {
+            let entry = self.core.entry(self.id)?;
+            let data = lock(&entry.data);
+            data.transport
+                .as_ref()
+                .and_then(|transport| transport.target.clone())
+                .ok_or_else(|| invalid_transition(&entry, &data, "inspect target"))?
+        };
+        target.status().await
+    }
+
+    fn set_start(&self, start: DebugSessionStart) -> Result<()> {
+        let entry = self.core.entry(self.id)?;
+        let mut data = lock(&entry.data);
+        data.start = Some(start);
+        notify(&entry, &mut data);
+        Ok(())
+    }
+
+    pub(crate) async fn wait_until_configurable(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<DebugSessionStateKind> {
+        let entry = self.core.entry(self.id)?;
+        let mut changed = entry.changed.subscribe();
+        loop {
+            {
+                let data = lock(&entry.data);
+                if data.initialized_seen {
+                    return Ok(data.state.kind());
+                }
+                if matches!(
+                    data.state,
+                    DebugSessionState::Terminating | DebugSessionState::Ended(_)
+                ) {
+                    return Err(DapError::SessionEndedDuringStartup {
+                        session_id: self.id,
+                        message: format!("state is {:?}", data.state.kind()),
+                    });
+                }
+            }
+            tokio::time::timeout_at(deadline, changed.changed())
+                .await
+                .map_err(|_| DapError::DebugStartupTimeout {
+                    phase: DebugStartupPhase::AwaitInitialized,
+                })?
+                .map_err(|_| DapError::TransportClosed)?;
+        }
+    }
+
+    pub(crate) fn complete_start(&self) -> Result<()> {
+        let entry = self.core.entry(self.id)?;
+        let mut data = lock(&entry.data);
+        match data.state {
+            DebugSessionState::Stopped(_) | DebugSessionState::Running => Ok(()),
+            DebugSessionState::Configuring => transition(
+                &entry,
+                &mut data,
+                DebugSessionState::Running,
+                "complete start",
+            ),
+            _ => Err(invalid_transition(&entry, &data, "complete start")),
+        }
+    }
+
+    pub(crate) async fn cancel_start(mut self) -> Result<()> {
+        self.committed = true;
+        let entry = self.core.entry(self.id)?;
+        self.core
+            .finalize(entry, DebugSessionEndReason::LaunchCancelled, true, true)
+            .await
     }
 
     pub(crate) fn set_capabilities(&self, capabilities: Capabilities) -> Result<()> {
@@ -346,6 +601,8 @@ struct SessionEntry {
 
 struct SessionData {
     state: DebugSessionState,
+    start: Option<DebugSessionStart>,
+    initialized_seen: bool,
     capabilities: Capabilities,
     transport: Option<SessionTransport>,
     output: OutputRing,
@@ -355,20 +612,36 @@ struct SessionData {
 
 struct SessionTransport {
     client: DapClient,
-    process: Option<Arc<AdapterProcess>>,
+    adapter: Option<AdapterProcess>,
+    target: Option<OwnedTargetProcess>,
+    termination_policy: Option<DebugTerminationPolicy>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum DebugTerminationPolicy {
+    AdapterLaunched,
+    OwnedAttach,
+}
+
+mod startup;
+pub(crate) use startup::start_protocol;
+use startup::{
+    deadline_result, deny_unsupported, finish_start, initialize, start_after_initialize,
+    startup_deadline,
+};
+
 impl SessionEntry {
-    fn snapshot(&self) -> DebugSessionSnapshot {
+    fn snapshot(&self) -> Option<DebugSessionSnapshot> {
         let data = lock(&self.data);
-        DebugSessionSnapshot {
+        Some(DebugSessionSnapshot {
             id: self.id,
             workspace: self.workspace.clone(),
             adapter_id: self.adapter_id.clone(),
+            start: data.start.clone()?,
             state: data.state.clone(),
             capabilities: data.capabilities.clone(),
             output: data.output.status(),
-        }
+        })
     }
 }
 
@@ -472,7 +745,10 @@ impl ManagerCore {
     ) -> DebugCleanupReport {
         let mut report = DebugCleanupReport::default();
         for entry in entries {
-            if entry.snapshot().state.is_terminal() {
+            if entry
+                .snapshot()
+                .is_some_and(|snapshot| snapshot.state.is_terminal())
+            {
                 report.already_ended += 1;
                 continue;
             }
@@ -536,20 +812,34 @@ impl ManagerCore {
         if abort_supervisor && let Some(handle) = supervisor {
             handle.abort();
         }
-        let cleanup_error = if let Some(transport) = transport {
-            transport.client.close();
-            if let Some(process) = transport.process {
-                process
-                    .terminate(self.config.termination_grace)
-                    .await
-                    .err()
-                    .map(|error| error.to_string())
-            } else {
-                None
+        let mut failures = Vec::new();
+        if let Some(mut transport) = transport {
+            if let Some(policy) = transport.termination_policy {
+                let terminate_debuggee = matches!(policy, DebugTerminationPolicy::AdapterLaunched);
+                let disconnect = transport.client.request(
+                    "disconnect",
+                    Some(serde_json::json!({"restart":false,"terminateDebuggee":terminate_debuggee,"suspendDebuggee":false})),
+                    self.config.disconnect_timeout,
+                );
+                match tokio::time::timeout(self.config.disconnect_timeout, disconnect).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => failures.push(format!("disconnect failed: {error}")),
+                    Err(_) => failures.push("disconnect timed out".to_owned()),
+                }
             }
-        } else {
-            None
-        };
+            transport.client.close();
+            if let Some(target) = transport.target.take()
+                && let Err(error) = target.terminate(self.config.termination_grace).await
+            {
+                failures.push(format!("target cleanup failed: {error}"));
+            }
+            if let Some(adapter) = transport.adapter.take()
+                && let Err(error) = adapter.terminate(self.config.termination_grace).await
+            {
+                failures.push(format!("adapter cleanup failed: {error}"));
+            }
+        }
+        let cleanup_error = (!failures.is_empty()).then(|| failures.join("; "));
         {
             let mut data = lock(&entry.data);
             data.state = DebugSessionState::Ended(DebugSessionEnd {
@@ -632,7 +922,7 @@ async fn supervise(
     mut events: broadcast::Receiver<crate::Event>,
     mut status: watch::Receiver<DapClientStatus>,
     mut observed: DapClientStatus,
-    process: Option<Weak<AdapterProcess>>,
+    process: Option<crate::process::OwnedChildProcess>,
 ) {
     if observed.dropped_output_events > 0 {
         let mut data = lock(&entry.data);
@@ -664,6 +954,12 @@ async fn supervise(
     drop(initial_core);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
+        let target = {
+            let data = lock(&entry.data);
+            data.transport
+                .as_ref()
+                .and_then(|transport| transport.target.clone())
+        };
         let end = tokio::select! {
             event = events.recv() => match event {
                 Ok(event) => apply_event(&entry, event),
@@ -692,14 +988,29 @@ async fn supervise(
                     }
                 }
             },
-            _ = interval.tick(), if process.is_some() => {
-                match process.as_ref().and_then(Weak::upgrade) {
-                    Some(process) => match process.status().await {
-                        Ok(ProcessStatus::Running) => None,
-                        Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
+            _ = interval.tick(), if process.is_some() || target.is_some() => {
+                if let Some(target) = target {
+                    match target.status().await {
+                        Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::DebuggeeExited { exit_code: code.map(i64::from) }),
                         Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
-                    },
-                    None => None,
+                        Ok(ProcessStatus::Running) => match process.as_ref() {
+                            Some(process) => match process.status().await {
+                                Ok(ProcessStatus::Running) => None,
+                                Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
+                                Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
+                            },
+                            None => None,
+                        },
+                    }
+                } else {
+                    match process.as_ref() {
+                        Some(process) => match process.status().await {
+                            Ok(ProcessStatus::Running) => None,
+                            Ok(ProcessStatus::Exited { code }) => Some(DebugSessionEndReason::AdapterExited { exit_code: code }),
+                            Err(error) => Some(DebugSessionEndReason::ProtocolError { message: error.to_string() }),
+                        },
+                        None => None,
+                    }
                 }
             }
         };
@@ -731,6 +1042,7 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
     match event {
         SessionEvent::Output(category, output) => data.output.push(category, output),
         SessionEvent::Initialized => {
+            data.initialized_seen = true;
             if matches!(data.state, DebugSessionState::Initializing) {
                 data.state = DebugSessionState::Configuring;
             }
@@ -738,7 +1050,8 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
         SessionEvent::Stopped(stopped) => {
             if matches!(
                 data.state,
-                DebugSessionState::Configuring
+                DebugSessionState::Initializing
+                    | DebugSessionState::Configuring
                     | DebugSessionState::Running
                     | DebugSessionState::Stopped(_)
             ) {

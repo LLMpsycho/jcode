@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
+use crate::launch::ResolvedProgram;
 use crate::{DapClient, DapError, Result};
 
 const DEFAULT_STDERR_LIMIT: usize = 64 * 1024;
@@ -32,7 +33,6 @@ impl AdapterCommand {
             stderr_limit: DEFAULT_STDERR_LIMIT,
         }
     }
-
     pub fn with_arg(mut self, arg: impl Into<OsString>) -> Self {
         self.args.push(arg.into());
         self
@@ -49,56 +49,55 @@ pub enum ProcessStatus {
     Exited { code: Option<i32> },
 }
 
-pub struct AdapterProcess {
-    client: DapClient,
-    state: Arc<ProcessState>,
-    stderr: Arc<Mutex<BoundedOutput>>,
+pub(crate) struct ChildStdio {
+    pub stdin: tokio::process::ChildStdin,
+    pub stdout: tokio::process::ChildStdout,
+    pub stderr: tokio::process::ChildStderr,
 }
 
-struct ProcessState {
+#[derive(Clone)]
+pub(crate) struct OwnedChildProcess {
+    state: Arc<OwnedChildState>,
+}
+struct OwnedChildState {
     child: tokio::sync::Mutex<Child>,
     pid: AtomicU32,
 }
 
-impl Drop for ProcessState {
+impl Drop for OwnedChildState {
     fn drop(&mut self) {
         if let Some(pid) = self.pid() {
             force_process_group(pid);
         }
     }
 }
-
-impl ProcessState {
+impl OwnedChildState {
     fn pid(&self) -> Option<u32> {
         match self.pid.load(Ordering::Acquire) {
             0 => None,
-            pid => Some(pid),
+            p => Some(p),
         }
     }
-
     fn mark_reaped(&self) {
-        self.pid.store(0, Ordering::Release);
+        self.pid.store(0, Ordering::Release)
     }
-
     fn cleanup_reaped_group(&self) -> Result<()> {
-        if let Some(pid) = self.pid() {
-            kill_process_group(pid)?;
-        }
+        let result = self.pid().map(kill_reaped_process_group).transpose();
         self.mark_reaped();
-        Ok(())
+        result.map(|_| ())
     }
 }
 
-impl AdapterProcess {
-    pub async fn spawn(config: &AdapterCommand) -> Result<Self> {
+impl OwnedChildProcess {
+    pub(crate) async fn spawn_adapter(config: &AdapterCommand) -> Result<(Self, ChildStdio)> {
         if !config.command.is_absolute() {
             return Err(DapError::InvalidMessage(
-                "adapter command must be an absolute path".to_owned(),
+                "adapter command must be an absolute path".into(),
             ));
         }
         if !config.cwd.is_absolute() {
             return Err(DapError::InvalidMessage(
-                "adapter cwd must be an absolute path".to_owned(),
+                "adapter cwd must be an absolute path".into(),
             ));
         }
         let mut command = Command::new(&config.command);
@@ -114,36 +113,77 @@ impl AdapterProcess {
         #[cfg(unix)]
         command.process_group(0);
         let mut child = command.spawn()?;
-        let pid = child.id();
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or(DapError::MissingProcessPipe { stream: "stdin" })?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or(DapError::MissingProcessPipe { stream: "stdout" })?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or(DapError::MissingProcessPipe { stream: "stderr" })?;
-        let captured = Arc::new(Mutex::new(BoundedOutput::new(config.stderr_limit)));
-        tokio::spawn(capture_stderr(stderr, Arc::clone(&captured)));
+        let pid = child.id().unwrap_or(0);
+        let stdio = ChildStdio {
+            stdin: child
+                .stdin
+                .take()
+                .ok_or(DapError::MissingProcessPipe { stream: "stdin" })?,
+            stdout: child
+                .stdout
+                .take()
+                .ok_or(DapError::MissingProcessPipe { stream: "stdout" })?,
+            stderr: child
+                .stderr
+                .take()
+                .ok_or(DapError::MissingProcessPipe { stream: "stderr" })?,
+        };
+        Ok((
+            Self {
+                state: Arc::new(OwnedChildState {
+                    child: tokio::sync::Mutex::new(child),
+                    pid: AtomicU32::new(pid),
+                }),
+            },
+            stdio,
+        ))
+    }
+
+    pub(crate) async fn spawn_debug_target(
+        target: &ResolvedProgram,
+        allowed_tracer_pid: Option<u32>,
+    ) -> Result<Self> {
+        #[cfg(not(target_os = "linux"))]
+        let _ = allowed_tracer_pid;
+        let mut command = Command::new(&target.program);
+        command
+            .args(&target.args)
+            .current_dir(&target.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .env_clear();
+        command.envs(controlled_environment(std::env::var_os("PATH").as_deref()));
+        #[cfg(unix)]
+        command.process_group(0);
+        #[cfg(target_os = "linux")]
+        if let Some(adapter_pid) = allowed_tracer_pid {
+            // SAFETY: pre_exec invokes only the async-signal-safe prctl syscall and creates no allocations.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PTRACER, adapter_pid as libc::c_ulong, 0, 0, 0) == 0
+                    {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+        }
+        let child = command.spawn()?;
+        let pid = child.id().unwrap_or(0);
         Ok(Self {
-            client: DapClient::start_split(stdout, stdin),
-            state: Arc::new(ProcessState {
+            state: Arc::new(OwnedChildState {
                 child: tokio::sync::Mutex::new(child),
-                pid: AtomicU32::new(pid.unwrap_or(0)),
+                pid: AtomicU32::new(pid),
             }),
-            stderr: captured,
         })
     }
-
-    pub fn client(&self) -> &DapClient {
-        &self.client
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.state.pid()
     }
-
-    pub async fn status(&self) -> Result<ProcessStatus> {
+    pub(crate) async fn status(&self) -> Result<ProcessStatus> {
         match self.state.child.lock().await.try_wait()? {
             Some(status) => {
                 self.state.cleanup_reaped_group()?;
@@ -154,26 +194,7 @@ impl AdapterProcess {
             None => Ok(ProcessStatus::Running),
         }
     }
-
-    pub fn stderr_capture_error(&self) -> Option<String> {
-        self.stderr
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .error
-            .clone()
-    }
-
-    pub fn recent_stderr(&self) -> Vec<u8> {
-        self.stderr
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .bytes
-            .iter()
-            .copied()
-            .collect()
-    }
-
-    pub async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
+    pub(crate) async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
         let mut child = self.state.child.lock().await;
         if let Some(status) = child.try_wait()? {
             self.state.cleanup_reaped_group()?;
@@ -208,6 +229,79 @@ impl AdapterProcess {
     }
 }
 
+pub struct AdapterProcess {
+    client: DapClient,
+    process: OwnedChildProcess,
+    stderr: Arc<Mutex<BoundedOutput>>,
+}
+impl AdapterProcess {
+    pub async fn spawn(config: &AdapterCommand) -> Result<Self> {
+        let (process, stdio) = OwnedChildProcess::spawn_adapter(config).await?;
+        let captured = Arc::new(Mutex::new(BoundedOutput::new(config.stderr_limit)));
+        tokio::spawn(capture_stderr(stdio.stderr, Arc::clone(&captured)));
+        Ok(Self {
+            client: DapClient::start_split(stdio.stdout, stdio.stdin),
+            process,
+            stderr: captured,
+        })
+    }
+    pub fn client(&self) -> &DapClient {
+        &self.client
+    }
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.process.pid()
+    }
+    pub(crate) fn observer(&self) -> OwnedChildProcess {
+        self.process.clone()
+    }
+    pub async fn status(&self) -> Result<ProcessStatus> {
+        self.process.status().await
+    }
+    pub fn stderr_capture_error(&self) -> Option<String> {
+        self.stderr
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .error
+            .clone()
+    }
+    pub fn recent_stderr(&self) -> Vec<u8> {
+        self.stderr
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .bytes
+            .iter()
+            .copied()
+            .collect()
+    }
+    pub async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
+        self.process.terminate(grace).await
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct OwnedTargetProcess {
+    process: OwnedChildProcess,
+}
+impl OwnedTargetProcess {
+    pub(crate) async fn spawn(
+        target: &ResolvedProgram,
+        allowed_tracer_pid: Option<u32>,
+    ) -> Result<Self> {
+        Ok(Self {
+            process: OwnedChildProcess::spawn_debug_target(target, allowed_tracer_pid).await?,
+        })
+    }
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.process.pid()
+    }
+    pub(crate) async fn status(&self) -> Result<ProcessStatus> {
+        self.process.status().await
+    }
+    pub(crate) async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
+        self.process.terminate(grace).await
+    }
+}
+
 pub fn controlled_environment(path: Option<&OsStr>) -> BTreeMap<OsString, OsString> {
     const ALLOWED: &[&str] = &[
         "HOME",
@@ -222,39 +316,34 @@ pub fn controlled_environment(path: Option<&OsStr>) -> BTreeMap<OsString, OsStri
         "SYSTEMROOT",
         "WINDIR",
     ];
-    let mut environment: BTreeMap<OsString, OsString> = ALLOWED
+    let mut env: BTreeMap<OsString, OsString> = ALLOWED
         .iter()
-        .filter_map(|key| std::env::var_os(key).map(|value| (OsString::from(key), value)))
+        .filter_map(|k| std::env::var_os(k).map(|v| (OsString::from(k), v)))
         .collect();
     if let Some(path) = path {
-        environment.insert(OsString::from("PATH"), path.to_owned());
+        env.insert(OsString::from("PATH"), path.to_owned());
     }
-    environment
+    env
 }
-
-async fn capture_stderr<R>(mut reader: R, output: Arc<Mutex<BoundedOutput>>)
-where
-    R: tokio::io::AsyncRead + Unpin,
-{
-    let mut buffer = [0_u8; 4096];
+async fn capture_stderr<R: tokio::io::AsyncRead + Unpin>(
+    mut reader: R,
+    output: Arc<Mutex<BoundedOutput>>,
+) {
+    let mut buffer = [0; 4096];
     loop {
         match reader.read(&mut buffer).await {
             Ok(0) => return,
-            Err(error) => {
-                output
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .error = Some(error.to_string());
+            Err(e) => {
+                output.lock().unwrap_or_else(|p| p.into_inner()).error = Some(e.to_string());
                 return;
             }
-            Ok(count) => output
+            Ok(n) => output
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .push(&buffer[..count]),
+                .unwrap_or_else(|p| p.into_inner())
+                .push(&buffer[..n]),
         }
     }
 }
-
 struct BoundedOutput {
     bytes: VecDeque<u8>,
     limit: usize,
@@ -283,22 +372,20 @@ impl BoundedOutput {
             .saturating_add(bytes.len())
             .saturating_sub(self.limit);
         self.bytes.drain(..overflow);
-        self.bytes.extend(bytes);
+        self.bytes.extend(bytes)
     }
 }
-
 #[cfg(unix)]
 fn signal_group(pid: u32, signal: i32) -> Result<()> {
-    let pid = i32::try_from(pid).map_err(|_| DapError::Io("process id exceeds i32".to_owned()))?;
-    // SAFETY: kill is called with a valid negative process-group id and signal.
+    let pid = i32::try_from(pid).map_err(|_| DapError::Io("process id exceeds i32".into()))?;
     if unsafe { libc::kill(-pid, signal) } == 0 {
         Ok(())
     } else {
-        let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::ESRCH) {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() == Some(libc::ESRCH) {
             Ok(())
         } else {
-            Err(error.into())
+            Err(e.into())
         }
     }
 }
@@ -311,22 +398,36 @@ fn kill_process_group(pid: u32) -> Result<()> {
     signal_group(pid, libc::SIGKILL)
 }
 #[cfg(unix)]
+fn kill_reaped_process_group(pid: u32) -> Result<()> {
+    match signal_group(pid, libc::SIGKILL) {
+        Err(DapError::Io(message))
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+                || message.contains("Operation not permitted") =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
+}
+#[cfg(unix)]
 fn force_process_group(pid: u32) {
     if let Ok(pid) = i32::try_from(pid) {
-        // SAFETY: best-effort Drop cleanup of the owned process group.
         unsafe {
             libc::kill(-pid, libc::SIGKILL);
         }
     }
 }
-
 #[cfg(not(unix))]
-fn terminate_process_group(_pid: u32) -> Result<()> {
+fn terminate_process_group(_: u32) -> Result<()> {
     Ok(())
 }
 #[cfg(not(unix))]
-fn kill_process_group(_pid: u32) -> Result<()> {
+fn kill_process_group(_: u32) -> Result<()> {
     Ok(())
 }
 #[cfg(not(unix))]
-fn force_process_group(_pid: u32) {}
+fn kill_reaped_process_group(_: u32) -> Result<()> {
+    Ok(())
+}
+#[cfg(not(unix))]
+fn force_process_group(_: u32) {}

@@ -1,6 +1,6 @@
 # Phase 3 DAP protocol foundation
 
-This branch implements the DAP protocol foundation and the owner-scoped Phase 3 session-manager slice from the OMP overtake master plan. It does not register an agent tool or launch or attach a real debugger session.
+This branch implements the DAP protocol foundation, owner-scoped session manager, and the Phase 3 30D launch and owned-attach slice. It does not register an agent tool or expose arbitrary PID attachment.
 
 ## Implemented
 
@@ -26,6 +26,10 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Supervisors consume output and lifecycle events, observe transport closure and adapter exit, fail closed on receiver lag or non-output source loss, and keep request timeout recoverable.
 - Output retention is bounded by event count and UTF-8 bytes, keeps the newest UTF-8-safe tail, advances monotonic cursors through eviction, and reports ring eviction separately from oversized source loss.
 - Supervisor tasks hold weak manager references, so dropping the final manager synchronously closes transports and leaves process Drop only as the forced-cleanup backstop.
+- A built-in validated `lldb-dap` profile launches only canonical workspace-contained executable files with literal arguments and no shell, environment override, discovery, download, or network behavior.
+- Owned attach spawns and retains the target child internally, authorizes only the owned adapter PID with Linux `PR_SET_PTRACER`, and never accepts a caller-supplied PID.
+- Startup uses one checked Tokio deadline across adapter spawn, initialize, launch or attach, initialized, configurationDone, and the start response. Adapter and target ownership enter the cancellation-safe reservation before protocol awaits.
+- Finalization asks the live adapter to disconnect within a bound, closes transport, then cleans the owned target and adapter process groups locally. Windows launch and attach fail closed before reservation or spawn.
 
 ## Verified behavior
 
@@ -53,6 +57,7 @@ This branch implements the DAP protocol foundation and the owner-scoped Phase 3 
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
 - Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
+- Deterministic fake-adapter tests verify initialize advertising, canonical literal launch arguments, and initialize, launch, initialized, configurationDone ordering. Mandatory real framed subprocess tests cover launch, internally sourced attach PID, target and adapter cleanup, startup rejection, cancellation cleanup, disconnect escalation, and target-exit races.
 
 Focused validation commands:
 
@@ -66,13 +71,13 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 73 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 85 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 
-- Real adapter discovery or debugger launch.
+- Adapter discovery and debugger profiles beyond configured `lldb-dap`.
 - Agent tool registration and TUI integration.
-- Real launch/attach semantics, breakpoint, stepping, stack, variable, evaluate, and debug policy.
+- Breakpoint, stepping, stack, variable, evaluate, and higher-level debug policy.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
