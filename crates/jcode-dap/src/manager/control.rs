@@ -580,4 +580,8 @@ impl DebugSessionManager {
 }
 
 #[cfg(test)]
+mod execution_contract_tests;
+#[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod thread_contract_tests;
