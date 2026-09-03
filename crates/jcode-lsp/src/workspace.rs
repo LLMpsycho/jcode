@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -375,7 +375,17 @@ impl LspWorkspace {
 #[derive(Default)]
 pub struct LspServicePool {
     workspaces: Mutex<HashMap<LspWorkspaceKey, Arc<LspWorkspace>>>,
+    restart_states: Mutex<HashMap<LspWorkspaceKey, RestartState>>,
 }
+
+#[derive(Clone, Copy, Debug)]
+struct RestartState {
+    failures: u32,
+    retry_at: Instant,
+}
+
+const INITIAL_RESTART_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_RESTART_BACKOFF: Duration = Duration::from_secs(5);
 
 impl LspServicePool {
     pub fn new() -> Self {
@@ -397,7 +407,9 @@ impl LspServicePool {
                 return Ok(Arc::clone(workspace));
             }
             workspaces.remove(&key);
+            self.record_restart_failure(&key).await;
         }
+        self.ensure_restart_allowed(&key).await?;
 
         let server = config
             .servers
@@ -405,14 +417,27 @@ impl LspServicePool {
             .ok_or_else(|| LspError::UnknownServer {
                 server_id: server_id.to_owned(),
             })?;
-        let process = LspProcess::spawn(server, &key.canonical_root).await?;
+        let process = match LspProcess::spawn(server, &key.canonical_root).await {
+            Ok(process) => process,
+            Err(error) => {
+                self.record_restart_failure(&key).await;
+                return Err(error);
+            }
+        };
         let diagnostics = DiagnosticsCache::listen(process.client().subscribe());
-        let capabilities = process
+        let capabilities = match process
             .initialize(
                 &key.canonical_root,
                 Duration::from_secs(config.request_timeout_seconds),
             )
-            .await?;
+            .await
+        {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                self.record_restart_failure(&key).await;
+                return Err(error);
+            }
+        };
         let incremental_sync = text_sync_kind(&capabilities) == 2;
         let pull_diagnostics = capabilities
             .get("capabilities")
@@ -429,6 +454,7 @@ impl LspServicePool {
             pull_diagnostics,
             last_used_epoch_seconds: AtomicU64::new(epoch_seconds()),
         });
+        self.restart_states.lock().await.remove(&key);
         workspaces.insert(key, Arc::clone(&workspace));
         Ok(workspace)
     }
@@ -455,6 +481,7 @@ impl LspServicePool {
         if let Some(previous) = previous {
             previous.process.shutdown(Duration::from_secs(2)).await;
         }
+        self.restart_states.lock().await.remove(&key);
         self.get_or_start(root, worktree_identity, server_id, config)
             .await
     }
@@ -504,7 +531,52 @@ impl LspServicePool {
         for workspace in workspaces {
             workspace.process.shutdown(timeout).await;
         }
+        self.restart_states.lock().await.clear();
     }
+
+    async fn ensure_restart_allowed(&self, key: &LspWorkspaceKey) -> Result<()> {
+        let states = self.restart_states.lock().await;
+        let Some(state) = states.get(key) else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if now >= state.retry_at {
+            return Ok(());
+        }
+        let remaining = state.retry_at.saturating_duration_since(now);
+        let retry_after_ms = u64::try_from(remaining.as_millis())
+            .unwrap_or(u64::MAX)
+            .max(1);
+        Err(LspError::RestartBackoff {
+            server_id: key.server_id.clone(),
+            retry_after_ms,
+            failures: state.failures,
+        })
+    }
+
+    async fn record_restart_failure(&self, key: &LspWorkspaceKey) {
+        let mut states = self.restart_states.lock().await;
+        let failures = states
+            .get(key)
+            .map(|state| state.failures.saturating_add(1))
+            .unwrap_or(1);
+        states.insert(
+            key.clone(),
+            RestartState {
+                failures,
+                retry_at: Instant::now() + restart_backoff(failures),
+            },
+        );
+    }
+}
+
+fn restart_backoff(failures: u32) -> Duration {
+    let shift = failures.saturating_sub(1).min(31);
+    let multiplier = 1_u32.checked_shl(shift).unwrap_or(u32::MAX);
+    INITIAL_RESTART_BACKOFF
+        .checked_mul(multiplier)
+        .unwrap_or(MAX_RESTART_BACKOFF)
+        .min(MAX_RESTART_BACKOFF)
 }
 
 fn epoch_seconds() -> u64 {
@@ -560,5 +632,53 @@ mod tests {
             2
         );
         assert_eq!(text_sync_kind(&serde_json::json!({"capabilities": {}})), 1);
+    }
+
+    #[test]
+    fn restart_backoff_is_exponential_and_bounded() {
+        assert_eq!(restart_backoff(1), Duration::from_millis(100));
+        assert_eq!(restart_backoff(2), Duration::from_millis(200));
+        assert_eq!(restart_backoff(3), Duration::from_millis(400));
+        assert_eq!(restart_backoff(7), Duration::from_secs(5));
+        assert_eq!(restart_backoff(u32::MAX), Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn repeated_start_failures_are_throttled() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = LspConfig::default();
+        config.servers.get_mut("rust-analyzer").unwrap().command =
+            "jcode-lsp-command-that-does-not-exist".to_owned();
+        let pool = LspServicePool::new();
+
+        assert!(matches!(
+            pool.get_or_start(root.path(), "fixture", "rust-analyzer", &config)
+                .await,
+            Err(LspError::ExecutableNotFound { .. })
+        ));
+        assert!(matches!(
+            pool.get_or_start(root.path(), "fixture", "rust-analyzer", &config)
+                .await,
+            Err(LspError::RestartBackoff {
+                failures: 1,
+                retry_after_ms: 1..=100,
+                ..
+            })
+        ));
+        tokio::time::sleep(Duration::from_millis(110)).await;
+        assert!(matches!(
+            pool.get_or_start(root.path(), "fixture", "rust-analyzer", &config)
+                .await,
+            Err(LspError::ExecutableNotFound { .. })
+        ));
+        assert!(matches!(
+            pool.get_or_start(root.path(), "fixture", "rust-analyzer", &config)
+                .await,
+            Err(LspError::RestartBackoff {
+                failures: 2,
+                retry_after_ms: 1..=200,
+                ..
+            })
+        ));
     }
 }

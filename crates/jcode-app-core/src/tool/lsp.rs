@@ -171,9 +171,10 @@ impl Tool for LspTool {
             .transpose()?;
         let server_id = select_server(&config, file.as_deref())?;
         if matches!(params.action, LspAction::Reload) {
+            let workspace_identity = workspace_identity(&config, &root, &ctx.session_id);
             return match self
                 .pool
-                .reload(&root, root.display().to_string(), &server_id, &config)
+                .reload(&root, workspace_identity, &server_id, &config)
                 .await
             {
                 Ok(workspace) => Ok(shaped_output(
@@ -186,7 +187,9 @@ impl Tool for LspTool {
                     "fresh",
                 )),
                 Err(
-                    error @ (LspError::ExecutableNotFound { .. } | LspError::NotExecutable { .. }),
+                    error @ (LspError::ExecutableNotFound { .. }
+                    | LspError::NotExecutable { .. }
+                    | LspError::RestartBackoff { .. }),
                 ) => Ok(unavailable_output(
                     params.action,
                     &root,
@@ -196,13 +199,18 @@ impl Tool for LspTool {
                 Err(error) => Err(error.into()),
             };
         }
+        let workspace_identity = workspace_identity(&config, &root, &ctx.session_id);
         let workspace = match self
             .pool
-            .get_or_start(&root, root.display().to_string(), &server_id, &config)
+            .get_or_start(&root, workspace_identity, &server_id, &config)
             .await
         {
             Ok(workspace) => workspace,
-            Err(error @ (LspError::ExecutableNotFound { .. } | LspError::NotExecutable { .. })) => {
+            Err(
+                error @ (LspError::ExecutableNotFound { .. }
+                | LspError::NotExecutable { .. }
+                | LspError::RestartBackoff { .. }),
+            ) => {
                 return Ok(unavailable_output(
                     params.action,
                     &root,
@@ -894,7 +902,8 @@ pub(crate) async fn attach_post_edit_feedback(
     let mut files = Vec::new();
     let mut issue_lines = Vec::new();
     for relative_path in paths {
-        let result = verify_written_file(&pool, &config, &root, &relative_path).await;
+        let result =
+            verify_written_file(&pool, &config, &root, &ctx.session_id, &relative_path).await;
         match result {
             Ok(verification) => {
                 if verification.status == SemanticVerificationStatus::IssuesFound {
@@ -957,6 +966,7 @@ async fn verify_written_file(
     pool: &LspServicePool,
     config: &LspConfig,
     root: &Path,
+    session_id: &str,
     relative_path: &str,
 ) -> std::result::Result<SemanticVerification, LspError> {
     let path = root
@@ -970,8 +980,9 @@ async fn verify_written_file(
     }
     let server_id = select_server(config, Some(&path))
         .map_err(|error| LspError::InvalidConfig(error.to_string()))?;
+    let workspace_identity = workspace_identity(config, root, session_id);
     let workspace = pool
-        .get_or_start(root, root.display().to_string(), &server_id, config)
+        .get_or_start(root, workspace_identity, &server_id, config)
         .await?;
     workspace
         .verify_disk_change(
@@ -980,6 +991,14 @@ async fn verify_written_file(
             Duration::from_millis(config.post_edit_wait_ms),
         )
         .await
+}
+
+fn workspace_identity(config: &LspConfig, root: &Path, session_id: &str) -> String {
+    if config.shared {
+        root.display().to_string()
+    } else {
+        format!("{}#session={session_id}", root.display())
+    }
 }
 
 #[cfg(test)]

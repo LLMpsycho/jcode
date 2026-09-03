@@ -57,6 +57,30 @@ fn missing_executable_is_a_graceful_status() {
 }
 
 #[test]
+fn non_shared_configuration_isolates_session_workspace_identity() {
+    let root = Path::new("/workspace");
+    let shared = LspConfig::default();
+    assert_eq!(workspace_identity(&shared, root, "session-a"), "/workspace");
+    assert_eq!(
+        workspace_identity(&shared, root, "session-a"),
+        workspace_identity(&shared, root, "session-b")
+    );
+
+    let isolated = LspConfig {
+        shared: false,
+        ..LspConfig::default()
+    };
+    assert_eq!(
+        workspace_identity(&isolated, root, "session-a"),
+        "/workspace#session=session-a"
+    );
+    assert_ne!(
+        workspace_identity(&isolated, root, "session-a"),
+        workspace_identity(&isolated, root, "session-b")
+    );
+}
+
+#[test]
 fn renders_locations_without_raw_protocol_payloads() {
     let root = Path::new("/workspace");
     let value = json!([{

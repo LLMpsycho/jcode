@@ -40,6 +40,14 @@ pub enum LspError {
     InvalidWorkspaceUri { path: String },
     #[error("LSP server `{server_id}` is not configured")]
     UnknownServer { server_id: String },
+    #[error(
+        "LSP server `{server_id}` restart is delayed for {retry_after_ms} ms after {failures} consecutive failures"
+    )]
+    RestartBackoff {
+        server_id: String,
+        retry_after_ms: u64,
+        failures: u32,
+    },
 }
 
 impl From<std::io::Error> for LspError {
