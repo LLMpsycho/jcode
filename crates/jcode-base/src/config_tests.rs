@@ -36,6 +36,51 @@ fn preserve_reasoning_context_defaults_to_enabled() {
 }
 
 #[test]
+fn lsp_defaults_and_project_configuration_parse_deterministically() {
+    let defaults = Config::default();
+    assert!(defaults.lsp.enabled);
+    assert_eq!(
+        defaults.lsp.servers["rust-analyzer"].command,
+        "rust-analyzer"
+    );
+
+    let config: Config = toml::from_str(
+        r#"
+[lsp]
+enabled = false
+request_timeout_seconds = 9
+post_edit_diagnostics = "file"
+
+[lsp.servers.custom-rust]
+command = "/opt/tools/rust-analyzer"
+args = ["--log-file", "ra.log"]
+root_markers = ["Cargo.toml"]
+file_extensions = ["rs"]
+"#,
+    )
+    .expect("documented LSP configuration should parse");
+    assert!(!config.lsp.enabled);
+    assert_eq!(config.lsp.request_timeout_seconds, 9);
+    assert_eq!(
+        config.lsp.servers["custom-rust"].args,
+        ["--log-file", "ra.log"]
+    );
+}
+
+#[test]
+fn lsp_unknown_keys_and_invalid_types_fail_with_field_context() {
+    let unknown = toml::from_str::<Config>("[lsp]\nsurprise = true\n")
+        .expect_err("unknown LSP keys must not be ignored")
+        .to_string();
+    assert!(unknown.contains("surprise"));
+
+    let invalid = toml::from_str::<Config>("[lsp]\nrequest_timeout_seconds = \"fast\"\n")
+        .expect_err("invalid LSP field types must fail")
+        .to_string();
+    assert!(invalid.contains("request_timeout_seconds") || invalid.contains("integer"));
+}
+
+#[test]
 fn swarm_spawn_mode_defaults_to_inline() {
     assert_eq!(
         Config::default().agents.swarm_spawn_mode,

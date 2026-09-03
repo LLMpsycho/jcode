@@ -492,6 +492,9 @@ pub struct Config {
     /// File editing safety configuration.
     pub editing: EditingConfig,
 
+    /// Language Server Protocol configuration.
+    pub lsp: jcode_lsp_types::LspConfig,
+
     /// Agent Client Protocol adapter configuration
     pub acp: AcpConfig,
 

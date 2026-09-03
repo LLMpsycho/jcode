@@ -3213,6 +3213,7 @@ dependencies = [
  "jcode-gateway-types",
  "jcode-import-core",
  "jcode-logging",
+ "jcode-lsp-types",
  "jcode-memory-types",
  "jcode-message-types",
  "jcode-plan",
@@ -3420,6 +3421,7 @@ dependencies = [
  "jcode-lsp-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
 ]

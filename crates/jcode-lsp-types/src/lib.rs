@@ -7,6 +7,94 @@ use serde_json::Value;
 
 pub const JSON_RPC_VERSION: &str = "2.0";
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PostEditDiagnosticsMode {
+    Off,
+    #[default]
+    Delta,
+    File,
+    Workspace,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LspServerConfig {
+    pub command: String,
+    pub args: Vec<String>,
+    pub root_markers: Vec<String>,
+    pub file_extensions: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LspConfig {
+    pub enabled: bool,
+    pub shared: bool,
+    pub idle_timeout_seconds: u64,
+    pub request_timeout_seconds: u64,
+    pub post_edit_diagnostics: PostEditDiagnosticsMode,
+    pub post_edit_wait_ms: u64,
+    pub max_output_tokens: usize,
+    pub servers: BTreeMap<String, LspServerConfig>,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        let mut servers = BTreeMap::new();
+        servers.insert(
+            "rust-analyzer".to_owned(),
+            LspServerConfig {
+                command: "rust-analyzer".to_owned(),
+                args: Vec::new(),
+                root_markers: vec!["Cargo.toml".to_owned(), "rust-project.json".to_owned()],
+                file_extensions: vec!["rs".to_owned()],
+            },
+        );
+        Self {
+            enabled: true,
+            shared: true,
+            idle_timeout_seconds: 300,
+            request_timeout_seconds: 20,
+            post_edit_diagnostics: PostEditDiagnosticsMode::Delta,
+            post_edit_wait_ms: 750,
+            max_output_tokens: 2500,
+            servers,
+        }
+    }
+}
+
+impl LspConfig {
+    pub fn validation_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if self.idle_timeout_seconds == 0 {
+            issues.push("lsp.idle_timeout_seconds must be greater than zero".to_owned());
+        }
+        if self.request_timeout_seconds == 0 {
+            issues.push("lsp.request_timeout_seconds must be greater than zero".to_owned());
+        }
+        if self.max_output_tokens == 0 {
+            issues.push("lsp.max_output_tokens must be greater than zero".to_owned());
+        }
+        for (server_id, server) in &self.servers {
+            if server_id.trim().is_empty() {
+                issues.push("lsp.servers contains an empty server id".to_owned());
+            }
+            if server.command.trim().is_empty() {
+                issues.push(format!("lsp.servers.{server_id}.command must not be empty"));
+            }
+            if server.file_extensions.iter().any(|extension| {
+                extension.is_empty() || extension.contains('/') || extension.contains('\\')
+            }) {
+                issues.push(format!(
+                    "lsp.servers.{server_id}.file_extensions must contain bare extensions"
+                ));
+            }
+        }
+        issues
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
@@ -184,5 +272,45 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(edit.changes.len(), 1);
+    }
+
+    #[test]
+    fn lsp_defaults_match_the_documented_rust_mvp() {
+        let config = LspConfig::default();
+        assert!(config.enabled);
+        assert!(config.shared);
+        assert_eq!(config.request_timeout_seconds, 20);
+        let rust = &config.servers["rust-analyzer"];
+        assert_eq!(rust.command, "rust-analyzer");
+        assert_eq!(rust.file_extensions, ["rs"]);
+        assert!(config.validation_issues().is_empty());
+    }
+
+    #[test]
+    fn lsp_config_rejects_unknown_keys_and_reports_semantic_issues() {
+        let unknown = r#"{"enabled":true,"surprise":1}"#;
+        assert!(serde_json::from_str::<LspConfig>(unknown).is_err());
+
+        let config = LspConfig {
+            request_timeout_seconds: 0,
+            max_output_tokens: 0,
+            servers: BTreeMap::from([(
+                "rust-analyzer".to_owned(),
+                LspServerConfig {
+                    command: String::new(),
+                    file_extensions: vec!["src/rs".to_owned()],
+                    ..LspServerConfig::default()
+                },
+            )]),
+            ..LspConfig::default()
+        };
+        let issues = config.validation_issues();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("request_timeout_seconds"))
+        );
+        assert!(issues.iter().any(|issue| issue.contains("command")));
+        assert!(issues.iter().any(|issue| issue.contains("file_extensions")));
     }
 }

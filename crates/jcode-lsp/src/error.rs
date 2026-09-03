@@ -28,6 +28,12 @@ pub enum LspError {
     TransportClosed,
     #[error("LSP server returned error {code}: {message}")]
     Response { code: i64, message: String },
+    #[error("LSP executable `{command}` was not found")]
+    ExecutableNotFound { command: String },
+    #[error("LSP executable path is not an executable file: {path}")]
+    NotExecutable { path: String },
+    #[error("invalid LSP configuration: {0}")]
+    InvalidConfig(String),
 }
 
 impl From<std::io::Error> for LspError {
