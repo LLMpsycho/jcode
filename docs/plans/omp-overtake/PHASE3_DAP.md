@@ -50,7 +50,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 33 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 447 lines and the largest DAP test file is 374 lines, so this slice remains below the repository file budgets.
+All focused DAP checks pass with 33 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. The largest DAP production file is 447 lines and the largest DAP test file is 402 lines, so this slice remains below the repository file budgets.
 
 ## Deliberately deferred
 
