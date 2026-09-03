@@ -35,7 +35,7 @@ pub fn discover_executable(
     for directory in std::env::split_paths(path_env) {
         for candidate in platform_candidates(&directory, command) {
             if is_executable_file(&candidate) {
-                return candidate.canonicalize().map_err(LspError::from);
+                return make_absolute(candidate);
             }
         }
     }
@@ -50,7 +50,15 @@ fn checked_executable(candidate: PathBuf) -> Result<PathBuf> {
             path: candidate.display().to_string(),
         });
     }
-    candidate.canonicalize().map_err(LspError::from)
+    make_absolute(candidate)
+}
+
+fn make_absolute(path: PathBuf) -> Result<PathBuf> {
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
 }
 
 fn platform_candidates(directory: &Path, command: &str) -> Vec<PathBuf> {
@@ -123,7 +131,7 @@ mod tests {
         make_executable(&executable);
 
         let found = discover_executable("rust-analyzer", Some(root.as_os_str()), &root).unwrap();
-        assert_eq!(found, executable.canonicalize().unwrap());
+        assert_eq!(found, executable);
         assert!(matches!(
             discover_executable("rust-analyzer --version", Some(root.as_os_str()), &root),
             Err(LspError::ExecutableNotFound { .. })
@@ -140,7 +148,7 @@ mod tests {
         let executable = bin.join("server");
         make_executable(&executable);
         let found = discover_executable("./bin/server", None, &root).unwrap();
-        assert_eq!(found, executable.canonicalize().unwrap());
+        assert_eq!(found, executable);
         fs::remove_dir_all(root).unwrap();
     }
 

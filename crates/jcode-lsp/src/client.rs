@@ -30,6 +30,14 @@ impl LspClient {
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let (reader, writer) = tokio::io::split(transport);
+        Self::start_split(reader, writer)
+    }
+
+    pub fn start_split<R, W>(reader: R, writer: W) -> Self
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
         let writer: Arc<Mutex<BoxWriter>> = Arc::new(Mutex::new(Box::pin(writer)));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let (notifications, _) = broadcast::channel(128);

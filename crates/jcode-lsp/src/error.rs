@@ -34,6 +34,10 @@ pub enum LspError {
     NotExecutable { path: String },
     #[error("invalid LSP configuration: {0}")]
     InvalidConfig(String),
+    #[error("LSP child process did not expose its {stream} pipe")]
+    MissingProcessPipe { stream: &'static str },
+    #[error("workspace path cannot be represented as a file URI: {path}")]
+    InvalidWorkspaceUri { path: String },
 }
 
 impl From<std::io::Error> for LspError {
