@@ -50,6 +50,12 @@ pub struct LspWorkspace {
     last_used_epoch_seconds: AtomicU64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LspWorkspaceStatus {
+    pub process_status: ProcessStatus,
+    pub recent_stderr: String,
+}
+
 impl LspWorkspace {
     pub fn key(&self) -> &LspWorkspaceKey {
         &self.key
@@ -461,6 +467,24 @@ impl LspServicePool {
 
     pub async fn get(&self, key: &LspWorkspaceKey) -> Option<Arc<LspWorkspace>> {
         self.workspaces.lock().await.get(key).cloned()
+    }
+
+    pub async fn status(
+        &self,
+        root: &Path,
+        worktree_identity: impl Into<String>,
+        server_id: &str,
+        config: &LspConfig,
+    ) -> Result<Option<LspWorkspaceStatus>> {
+        let key = LspWorkspaceKey::new(root, worktree_identity, server_id, config_digest(config)?)?;
+        let workspace = self.workspaces.lock().await.get(&key).cloned();
+        let Some(workspace) = workspace else {
+            return Ok(None);
+        };
+        Ok(Some(LspWorkspaceStatus {
+            process_status: workspace.process.status().await?,
+            recent_stderr: workspace.process.recent_stderr(),
+        }))
     }
 
     pub async fn reload(

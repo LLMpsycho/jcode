@@ -153,7 +153,7 @@ impl Tool for LspTool {
         let root = workspace_root(&ctx)?;
 
         if matches!(params.action, LspAction::Status) {
-            return Ok(render_status(&config, &root));
+            return Ok(render_status(&config, &root, &ctx.session_id, &self.pool).await);
         }
         if !config.enabled {
             return Ok(unavailable_output(
@@ -502,7 +502,12 @@ fn one_based_position(line: Option<u32>, character: Option<u32>) -> Result<Posit
     })
 }
 
-fn render_status(config: &LspConfig, root: &Path) -> ToolOutput {
+async fn render_status(
+    config: &LspConfig,
+    root: &Path,
+    session_id: &str,
+    pool: &LspServicePool,
+) -> ToolOutput {
     if !config.enabled {
         return unavailable_output(
             LspAction::Status,
@@ -512,40 +517,68 @@ fn render_status(config: &LspConfig, root: &Path) -> ToolOutput {
         );
     }
     let path = std::env::var_os("PATH");
-    let statuses = config
-        .servers
-        .iter()
-        .map(|(id, server)| {
-            let discovered = discover_executable(&server.command, path.as_deref(), root);
-            let status = if discovered.is_ok() {
-                "available"
-            } else {
-                "missing"
-            };
-            (id, status, discovered.ok())
-        })
-        .collect::<Vec<_>>();
-    let text = statuses
-        .iter()
-        .map(|(id, status, path)| {
-            format!(
-                "{id}: {status}{}",
-                path.as_ref()
-                    .map(|path| format!(" ({})", path.display()))
-                    .unwrap_or_default()
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let identity = workspace_identity(config, root, session_id);
+    let mut statuses = Vec::new();
+    let mut lines = Vec::new();
+    for (id, server) in &config.servers {
+        let discovered = discover_executable(&server.command, path.as_deref(), root);
+        let runtime = pool
+            .status(root, identity.clone(), id, config)
+            .await
+            .ok()
+            .flatten();
+        let (status, exit_code) = match runtime.as_ref().map(|runtime| &runtime.process_status) {
+            Some(jcode_lsp::ProcessStatus::Running) => ("running", None),
+            Some(jcode_lsp::ProcessStatus::Exited { code }) => ("exited", *code),
+            None if discovered.is_ok() => ("available", None),
+            None => ("missing", None),
+        };
+        let recent_stderr = runtime
+            .as_ref()
+            .map(|runtime| {
+                bounded_tail(
+                    &crate::message::redact_secrets(&runtime.recent_stderr),
+                    1024,
+                )
+            })
+            .filter(|stderr| !stderr.trim().is_empty());
+        lines.push(format!(
+            "{id}: {status}{}{}",
+            discovered
+                .as_ref()
+                .ok()
+                .map(|path| format!(" ({})", path.display()))
+                .unwrap_or_default(),
+            recent_stderr
+                .as_ref()
+                .map(|stderr| format!("\n  recent stderr: {}", stderr.replace('\n', "\n  ")))
+                .unwrap_or_default()
+        ));
+        statuses.push(json!({
+            "id": id,
+            "status": status,
+            "exit_code": exit_code,
+            "recent_stderr": recent_stderr
+        }));
+    }
+    let text = lines.join("\n");
     ToolOutput::new(text)
         .with_title("lsp status")
         .with_metadata(json!({
             "action": "status",
             "workspace": root,
             "freshness": "fresh",
-            "servers": statuses.iter().map(|(id, status, _)| json!({"id": id, "status": status})).collect::<Vec<_>>(),
+            "servers": statuses,
             "truncated": false
         }))
+}
+
+fn bounded_tail(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_owned();
+    }
+    text.chars().skip(count - max_chars).collect()
 }
 
 fn unavailable_output(

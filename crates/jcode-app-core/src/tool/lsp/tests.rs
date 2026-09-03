@@ -38,8 +38,8 @@ fn converts_one_based_agent_positions_to_lsp_positions() {
     assert!(one_based_position(Some(1), Some(0)).is_err());
 }
 
-#[test]
-fn missing_executable_is_a_graceful_status() {
+#[tokio::test]
+async fn missing_executable_is_a_graceful_status() {
     let config = LspConfig {
         servers: std::collections::BTreeMap::from([(
             "missing".to_owned(),
@@ -51,9 +51,21 @@ fn missing_executable_is_a_graceful_status() {
         ..LspConfig::default()
     };
     let tool = LspTool::with_config(Arc::new(LspServicePool::new()), config);
-    let output = render_status(&tool.config(), &std::env::current_dir().unwrap());
+    let output = render_status(
+        &tool.config(),
+        &std::env::current_dir().unwrap(),
+        "status-test",
+        &tool.pool,
+    )
+    .await;
     assert!(output.output.contains("missing"));
     assert_eq!(output.metadata.unwrap()["servers"][0]["status"], "missing");
+}
+
+#[test]
+fn bounded_tail_retains_only_the_newest_characters() {
+    assert_eq!(bounded_tail("abcdef", 4), "cdef");
+    assert_eq!(bounded_tail("a😀bc", 3), "😀bc");
 }
 
 #[test]

@@ -84,6 +84,12 @@ async fn shared_pool_reuses_one_server_but_isolates_worktree_identities() {
     assert!(std::sync::Arc::ptr_eq(&first, &reused));
     assert!(!std::sync::Arc::ptr_eq(&first, &isolated));
     assert_eq!(pool.len().await, 2);
+    let status = pool
+        .status(workspace, "worktree-a", "rust-analyzer", &config)
+        .await
+        .unwrap()
+        .expect("started workspace should expose live status");
+    assert_eq!(status.process_status, ProcessStatus::Running);
     pool.shutdown_all(Duration::from_secs(5)).await;
     assert!(pool.is_empty().await);
 }
