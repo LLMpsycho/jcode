@@ -428,6 +428,28 @@ impl LspServicePool {
         self.workspaces.lock().await.get(key).cloned()
     }
 
+    pub async fn reload(
+        &self,
+        root: &Path,
+        worktree_identity: impl Into<String>,
+        server_id: &str,
+        config: &LspConfig,
+    ) -> Result<Arc<LspWorkspace>> {
+        let worktree_identity = worktree_identity.into();
+        let key = LspWorkspaceKey::new(
+            root,
+            worktree_identity.clone(),
+            server_id,
+            config_digest(config)?,
+        )?;
+        let previous = self.workspaces.lock().await.remove(&key);
+        if let Some(previous) = previous {
+            previous.process.shutdown(Duration::from_secs(2)).await;
+        }
+        self.get_or_start(root, worktree_identity, server_id, config)
+            .await
+    }
+
     pub async fn len(&self) -> usize {
         self.workspaces.lock().await.len()
     }

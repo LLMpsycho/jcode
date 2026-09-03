@@ -66,6 +66,7 @@ enum LspAction {
     IncomingCalls,
     OutgoingCalls,
     CodeActions,
+    Reload,
 }
 
 impl LspAction {
@@ -86,6 +87,7 @@ impl LspAction {
             Self::IncomingCalls => "incoming_calls",
             Self::OutgoingCalls => "outgoing_calls",
             Self::CodeActions => "code_actions",
+            Self::Reload => "reload",
         }
     }
 }
@@ -129,7 +131,7 @@ impl Tool for LspTool {
                         "status", "diagnostics", "hover", "definition", "references",
                         "document_symbols", "workspace_symbols", "capabilities", "rename",
                         "implementation", "type_definition", "signature_help", "incoming_calls",
-                        "outgoing_calls", "code_actions"
+                        "outgoing_calls", "code_actions", "reload"
                     ]
                 },
                 "file": {"type": ["string", "null"], "description": "Workspace-relative source file."},
@@ -168,6 +170,32 @@ impl Tool for LspTool {
             .map(|file| resolve_file(&root, file))
             .transpose()?;
         let server_id = select_server(&config, file.as_deref())?;
+        if matches!(params.action, LspAction::Reload) {
+            return match self
+                .pool
+                .reload(&root, root.display().to_string(), &server_id, &config)
+                .await
+            {
+                Ok(workspace) => Ok(shaped_output(
+                    params.action,
+                    &workspace,
+                    None,
+                    format!("Reloaded {} for {}.", server_id, root.display()),
+                    json!([]),
+                    config.max_output_tokens.saturating_mul(4).max(256),
+                    "fresh",
+                )),
+                Err(
+                    error @ (LspError::ExecutableNotFound { .. } | LspError::NotExecutable { .. }),
+                ) => Ok(unavailable_output(
+                    params.action,
+                    &root,
+                    Some(&server_id),
+                    &error.to_string(),
+                )),
+                Err(error) => Err(error.into()),
+            };
+        }
         let workspace = match self
             .pool
             .get_or_start(&root, root.display().to_string(), &server_id, &config)
@@ -188,6 +216,7 @@ impl Tool for LspTool {
         let max_chars = config.max_output_tokens.saturating_mul(4).max(256);
         match params.action {
             LspAction::Status => unreachable!(),
+            LspAction::Reload => unreachable!(),
             LspAction::Capabilities => {
                 let keys = workspace
                     .capabilities()

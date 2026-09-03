@@ -89,6 +89,41 @@ async fn shared_pool_reuses_one_server_but_isolates_worktree_identities() {
 }
 
 #[tokio::test]
+async fn shared_pool_reload_replaces_only_the_selected_workspace() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("LSP crate should live below the workspace root");
+    if discover_executable(
+        "rust-analyzer",
+        std::env::var_os("PATH").as_deref(),
+        workspace,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let pool = LspServicePool::new();
+    let config = LspConfig::default();
+    let first = pool
+        .get_or_start(workspace, "reload-worktree", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    let replacement = pool
+        .reload(workspace, "reload-worktree", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&first, &replacement));
+    assert_eq!(pool.len().await, 1);
+    assert!(matches!(
+        first.process().status().await.unwrap(),
+        ProcessStatus::Exited { .. }
+    ));
+    pool.shutdown_all(Duration::from_secs(5)).await;
+}
+
+#[tokio::test]
 async fn rust_definition_and_introduced_error_are_observable() {
     let path = std::env::var_os("PATH");
     let current = std::env::current_dir().unwrap();
