@@ -57,7 +57,6 @@ impl FileWriteGuard {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn with_policy(
         ledger: FileSnapshotLedger,
         policy: crate::config::ReadGuardConfig,

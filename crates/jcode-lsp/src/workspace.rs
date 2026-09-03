@@ -182,21 +182,43 @@ impl LspWorkspace {
     }
 
     pub async fn prepare_rename(&self, path: &Path, position: Position) -> Result<Value> {
-        self.position_request("textDocument/prepareRename", path, position, None)
-            .await
+        for attempt in 0..60 {
+            match self
+                .position_request("textDocument/prepareRename", path, position, None)
+                .await
+            {
+                Ok(value) if !value.is_null() => return Ok(value),
+                Ok(value) if attempt == 59 => return Ok(value),
+                Err(LspError::Response { code: -32602, .. }) if attempt < 59 => {}
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        unreachable!("bounded prepareRename retry loop always returns")
     }
 
     pub async fn rename(&self, path: &Path, position: Position, new_name: &str) -> Result<Value> {
         let uri = file_uri(&path.canonicalize()?)?;
-        self.request_with_content_modified_retry(
-            "textDocument/rename",
-            serde_json::json!({
-                "textDocument": {"uri": uri},
-                "position": position,
-                "newName": new_name
-            }),
-        )
-        .await
+        let params = serde_json::json!({
+            "textDocument": {"uri": uri},
+            "position": position,
+            "newName": new_name
+        });
+        for attempt in 0..60 {
+            match self
+                .request_with_content_modified_retry("textDocument/rename", params.clone())
+                .await
+            {
+                Ok(value) if !value.is_null() => return Ok(value),
+                Ok(value) if attempt == 59 => return Ok(value),
+                Err(LspError::Response { code: -32602, .. }) if attempt < 59 => {}
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        unreachable!("bounded rename retry loop always returns")
     }
 
     pub async fn document_symbols(&self, path: &Path) -> Result<Value> {

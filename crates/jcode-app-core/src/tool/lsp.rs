@@ -15,13 +15,18 @@ use super::{Tool, ToolContext, ToolOutput};
 
 pub struct LspTool {
     pool: Arc<LspServicePool>,
+    file_snapshots: crate::server::FileSnapshotLedger,
     config_override: Option<LspConfig>,
 }
 
 impl LspTool {
-    pub(crate) fn new(pool: Arc<LspServicePool>) -> Self {
+    pub(crate) fn new(
+        pool: Arc<LspServicePool>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+    ) -> Self {
         Self {
             pool,
+            file_snapshots,
             config_override: None,
         }
     }
@@ -30,6 +35,7 @@ impl LspTool {
     fn with_config(pool: Arc<LspServicePool>, config: LspConfig) -> Self {
         Self {
             pool,
+            file_snapshots: crate::server::FileSnapshotLedger::new(),
             config_override: Some(config),
         }
     }
@@ -280,11 +286,6 @@ impl Tool for LspTool {
                         ))
                     }
                     LspAction::Rename => {
-                        if params.apply {
-                            bail!(
-                                "LSP rename application is not enabled yet; repeat with `apply: false` to inspect the atomic edit preview"
-                            );
-                        }
                         let position = one_based_position(params.line, params.character)?;
                         let new_name = params
                             .new_name
@@ -296,6 +297,30 @@ impl Tool for LspTool {
                             bail!("the language server rejected rename at this position");
                         }
                         let edit = workspace.rename(file, position, new_name).await?;
+                        if params.apply {
+                            let applied = super::lsp_rename::apply_workspace_edit(
+                                &edit,
+                                &root,
+                                &ctx,
+                                self.file_snapshots.clone(),
+                                params.intent.clone(),
+                            )
+                            .await?;
+                            let mut output = ToolOutput::new(format!(
+                                "Applied semantic rename to {} file(s), {} edit(s).",
+                                applied.file_count, applied.edit_count
+                            ))
+                            .with_title("lsp rename")
+                            .with_metadata(applied.metadata);
+                            attach_post_edit_feedback(
+                                "anchored_edit",
+                                &mut output,
+                                &ctx,
+                                Arc::clone(&self.pool),
+                            )
+                            .await;
+                            return Ok(output);
+                        }
                         let (text, summary, count) = render_workspace_edit(&edit, &root)?;
                         Ok(shaped_output(
                             action,
@@ -1059,6 +1084,98 @@ mod tests {
         assert_eq!(
             output.metadata.as_ref().unwrap()["semantic_verification"]["status"],
             "issues_found"
+        );
+        pool.shutdown_all(Duration::from_secs(5)).await;
+    }
+
+    #[tokio::test]
+    async fn read_then_lsp_apply_performs_atomic_cross_file_rename() {
+        let current = std::env::current_dir().unwrap();
+        if discover_executable(
+            "rust-analyzer",
+            std::env::var_os("PATH").as_deref(),
+            &current,
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("src")).unwrap();
+        std::fs::write(
+            project.path().join("Cargo.toml"),
+            "[package]\nname = \"tool-rename-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+        let lib = "mod other;\npub fn call() -> u32 { other::target() }\n";
+        let other = "pub fn target() -> u32 { 1 }\n";
+        std::fs::write(project.path().join("src/lib.rs"), lib).unwrap();
+        std::fs::write(project.path().join("src/other.rs"), other).unwrap();
+
+        let pool = Arc::new(LspServicePool::new());
+        let ledger = crate::server::FileSnapshotLedger::new();
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+        let registry =
+            super::super::Registry::new_with_services(provider, ledger, Arc::clone(&pool)).await;
+        let context = |call: &str| ToolContext {
+            session_id: "lsp-rename-test".to_owned(),
+            message_id: "message".to_owned(),
+            tool_call_id: call.to_owned(),
+            working_dir: Some(project.path().to_owned()),
+            stdin_request_tx: None,
+            graceful_shutdown_signal: None,
+            execution_mode: super::super::ToolExecutionMode::Direct,
+        };
+        for file in ["src/lib.rs", "src/other.rs"] {
+            registry
+                .execute(
+                    "read",
+                    json!({"file_path": file, "intent": "Read before semantic rename"}),
+                    context(&format!("read-{file}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        let output = registry
+            .execute(
+                "lsp",
+                json!({
+                    "action": "rename",
+                    "file": "src/other.rs",
+                    "line": 1,
+                    "character": other.find("target").unwrap() + 1,
+                    "new_name": "renamed_target",
+                    "apply": true,
+                    "intent": "Apply a read-guarded cross-file rename"
+                }),
+                context("rename"),
+            )
+            .await
+            .unwrap();
+        assert!(
+            output.output.contains("Applied semantic rename"),
+            "{}",
+            output.output
+        );
+        assert!(
+            std::fs::read_to_string(project.path().join("src/lib.rs"))
+                .unwrap()
+                .contains("renamed_target")
+        );
+        assert!(
+            std::fs::read_to_string(project.path().join("src/other.rs"))
+                .unwrap()
+                .contains("renamed_target")
+        );
+        assert_eq!(output.metadata.as_ref().unwrap()["rename_applied"], true);
+        assert_eq!(
+            output.metadata.as_ref().unwrap()["files"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
         );
         pool.shutdown_all(Duration::from_secs(5)).await;
     }

@@ -26,6 +26,7 @@ mod invalid;
 mod jcode_docs;
 mod ls;
 mod lsp;
+mod lsp_rename;
 pub mod mcp;
 mod memory;
 mod multiedit;
@@ -382,6 +383,7 @@ impl Registry {
 
         let base_start = std::time::Instant::now();
         let mut tools_map = Self::base_tools(&skills);
+        let lsp_file_snapshots = file_snapshots.clone();
         if let Some(file_snapshots) = file_snapshots {
             Self::insert_tool(
                 &mut tools_map,
@@ -419,8 +421,12 @@ impl Registry {
                 apply_patch::ApplyPatchTool::with_file_snapshots(file_snapshots),
             );
         }
-        if let Some(lsp_pool) = lsp_pool {
-            Self::insert_tool(&mut tools_map, "lsp", lsp::LspTool::new(lsp_pool));
+        if let (Some(lsp_pool), Some(file_snapshots)) = (lsp_pool, lsp_file_snapshots) {
+            Self::insert_tool(
+                &mut tools_map,
+                "lsp",
+                lsp::LspTool::new(lsp_pool, file_snapshots),
+            );
         }
         let base_ms = base_start.elapsed().as_millis();
 
