@@ -379,3 +379,33 @@ async fn final_manager_drop_closes_transport_despite_detached_operation() {
     ));
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[tokio::test]
+async fn exhausted_control_revision_is_rejected_before_dispatch_without_closing_session() {
+    let mut f = fixture("owner");
+    stop(&mut f, 7, true).await;
+    let entry = f.manager.core.entry(f.id).unwrap();
+    {
+        let mut data = lock(&entry.data);
+        data.execution_revision = u64::MAX;
+    }
+    let error = f
+        .manager
+        .continue_execution("owner", f.id, DebugContinueRequest::default())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DapError::ExecutionRevisionExhausted { session_id: f.id }
+    );
+    assert!(
+        timeout(Duration::from_millis(20), f.adapter.recv())
+            .await
+            .is_err()
+    );
+    assert!(!entry.closed.load(Ordering::Acquire));
+    assert_eq!(
+        f.manager.snapshot("owner", f.id).unwrap().state.kind(),
+        DebugSessionStateKind::Stopped
+    );
+}

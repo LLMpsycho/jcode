@@ -81,6 +81,19 @@ async fn control_owned(
     let (initial_revision, state, stopped_id, all_stopped, capabilities) = {
         let data = lock(&entry.data);
         ensure_control_state(&entry, &data, operation)?;
+        if data.execution_revision == u64::MAX
+            && matches!(
+                operation,
+                DebugControlOperation::Continue
+                    | DebugControlOperation::StepOver
+                    | DebugControlOperation::StepIn
+                    | DebugControlOperation::StepOut
+            )
+        {
+            return Err(DapError::ExecutionRevisionExhausted {
+                session_id: entry.id,
+            });
+        }
         let revision = DebugExecutionRevision(data.execution_revision);
         validate_expected(&entry, expected, revision)?;
         let (stopped_id, all_stopped) = match &data.state {
@@ -180,9 +193,7 @@ async fn control_owned(
                 | DebugControlOperation::StepOut
         )
     {
-        if !entry.advance_execution(&mut data) {
-            return Err(DapError::TransportClosed);
-        }
+        debug_assert!(entry.advance_execution(&mut data));
         data.state = DebugSessionState::Running;
         notify(&entry, &mut data);
     }

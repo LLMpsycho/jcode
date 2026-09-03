@@ -1,14 +1,12 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 
+use super::source_hash::{ResolvedSource, resolve_source};
 use super::*;
 use crate::{
     DebugBreakpoint, DebugBreakpointId, DebugBreakpointLocation, DebugBreakpointMutation,
@@ -96,13 +94,22 @@ pub(super) async fn set_breakpoint_owned(
         .ok_or(DapError::InvalidRequestTimeout)?;
     let _gate = control::deadline_gate(&entry, deadline, "set breakpoint").await?;
     ensure_live_breakpoint_state(&entry)?;
-    let source = resolve_source(&entry.workspace, &request.source, &operations, deadline).await?;
+    let source = resolve_source(
+        &entry.workspace,
+        &entry,
+        &request.source,
+        &operations,
+        deadline,
+    )
+    .await?;
     validate_breakpoint(&request.breakpoint, &operations, &entry)?;
     if let Some(expected) = &request.expected_revision
         && expected != &source.revision
     {
         return Err(DapError::DebugSourceRevisionMismatch {
             path: source.relative,
+            expected: expected.clone(),
+            actual: source.revision,
         });
     }
     let (desired, mutation, discarded, needs_reset) = {
@@ -229,6 +236,8 @@ pub(super) async fn remove_breakpoint_owned(
         {
             return Err(DapError::DebugSourceRevisionMismatch {
                 path: record.relative.clone(),
+                expected: expected.clone(),
+                actual: record.revision.clone(),
             });
         }
         let mut desired = record.breakpoints.clone();
@@ -240,7 +249,14 @@ pub(super) async fn remove_breakpoint_owned(
             record.synchronization == DebugBreakpointSynchronization::Indeterminate,
         )
     };
-    let actual = resolve_source(&entry.workspace, &source_path, &operations, deadline).await?;
+    let actual = resolve_source(
+        &entry.workspace,
+        &entry,
+        &source_path,
+        &operations,
+        deadline,
+    )
+    .await?;
     let drifted = actual.revision != source_revision;
     let desired = if drifted {
         desired
@@ -303,18 +319,27 @@ async fn transact(
             }
         }
     }
-    let before =
-        match resolve_source(&entry.workspace, &source.original, &operations, deadline).await {
-            Ok(before) => before,
-            Err(error) => {
-                clear_transaction(&entry, &operations);
-                return Err(error);
-            }
-        };
+    let before = match resolve_source(
+        &entry.workspace,
+        &entry,
+        &source.original,
+        &operations,
+        deadline,
+    )
+    .await
+    {
+        Ok(before) => before,
+        Err(error) => {
+            clear_transaction(&entry, &operations);
+            return Err(error);
+        }
+    };
     if before.canonical != source.canonical || before.revision != source.revision {
         clear_transaction(&entry, &operations);
         return Err(DapError::DebugSourceChangedDuringOperation {
             path: source.relative,
+            before: source.revision,
+            after: before.revision,
         });
     }
     let response = send_set(&client, &source.wire_path, &requested, false, deadline).await;
@@ -329,14 +354,27 @@ async fn transact(
             return Err(error);
         }
     };
-    let parsed = match parse_breakpoints_response(&response, desired.len(), &operations) {
+    let parsed = match parse_breakpoints_response(
+        &response,
+        desired.len(),
+        &operations,
+        &entry.workspace,
+        &source.canonical,
+    ) {
         Ok(parsed) => parsed,
         Err(error) => {
             finish_ambiguous(&entry, &source, &desired, &operations);
             return Err(error);
         }
     };
-    let after = resolve_source(&entry.workspace, &source.original, &operations, deadline).await;
+    let after = resolve_source(
+        &entry.workspace,
+        &entry,
+        &source.original,
+        &operations,
+        deadline,
+    )
+    .await;
     if !matches!(&after, Ok(after) if after.canonical == source.canonical && after.revision == source.revision)
     {
         let compensation = send_set(&client, &source.wire_path, &[], true, deadline).await;
@@ -348,8 +386,14 @@ async fn transact(
             });
         }
         discard_source_and_finish(&entry, &source, &operations);
+        let after_revision = after
+            .ok()
+            .map(|resolved| resolved.revision)
+            .unwrap_or_else(|| source.revision.clone());
         return Err(DapError::DebugSourceChangedDuringOperation {
             path: source.relative,
+            before: source.revision,
+            after: after_revision,
         });
     }
     let mut committed = desired;
@@ -440,141 +484,6 @@ async fn transact(
     })
 }
 
-struct ResolvedSource {
-    original: PathBuf,
-    canonical: PathBuf,
-    wire_path: String,
-    relative: PathBuf,
-    revision: DebugSourceRevision,
-}
-
-async fn resolve_source(
-    workspace: &DebugWorkspaceKey,
-    path: &Path,
-    operations: &DebugOperationConfig,
-    deadline: Instant,
-) -> Result<ResolvedSource> {
-    let encoded = path.as_os_str().as_encoded_bytes();
-    if encoded.contains(&0) || encoded.len() > operations.max_source_path_bytes {
-        return Err(DapError::InvalidDebugSource {
-            path: path.to_path_buf(),
-            message: "source path exceeds configured byte limit".to_owned(),
-        });
-    }
-    let root = workspace.canonical_root().to_path_buf();
-    let input = path.to_path_buf();
-    let original = input.clone();
-    let limit = operations.max_source_revision_bytes;
-    let path_limit = operations.max_source_path_bytes;
-    let cancelled = Arc::new(AtomicBool::new(false));
-    let task_cancelled = Arc::clone(&cancelled);
-    let mut task = tokio::task::spawn_blocking(move || -> Result<_> {
-        if task_cancelled.load(Ordering::Acquire) {
-            return Err(DapError::RequestTimeout {
-                command: "source revision".to_owned(),
-            });
-        }
-        let candidate = if input.is_absolute() {
-            input
-        } else {
-            root.join(input)
-        };
-        let canonical = candidate
-            .canonicalize()
-            .map_err(|error| DapError::InvalidDebugSource {
-                path: candidate.clone(),
-                message: error.to_string(),
-            })?;
-        if !canonical.starts_with(&root) {
-            return Err(DapError::DebugSourceOutsideWorkspace {
-                path: canonical,
-                workspace: root,
-            });
-        }
-        if !canonical.is_file() {
-            return Err(DapError::InvalidDebugSource {
-                path: canonical,
-                message: "source is not a regular file".to_owned(),
-            });
-        }
-        let relative = canonical
-            .strip_prefix(&root)
-            .map_err(|_| DapError::DebugSourceOutsideWorkspace {
-                path: canonical.clone(),
-                workspace: root.clone(),
-            })?
-            .to_path_buf();
-        let wire_path = canonical
-            .to_str()
-            .ok_or_else(|| DapError::InvalidDebugSource {
-                path: canonical.clone(),
-                message: "canonical source path is not valid UTF-8".to_owned(),
-            })?
-            .to_owned();
-        if wire_path.as_bytes().contains(&0) || wire_path.len() > path_limit {
-            return Err(DapError::InvalidDebugSource {
-                path: canonical,
-                message: "canonical source path exceeds configured byte limit or contains NUL"
-                    .to_owned(),
-            });
-        }
-        let revision = hash_file(&canonical, limit, &task_cancelled)?;
-        Ok((canonical, wire_path, relative, revision))
-    });
-    let joined = tokio::time::timeout_at(deadline, &mut task).await;
-    let (canonical, wire_path, relative, revision) = match joined {
-        Ok(joined) => joined.map_err(|error| DapError::DebugOperationTaskFailed {
-            operation: "source revision",
-            message: error.to_string(),
-        })??,
-        Err(_) => {
-            cancelled.store(true, Ordering::Release);
-            let _ = task.await;
-            return Err(DapError::RequestTimeout {
-                command: "source revision".to_owned(),
-            });
-        }
-    };
-    Ok(ResolvedSource {
-        original,
-        canonical,
-        wire_path,
-        relative,
-        revision,
-    })
-}
-
-fn hash_file(path: &Path, limit: u64, cancelled: &AtomicBool) -> Result<DebugSourceRevision> {
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut bytes = 0_u64;
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        if cancelled.load(Ordering::Acquire) {
-            return Err(DapError::RequestTimeout {
-                command: "source revision".to_owned(),
-            });
-        }
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        bytes = bytes.saturating_add(read as u64);
-        if bytes > limit {
-            return Err(DapError::DebugSourceTooLarge {
-                path: path.to_path_buf(),
-                observed: bytes,
-                limit,
-            });
-        }
-        hasher.update(&buffer[..read]);
-    }
-    Ok(DebugSourceRevision {
-        sha256: hasher.finalize().into(),
-        byte_len: bytes,
-    })
-}
-
 async fn send_set(
     client: &DapClient,
     path: &str,
@@ -628,11 +537,22 @@ struct WireBreakpoint {
     column: Option<u64>,
     end_line: Option<u64>,
     end_column: Option<u64>,
+    source: Option<WireSource>,
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WireSource {
+    path: Option<String>,
+    source_reference: Option<i64>,
+}
+
 fn parse_breakpoints_response(
     response: &Response,
     count: usize,
     operations: &DebugOperationConfig,
+    workspace: &DebugWorkspaceKey,
+    expected_source: &Path,
 ) -> Result<Vec<WireBreakpoint>> {
     let body: SetBody = serde_json::from_value(response.body.clone().ok_or_else(|| {
         DapError::InvalidSetBreakpointsResponse {
@@ -649,6 +569,35 @@ fn parse_breakpoints_response(
     }
     let mut ids = std::collections::HashSet::new();
     for bp in &body.breakpoints {
+        if let Some(source) = &bp.source {
+            let path =
+                source
+                    .path
+                    .as_deref()
+                    .ok_or_else(|| DapError::InvalidSetBreakpointsResponse {
+                        message: "adapter breakpoint source has no path".to_owned(),
+                    })?;
+            if source.source_reference.is_some() || path.as_bytes().contains(&0) {
+                return Err(DapError::InvalidSetBreakpointsResponse {
+                    message: "adapter breakpoint source is not path-only".to_owned(),
+                });
+            }
+            let canonical = PathBuf::from(path).canonicalize().map_err(|_| {
+                DapError::InvalidSetBreakpointsResponse {
+                    message: "adapter breakpoint source cannot be canonicalized".to_owned(),
+                }
+            })?;
+            if !canonical.starts_with(workspace.canonical_root())
+                || canonical != expected_source
+                || canonical.to_str().is_none()
+            {
+                return Err(DapError::InvalidSetBreakpointsResponse {
+                    message:
+                        "adapter breakpoint source does not match the requested workspace file"
+                            .to_owned(),
+                });
+            }
+        }
         if let Some(id) = bp.id {
             i32::try_from(id).map_err(|_| DapError::InvalidSetBreakpointsResponse {
                 message: "adapter breakpoint id overflow".to_owned(),
@@ -1029,9 +978,15 @@ fn apply_breakpoint_event(
     let (path, local_id) = &matches[0];
     match event.reason.as_str() {
         "removed" => {
+            let mut remove_source = false;
             if let Some(record) = registry.sources.get_mut(path) {
                 record.breakpoints.remove(local_id);
                 record.generation = record.generation.saturating_add(1);
+                remove_source = record.breakpoints.is_empty()
+                    && record.synchronization == DebugBreakpointSynchronization::Synchronized;
+            }
+            if remove_source {
+                registry.sources.remove(path);
             }
         }
         "changed" => {

@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::{
-    DebugBreakpointId, DebugExecutionRevision, DebugSessionId, DebugSessionStateKind, DebugThreadId,
+    DebugBreakpointId, DebugExecutionRevision, DebugSessionId, DebugSessionStateKind,
+    DebugSourceRevision, DebugThreadId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,9 +123,17 @@ pub enum DapError {
         limit: u64,
     },
     #[error("debug source revision mismatch for {path:?}")]
-    DebugSourceRevisionMismatch { path: PathBuf },
+    DebugSourceRevisionMismatch {
+        path: PathBuf,
+        expected: DebugSourceRevision,
+        actual: DebugSourceRevision,
+    },
     #[error("debug source changed during operation: {path:?}")]
-    DebugSourceChangedDuringOperation { path: PathBuf },
+    DebugSourceChangedDuringOperation {
+        path: PathBuf,
+        before: DebugSourceRevision,
+        after: DebugSourceRevision,
+    },
     #[error("invalid breakpoint: {message}")]
     InvalidBreakpoint { message: String },
     #[error("breakpoint {breakpoint_id} was not found in debug session {session_id}")]
@@ -176,6 +185,8 @@ pub enum DapError {
         expected: DebugExecutionRevision,
         actual: DebugExecutionRevision,
     },
+    #[error("execution revision space is exhausted for debug session {session_id}")]
+    ExecutionRevisionExhausted { session_id: DebugSessionId },
     #[error("debug operation task {operation} failed: {message}")]
     DebugOperationTaskFailed {
         operation: &'static str,

@@ -413,3 +413,130 @@ async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
     assert_eq!(transaction.bounded_events.len(), 1);
     assert!(transaction.overflowed);
 }
+
+#[tokio::test]
+async fn source_hash_gate_uses_the_operation_deadline_without_overlap() {
+    let f = fixture("owner");
+    let entry = f.manager.core.entry(f.id).unwrap();
+    let held = Arc::clone(&entry.source_hash)
+        .acquire_owned()
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let started = Instant::now();
+    let error = match resolve_source(
+        &entry.workspace,
+        &entry,
+        &f.source,
+        &f.manager.core.operations,
+        deadline,
+    )
+    .await
+    {
+        Ok(_) => panic!("hash gate unexpectedly acquired"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, DapError::RequestTimeout { ref command } if command == "source revision")
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert_eq!(entry.source_hash.available_permits(), 0);
+    drop(held);
+    resolve_source(
+        &entry.workspace,
+        &entry,
+        &f.source,
+        &f.manager.core.operations,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn response_breakpoint_source_must_be_the_same_workspace_path_only_file() {
+    let f = fixture("owner");
+    let expected = f.source.canonicalize().unwrap();
+    let response = |source: Value| {
+        Response::success(
+            2,
+            1,
+            "setBreakpoints",
+            Some(json!({"breakpoints":[{"verified":true,"source":source}]})),
+        )
+    };
+    let config = DebugOperationConfig::default();
+    assert!(
+        parse_breakpoints_response(
+            &response(json!({"path":expected})),
+            1,
+            &config,
+            &DebugWorkspaceKey::new(&f.root, "owner").unwrap(),
+            &f.source.canonicalize().unwrap(),
+        )
+        .is_ok()
+    );
+    for invalid in [
+        json!({"sourceReference":7}),
+        json!({"path":f.root.join("missing.rs")}),
+        json!({"path":f.root.join("other.rs"),"sourceReference":7}),
+        json!({"path":std::env::temp_dir()}),
+    ] {
+        assert!(matches!(
+            parse_breakpoints_response(
+                &response(invalid),
+                1,
+                &config,
+                &DebugWorkspaceKey::new(&f.root, "owner").unwrap(),
+                &f.source.canonicalize().unwrap(),
+            ),
+            Err(DapError::InvalidSetBreakpointsResponse { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn removed_event_deletes_the_last_synchronized_source_record() {
+    let f = fixture("owner");
+    let canonical = f.source.canonicalize().unwrap();
+    let local_id = DebugBreakpointId(1);
+    let mut registry = BreakpointRegistry::default();
+    registry.sources.insert(
+        canonical,
+        SourceRecord {
+            original: f.source.clone(),
+            relative: PathBuf::from("hello world.rs"),
+            revision: DebugSourceRevision {
+                sha256: [0; 32],
+                byte_len: 1,
+            },
+            generation: 1,
+            synchronization: DebugBreakpointSynchronization::Synchronized,
+            breakpoints: BTreeMap::from([(
+                local_id,
+                DebugBreakpoint {
+                    id: local_id,
+                    source: PathBuf::from("hello world.rs"),
+                    source_revision: DebugSourceRevision {
+                        sha256: [0; 32],
+                        byte_len: 1,
+                    },
+                    requested: DebugSourceBreakpoint::new(1),
+                    adapter_id: Some(9),
+                    verified: true,
+                    reason: None,
+                    message: None,
+                    message_truncated_prefix_bytes: 0,
+                    resolved: DebugBreakpointLocation::default(),
+                },
+            )]),
+        },
+    );
+    apply_breakpoint_event(
+        &mut registry,
+        2,
+        json!({"reason":"removed","breakpoint":{"id":9}}),
+        &DebugOperationConfig::default(),
+    );
+    assert!(registry.sources.is_empty());
+}

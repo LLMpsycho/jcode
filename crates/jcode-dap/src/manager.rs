@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::client::DapClientStatus;
 use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program, revalidate_program};
 use crate::process::{OwnedChildObserver, OwnedTargetProcess};
 use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
+mod source_hash;
 mod supervision;
 
 use supervision::{invalid_transition, lock, notify, supervise, transition};
@@ -335,6 +336,7 @@ impl DebugSessionManager {
             }),
             finalization: AsyncMutex::new(()),
             operation: AsyncMutex::new(()),
+            source_hash: Arc::new(Semaphore::new(1)),
             closed: AtomicBool::new(false),
             operations: Arc::clone(&self.core.operations),
             changed,
@@ -645,6 +647,7 @@ struct SessionEntry {
     data: Mutex<SessionData>,
     finalization: AsyncMutex<()>,
     operation: AsyncMutex<()>,
+    source_hash: Arc<Semaphore>,
     closed: AtomicBool,
     operations: Arc<DebugOperationConfig>,
     changed: watch::Sender<u64>,
