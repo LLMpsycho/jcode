@@ -124,6 +124,34 @@ async fn shared_pool_reload_replaces_only_the_selected_workspace() {
 }
 
 #[tokio::test]
+async fn idle_pool_entry_is_evicted_only_after_callers_release_it() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace = manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .expect("LSP crate should live below the workspace root");
+    if discover_executable(
+        "rust-analyzer",
+        std::env::var_os("PATH").as_deref(),
+        workspace,
+    )
+    .is_err()
+    {
+        return;
+    }
+    let pool = LspServicePool::new();
+    let config = LspConfig::default();
+    let active = pool
+        .get_or_start(workspace, "idle-worktree", "rust-analyzer", &config)
+        .await
+        .unwrap();
+    assert_eq!(pool.evict_idle(Duration::ZERO).await, 0);
+    drop(active);
+    assert_eq!(pool.evict_idle(Duration::ZERO).await, 1);
+    assert!(pool.is_empty().await);
+}
+
+#[tokio::test]
 async fn rust_definition_and_introduced_error_are_observable() {
     let path = std::env::var_os("PATH");
     let current = std::env::current_dir().unwrap();

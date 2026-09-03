@@ -1310,6 +1310,25 @@ impl Server {
         // indexing cost while leaving exhaustive searches available on demand.
         crate::tool::spawn_recent_index_warmup();
 
+        let lsp_config = crate::config::config().lsp.clone();
+        if lsp_config.enabled {
+            let lsp_pool = Arc::clone(&self.lsp_pool);
+            tokio::spawn(async move {
+                let idle_timeout = Duration::from_secs(lsp_config.idle_timeout_seconds.max(1));
+                let check_interval =
+                    Duration::from_secs((lsp_config.idle_timeout_seconds / 2).clamp(1, 60));
+                loop {
+                    tokio::time::sleep(check_interval).await;
+                    let evicted = lsp_pool.evict_idle(idle_timeout).await;
+                    if evicted > 0 {
+                        crate::logging::info(&format!(
+                            "Evicted {evicted} idle language server workspace(s)"
+                        ));
+                    }
+                }
+            });
+        }
+
         // Reconcile background-task status files orphaned by a previous
         // process image (crash or exec-based reload). Non-detached tasks die
         // with their owning process but their status files still say Running,

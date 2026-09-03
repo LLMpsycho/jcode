@@ -42,7 +42,7 @@ The LSP section rejects unknown keys and invalid types. Project-specific LSP fil
 
 ## Remaining Phase 2 work
 
-- Idle eviction and bounded exponential restart backoff.
+- Bounded exponential restart backoff.
 - Hot-reload state restoration beyond clean process shutdown/restart.
 - Applying selected code actions and file rename operations.
 - TypeScript, Python, and Go server presets and integration suites.

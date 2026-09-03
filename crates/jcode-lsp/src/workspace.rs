@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -46,6 +47,7 @@ pub struct LspWorkspace {
     request_timeout: Duration,
     incremental_sync: bool,
     pull_diagnostics: bool,
+    last_used_epoch_seconds: AtomicU64,
 }
 
 impl LspWorkspace {
@@ -59,6 +61,11 @@ impl LspWorkspace {
 
     pub fn capabilities(&self) -> &Value {
         &self.capabilities
+    }
+
+    fn touch(&self) {
+        self.last_used_epoch_seconds
+            .store(epoch_seconds(), Ordering::Relaxed);
     }
 
     pub async fn sync_document(
@@ -386,6 +393,7 @@ impl LspServicePool {
         let mut workspaces = self.workspaces.lock().await;
         if let Some(workspace) = workspaces.get(&key) {
             if workspace.process.status().await? == ProcessStatus::Running {
+                workspace.touch();
                 return Ok(Arc::clone(workspace));
             }
             workspaces.remove(&key);
@@ -419,6 +427,7 @@ impl LspServicePool {
             request_timeout: Duration::from_secs(config.request_timeout_seconds),
             incremental_sync,
             pull_diagnostics,
+            last_used_epoch_seconds: AtomicU64::new(epoch_seconds()),
         });
         workspaces.insert(key, Arc::clone(&workspace));
         Ok(workspace)
@@ -458,6 +467,32 @@ impl LspServicePool {
         self.workspaces.lock().await.is_empty()
     }
 
+    pub async fn evict_idle(&self, idle_timeout: Duration) -> usize {
+        let now = epoch_seconds();
+        let idle_seconds = idle_timeout.as_secs();
+        let evicted = {
+            let mut workspaces = self.workspaces.lock().await;
+            let keys = workspaces
+                .iter()
+                .filter(|(_, workspace)| {
+                    Arc::strong_count(workspace) == 1
+                        && now.saturating_sub(
+                            workspace.last_used_epoch_seconds.load(Ordering::Relaxed),
+                        ) >= idle_seconds
+                })
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| workspaces.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        let count = evicted.len();
+        for workspace in evicted {
+            workspace.process.shutdown(Duration::from_secs(2)).await;
+        }
+        count
+    }
+
     pub async fn shutdown_all(&self, timeout: Duration) {
         let workspaces = {
             let mut workspaces = self.workspaces.lock().await;
@@ -470,6 +505,13 @@ impl LspServicePool {
             workspace.process.shutdown(timeout).await;
         }
     }
+}
+
+fn epoch_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn text_sync_kind(initialize_result: &Value) -> u64 {
