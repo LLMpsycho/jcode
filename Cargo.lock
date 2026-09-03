@@ -3323,6 +3323,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-edit-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jcode-edit-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jcode-edit-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jcode-embedding"
 version = "0.1.0"
 dependencies = [
