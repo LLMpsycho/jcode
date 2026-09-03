@@ -186,3 +186,33 @@ async fn malformed_adapter_payload_fails_pending_and_future_requests() {
         DapError::TransportClosed
     );
 }
+
+#[tokio::test]
+async fn cancelling_request_futures_releases_pending_capacity() {
+    let (client, mut adapter) = FakeAdapter::pair(4096);
+    for _ in 0..1025 {
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .request("abandoned", None, Duration::from_secs(30))
+                    .await
+            }
+        });
+        let _sent = request(adapter.recv().await.unwrap());
+        pending.abort();
+        let _cancelled = pending.await;
+    }
+
+    let final_request = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request("still-usable", None, Duration::from_secs(1))
+                .await
+        }
+    });
+    let sent = request(adapter.recv().await.unwrap());
+    adapter.respond_ok(&sent, None).await.unwrap();
+    assert!(final_request.await.unwrap().is_ok());
+}

@@ -32,17 +32,22 @@ impl FrameDecoder {
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Vec<u8>>> {
         self.buffer.extend_from_slice(bytes);
         let mut frames = Vec::new();
+        let mut consumed = 0;
         loop {
-            let Some(header_end) = self
-                .buffer
+            let remaining = &self.buffer[consumed..];
+            let Some(header_end) = remaining
                 .windows(4)
                 .position(|window| window == b"\r\n\r\n")
             else {
-                if self.buffer.len() > self.max_header_bytes {
+                let delimiter_prefix = remaining.get(self.max_header_bytes..).unwrap_or_default();
+                if remaining.len() > self.max_header_bytes
+                    && !b"\r\n\r\n".starts_with(delimiter_prefix)
+                {
                     return Err(DapError::HeaderTooLarge {
                         limit: self.max_header_bytes,
                     });
                 }
+                self.compact(consumed);
                 return Ok(frames);
             };
             if header_end > self.max_header_bytes {
@@ -50,7 +55,7 @@ impl FrameDecoder {
                     limit: self.max_header_bytes,
                 });
             }
-            let content_length = parse_content_length(&self.buffer[..header_end])?;
+            let content_length = parse_content_length(&remaining[..header_end])?;
             if content_length > self.max_payload_bytes {
                 return Err(DapError::PayloadTooLarge {
                     observed: content_length,
@@ -65,11 +70,20 @@ impl FrameDecoder {
                         observed: usize::MAX,
                         limit: self.max_payload_bytes,
                     })?;
-            if self.buffer.len() < frame_end {
+            if remaining.len() < frame_end {
+                self.compact(consumed);
                 return Ok(frames);
             }
-            frames.push(self.buffer[payload_start..frame_end].to_vec());
-            self.buffer.drain(..frame_end);
+            frames.push(remaining[payload_start..frame_end].to_vec());
+            consumed += frame_end;
+        }
+    }
+
+    fn compact(&mut self, consumed: usize) {
+        if consumed == self.buffer.len() {
+            self.buffer.clear();
+        } else if consumed > 0 {
+            self.buffer.drain(..consumed);
         }
     }
 }

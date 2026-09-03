@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::sync::{Mutex as AsyncMutex, broadcast, oneshot};
 
 use crate::{
     DapError, Event, FrameDecoder, Message, Request, Response, Result, decode_message,
@@ -22,9 +22,26 @@ struct PendingRequest {
 }
 type Pending = Arc<Mutex<HashMap<i64, PendingRequest>>>;
 
+struct PendingCleanup {
+    pending: Pending,
+    seq: i64,
+}
+
+impl PendingCleanup {
+    fn remove(&mut self) {
+        lock_pending(&self.pending).remove(&self.seq);
+    }
+}
+
+impl Drop for PendingCleanup {
+    fn drop(&mut self) {
+        self.remove();
+    }
+}
+
 #[derive(Clone)]
 pub struct DapClient {
-    writer: Arc<Mutex<BoxWriter>>,
+    writer: Arc<AsyncMutex<BoxWriter>>,
     pending: Pending,
     events: broadcast::Sender<Event>,
     reverse_requests: broadcast::Sender<Request>,
@@ -47,7 +64,7 @@ impl DapClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let writer: Arc<Mutex<BoxWriter>> = Arc::new(Mutex::new(Box::pin(writer)));
+        let writer: Arc<AsyncMutex<BoxWriter>> = Arc::new(AsyncMutex::new(Box::pin(writer)));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let (events, _) = broadcast::channel(128);
         let (reverse_requests, _) = broadcast::channel(32);
@@ -96,29 +113,34 @@ impl DapClient {
         let seq = next_sequence(&self.next_seq)?;
         let request = Request::new(seq, command.clone(), arguments);
         let (sender, receiver) = oneshot::channel();
-        let mut pending = self.pending.lock().await;
-        if pending.len() >= MAX_PENDING_REQUESTS {
-            return Err(DapError::InvalidMessage(
-                "too many pending DAP requests".to_owned(),
-            ));
+        {
+            let mut pending = lock_pending(&self.pending);
+            if self.closed.load(Ordering::Acquire) {
+                return Err(DapError::TransportClosed);
+            }
+            if pending.len() >= MAX_PENDING_REQUESTS {
+                return Err(DapError::InvalidMessage(
+                    "too many pending DAP requests".to_owned(),
+                ));
+            }
+            pending.insert(
+                seq,
+                PendingRequest {
+                    command: command.clone(),
+                    sender,
+                },
+            );
         }
-        pending.insert(
+        let mut cleanup = PendingCleanup {
+            pending: Arc::clone(&self.pending),
             seq,
-            PendingRequest {
-                command: command.clone(),
-                sender,
-            },
-        );
-        drop(pending);
-        if let Err(error) = write_message(&self.writer, &request).await {
-            self.pending.lock().await.remove(&seq);
-            return Err(error);
-        }
+        };
+        write_message(&self.writer, &request).await?;
         match tokio::time::timeout(timeout, receiver).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(DapError::TransportClosed),
             Err(_) => {
-                self.pending.lock().await.remove(&seq);
+                cleanup.remove();
                 if self.supports_cancel.load(Ordering::Acquire) {
                     let _best_effort = self.send_cancel(seq).await;
                 }
@@ -148,7 +170,7 @@ fn next_sequence(counter: &AtomicI64) -> Result<i64> {
 }
 
 async fn write_message(
-    writer: &Arc<Mutex<BoxWriter>>,
+    writer: &Arc<AsyncMutex<BoxWriter>>,
     message: &impl serde::Serialize,
 ) -> Result<()> {
     let frame = encode_message(message)?;
@@ -160,7 +182,7 @@ async fn write_message(
 
 async fn read_loop<R>(
     mut reader: R,
-    writer: Arc<Mutex<BoxWriter>>,
+    writer: Arc<AsyncMutex<BoxWriter>>,
     pending: Pending,
     events: broadcast::Sender<Event>,
     reverse_requests: broadcast::Sender<Request>,
@@ -189,7 +211,7 @@ async fn read_loop<R>(
             match message {
                 Message::Response(response) => {
                     if let Some(pending_request) =
-                        pending.lock().await.remove(&response.request_seq)
+                        lock_pending(&pending).remove(&response.request_seq)
                     {
                         let result = if response.command != pending_request.command {
                             Err(DapError::InvalidMessage(format!(
@@ -223,7 +245,7 @@ async fn read_loop<R>(
                             "reverse requests are not supported",
                         ),
                         Err(error) => {
-                            fail_pending(&pending, error).await;
+                            fail_pending(&pending, error);
                             return;
                         }
                     };
@@ -235,17 +257,21 @@ async fn read_loop<R>(
         }
     };
     closed.store(true, Ordering::Release);
-    fail_pending(&pending, terminal_error).await;
+    fail_pending(&pending, terminal_error);
 }
 
-async fn fail_pending(pending: &Pending, error: DapError) {
-    let senders = pending
-        .lock()
-        .await
+fn fail_pending(pending: &Pending, error: DapError) {
+    let senders = lock_pending(pending)
         .drain()
         .map(|(_, pending)| pending.sender)
         .collect::<Vec<_>>();
     for sender in senders {
         let _ignored = sender.send(Err(error.clone()));
     }
+}
+
+fn lock_pending(pending: &Pending) -> MutexGuard<'_, HashMap<i64, PendingRequest>> {
+    pending
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

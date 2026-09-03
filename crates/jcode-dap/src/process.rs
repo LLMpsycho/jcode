@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncReadExt;
@@ -57,14 +58,27 @@ pub struct AdapterProcess {
 
 struct ProcessState {
     child: tokio::sync::Mutex<Child>,
-    pid: Option<u32>,
+    pid: AtomicU32,
 }
 
 impl Drop for ProcessState {
     fn drop(&mut self) {
-        if let Some(pid) = self.pid {
+        if let Some(pid) = self.pid() {
             force_process_group(pid);
         }
+    }
+}
+
+impl ProcessState {
+    fn pid(&self) -> Option<u32> {
+        match self.pid.load(Ordering::Acquire) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
+    fn mark_reaped(&self) {
+        self.pid.store(0, Ordering::Release);
     }
 }
 
@@ -112,7 +126,7 @@ impl AdapterProcess {
             client: DapClient::start_split(stdout, stdin),
             state: Arc::new(ProcessState {
                 child: tokio::sync::Mutex::new(child),
-                pid,
+                pid: AtomicU32::new(pid.unwrap_or(0)),
             }),
             stderr: captured,
         })
@@ -124,9 +138,12 @@ impl AdapterProcess {
 
     pub async fn status(&self) -> Result<ProcessStatus> {
         match self.state.child.lock().await.try_wait()? {
-            Some(status) => Ok(ProcessStatus::Exited {
-                code: status.code(),
-            }),
+            Some(status) => {
+                self.state.mark_reaped();
+                Ok(ProcessStatus::Exited {
+                    code: status.code(),
+                })
+            }
             None => Ok(ProcessStatus::Running),
         }
     }
@@ -152,24 +169,30 @@ impl AdapterProcess {
     pub async fn terminate(&self, grace: Duration) -> Result<ProcessStatus> {
         let mut child = self.state.child.lock().await;
         if let Some(status) = child.try_wait()? {
+            self.state.mark_reaped();
             return Ok(ProcessStatus::Exited {
                 code: status.code(),
             });
         }
-        if let Some(pid) = self.state.pid {
+        if let Some(pid) = self.state.pid() {
             terminate_process_group(pid)?;
         }
         match tokio::time::timeout(grace, child.wait()).await {
-            Ok(status) => Ok(ProcessStatus::Exited {
-                code: status?.code(),
-            }),
+            Ok(status) => {
+                let status = status?;
+                self.state.mark_reaped();
+                Ok(ProcessStatus::Exited {
+                    code: status.code(),
+                })
+            }
             Err(_) => {
-                if let Some(pid) = self.state.pid {
+                if let Some(pid) = self.state.pid() {
                     kill_process_group(pid)?;
                 }
                 #[cfg(not(unix))]
                 child.start_kill()?;
                 let status = child.wait().await?;
+                self.state.mark_reaped();
                 Ok(ProcessStatus::Exited {
                     code: status.code(),
                 })
@@ -264,7 +287,12 @@ fn signal_group(pid: u32, signal: i32) -> Result<()> {
     if unsafe { libc::kill(-pid, signal) } == 0 {
         Ok(())
     } else {
-        Err(std::io::Error::last_os_error().into())
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error.into())
+        }
     }
 }
 #[cfg(unix)]

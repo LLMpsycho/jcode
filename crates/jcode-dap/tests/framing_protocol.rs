@@ -34,6 +34,27 @@ fn decodes_multiple_frames_and_partial_tail() {
 }
 
 #[test]
+fn decodes_many_frames_with_one_compaction_pass() {
+    let expected = (0..4096)
+        .map(|index| index.to_string().into_bytes())
+        .collect::<Vec<_>>();
+    let encoded = expected
+        .iter()
+        .flat_map(|payload| encode_frame(payload))
+        .collect::<Vec<_>>();
+    let mut decoder = FrameDecoder::default();
+    assert_eq!(decoder.push(&encoded).unwrap(), expected);
+    assert_eq!(decoder.buffered_bytes(), 0);
+}
+
+#[test]
+fn permits_a_maximum_sized_header_while_its_delimiter_is_partial() {
+    let mut decoder = FrameDecoder::new(17, 1);
+    assert!(decoder.push(b"Content-Length: 1\r\n\r").unwrap().is_empty());
+    assert_eq!(decoder.push(b"\nx").unwrap(), vec![b"x".to_vec()]);
+}
+
+#[test]
 fn rejects_malformed_headers_and_lengths() {
     let cases = [
         b"Content-Type: x\r\n\r\n".as_slice(),

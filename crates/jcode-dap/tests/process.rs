@@ -125,3 +125,35 @@ async fn forced_group_cleanup_removes_descendants() {
     }
     panic!("descendant process {descendant} survived group cleanup");
 }
+
+#[tokio::test]
+async fn drop_backstop_removes_owned_descendants() {
+    let process = AdapterProcess::spawn(
+        &AdapterCommand::new("/bin/sh", "/")
+            .with_arg("-c")
+            .with_arg("sleep 30 & echo $! >&2; wait"),
+    )
+    .await
+    .unwrap();
+    let mut descendant = None;
+    for _ in 0..100 {
+        let stderr = String::from_utf8_lossy(&process.recent_stderr())
+            .trim()
+            .to_owned();
+        if let Ok(pid) = stderr.parse::<i32>() {
+            descendant = Some(pid);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let descendant = descendant.expect("descendant PID should be reported within one second");
+    drop(process);
+    for _ in 0..50 {
+        // SAFETY: signal 0 only checks whether this observed child PID still exists.
+        if unsafe { libc::kill(descendant, 0) } != 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("descendant process {descendant} survived AdapterProcess drop");
+}
