@@ -2,15 +2,27 @@ use std::time::Duration;
 
 use jcode_dap::testing::FakeAdapter;
 use jcode_dap::{
-    DapError, EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_BYTES, MAX_RETAINED_EVENT_SIZE, Message,
-    Response,
+    DapClient, DapError, EVENT_CHANNEL_CAPACITY, FrameDecoder, MAX_RETAINED_EVENT_BYTES,
+    MAX_RETAINED_EVENT_SIZE, Message, Response, decode_message, encode_message,
 };
 use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
 fn request(message: Message) -> jcode_dap::Request {
     match message {
         Message::Request(request) => request,
         other => panic!("expected request, got {other:?}"),
+    }
+}
+
+async fn recv_framed(stream: &mut DuplexStream, decoder: &mut FrameDecoder) -> Message {
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = stream.read(&mut buffer).await.unwrap();
+        assert_ne!(count, 0, "transport closed before a complete frame");
+        if let Some(frame) = decoder.push(&buffer[..count]).unwrap().into_iter().next() {
+            return decode_message(&frame).unwrap();
+        }
     }
 }
 
@@ -246,7 +258,8 @@ async fn cancelling_request_futures_releases_pending_capacity() {
 
 #[tokio::test]
 async fn abort_during_blocked_write_does_not_corrupt_the_frame() {
-    let (client, mut adapter) = FakeAdapter::pair(32);
+    let (transport, mut adapter) = tokio::io::duplex(32);
+    let client = DapClient::start(transport);
     let abandoned = tokio::spawn({
         let client = client.clone();
         async move {
@@ -259,19 +272,35 @@ async fn abort_during_blocked_write_does_not_corrupt_the_frame() {
                 .await
         }
     });
-    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    let mut decoder = FrameDecoder::default();
+    let mut first_byte = [0_u8; 1];
+    adapter.read_exact(&mut first_byte).await.unwrap();
+    assert!(decoder.push(&first_byte).unwrap().is_empty());
     abandoned.abort();
     assert!(abandoned.await.unwrap_err().is_cancelled());
 
-    let complete = request(adapter.recv().await.unwrap());
+    let complete = request(recv_framed(&mut adapter, &mut decoder).await);
     assert_eq!(complete.command, "large");
     let next = tokio::spawn({
         let client = client.clone();
         async move { client.request("next", None, Duration::from_secs(1)).await }
     });
-    let sent = request(adapter.recv().await.unwrap());
+    let sent = request(recv_framed(&mut adapter, &mut decoder).await);
     assert_eq!(sent.command, "next");
-    adapter.respond_ok(&sent, None).await.unwrap();
+    adapter
+        .write_all(
+            &encode_message(&Response::success(
+                1,
+                sent.seq,
+                sent.command.clone(),
+                None,
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    adapter.flush().await.unwrap();
     assert!(next.await.unwrap().is_ok());
 }
 
