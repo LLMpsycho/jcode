@@ -47,6 +47,7 @@ The LSP section rejects unknown keys and invalid types. Project-specific LSP fil
 - File rename rejects stale related edits before mutating the source, destination, or importers.
 - File rename uses platform no-replace primitives, rejects occupied or dangling-symlink destinations, protects catastrophic source paths, and invalidates old-path read authorization after a move.
 - Selected code-action application, restart backoff, idle eviction, and live status/error reporting have focused deterministic coverage.
+- The Phase 0 harness includes deterministic Rust symbol-rename and Python-diagnostics tasks. An explicit-binary dry run identified Jcode commit `4ef924879` and OMP `18.1.6`, validated both task manifests against the unchanged six-file baseline lock, and produced two paired plans without invoking model providers.
 
 ## Remaining Phase 2 work
 
@@ -54,4 +55,4 @@ The LSP section rejects unknown keys and invalid types. Project-specific LSP fil
 - A live Go integration test is pending because `gopls` is not installed in the validation environment.
 - Project/session configuration overrides.
 - SDK-specific typed rendering beyond generic tool metadata.
-- Competitive OMP campaign measurements for the supported LSP task subset.
+- Live competitive OMP campaign measurements for the supported LSP task subset. These are intentionally not run without explicit authorization because they may invoke paid model providers.
