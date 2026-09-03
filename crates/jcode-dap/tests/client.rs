@@ -27,13 +27,12 @@ async fn correlates_out_of_order_responses_and_monotonic_sequences() {
     });
     let one = request(adapter.recv().await.unwrap());
     let two = request(adapter.recv().await.unwrap());
-    assert_ne!(one.seq, two.seq);
+    assert!(one.seq < two.seq);
     let (first_request, second_request) = if one.command == "first" {
         (one, two)
     } else {
         (two, one)
     };
-    assert!(first_request.seq < second_request.seq);
     adapter
         .respond_ok(&second_request, Some(json!(2)))
         .await
