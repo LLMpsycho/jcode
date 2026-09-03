@@ -157,8 +157,13 @@ pub(crate) async fn finish_start(
                 },
                 None => error,
             };
-            reservation.cancel_start().await?;
-            Err(error)
+            match reservation.cancel_start().await {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(DapError::DebugStartupFailed {
+                    message: format!("{error}; cleanup also failed: {cleanup}"),
+                    adapter_stderr: String::new(),
+                }),
+            }
         }
     }
 }

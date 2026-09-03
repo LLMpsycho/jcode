@@ -106,6 +106,7 @@ async fn wait_process_gone(pid: u32) {
 async fn real_process_launch_initializes_runs_and_terminates_adapter_tree() {
     let (root, ws, adapter) = setup("launch");
     fs::write(root.join("launch-descendant"), b"").unwrap();
+    fs::write(root.join("response-first"), b"").unwrap();
     let program = copy_target(&root);
     let manager = manager(Duration::from_millis(100));
     let snapshot = manager
@@ -133,16 +134,55 @@ async fn real_process_launch_initializes_runs_and_terminates_adapter_tree() {
 }
 
 #[tokio::test]
+async fn real_process_lifecycle_system_pid_is_informational_only() {
+    let (root, ws, adapter) = setup("lifecycle");
+    fs::write(root.join("emit-lifecycle"), b"").unwrap();
+    let mut sentinel = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    fs::write(root.join("system-process-id"), sentinel.id().to_string()).unwrap();
+    let program = copy_target(&root);
+    let manager = manager(Duration::from_millis(100));
+    let result = manager
+        .launch("owner", ws, &adapter, DebugLaunchRequest::new(&program))
+        .await;
+    assert!(result.is_err());
+    let snapshot = manager.sessions("owner").into_iter().next().unwrap();
+    assert!(matches!(snapshot.state, DebugSessionState::Ended(_)));
+    let output = manager.output("owner", snapshot.id, None, 10).unwrap();
+    assert!(
+        output
+            .records
+            .iter()
+            .any(|item| item.output.contains("fixture output"))
+    );
+    assert!(
+        process_exists(sentinel.id()),
+        "DAP systemProcessId must not become kill authority"
+    );
+    let adapter_pid = logged_pid(&root, "adapter_pid");
+    wait_group_gone(adapter_pid).await;
+    sentinel.kill().unwrap();
+    sentinel.wait().unwrap();
+}
+
+#[tokio::test]
 async fn real_process_owned_attach_uses_the_manager_spawned_pid() {
     let (root, ws, adapter) = setup("attach-pid");
-    let program = copy_target(&root);
+    let program = root.join("target-probe");
+    fs::copy(fixture(), &program).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let marker = root.join("target-pid");
     let manager = manager(Duration::from_millis(100));
     let snapshot = manager
         .spawn_and_attach(
             "owner",
             ws,
             &adapter,
-            DebugOwnedAttachRequest::new(&program).with_arg("30"),
+            DebugOwnedAttachRequest::new(&program)
+                .with_arg("--target-probe")
+                .with_arg(marker.to_string_lossy().into_owned()),
         )
         .await
         .unwrap();
@@ -151,6 +191,22 @@ async fn real_process_owned_attach_uses_the_manager_spawned_pid() {
         _ => panic!(),
     };
     wait_log(&root, &format!("verified_attach_pid\t{pid}")).await;
+    let target_recorded_pid = timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(pid) = fs::read_to_string(&marker)
+                .unwrap_or_default()
+                .parse::<u32>()
+            {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let adapter_received_pid = logged_pid(&root, "verified_attach_pid");
+    assert_eq!(pid, target_recorded_pid);
+    assert_eq!(pid, adapter_received_pid);
     assert!(group_exists(pid));
     manager.terminate("owner", snapshot.id).await.unwrap();
     wait_group_gone(pid).await;
@@ -189,27 +245,70 @@ async fn real_process_owned_attach_terminates_target_and_adapter_groups() {
 async fn real_process_startup_failure_leaves_no_adapter_or_target() {
     let (root, ws, adapter) = setup("reject");
     fs::write(root.join("reject-start"), b"").unwrap();
+    fs::write(root.join("reject-stderr"), b"").unwrap();
     let program = copy_target(&root);
     let manager = manager(Duration::from_millis(100));
-    assert!(
-        manager
-            .launch(
-                "owner",
-                ws.clone(),
-                &adapter,
-                DebugLaunchRequest::new(&program)
-            )
-            .await
-            .is_err()
-    );
+    let error = manager
+        .launch(
+            "owner",
+            ws.clone(),
+            &adapter,
+            DebugLaunchRequest::new(&program),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("fixture rejection"));
+    assert!(error.to_string().contains("authorization denied"));
     let adapter_pid = logged_pid(&root, "adapter_pid");
     wait_group_gone(adapter_pid).await;
     fs::remove_file(root.join("reject-start")).unwrap();
+    fs::remove_file(root.join("reject-stderr")).unwrap();
     let retry = manager
         .launch("owner", ws, &adapter, DebugLaunchRequest::new(&program))
         .await
         .unwrap();
     assert!(matches!(retry.state, DebugSessionState::Running));
+    manager.terminate("owner", retry.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn real_process_owned_attach_rejection_cleans_both_groups_and_retries() {
+    let (root, ws, adapter) = setup("attach-reject");
+    fs::write(root.join("reject-start"), b"").unwrap();
+    let program = copy_target(&root);
+    let manager = manager(Duration::from_millis(100));
+    assert!(
+        manager
+            .spawn_and_attach(
+                "owner",
+                ws.clone(),
+                &adapter,
+                DebugOwnedAttachRequest::new(&program).with_arg("30")
+            )
+            .await
+            .is_err()
+    );
+    let adapter_pid = logged_pid(&root, "adapter_pid");
+    let attach_line = log(&root)
+        .lines()
+        .find(|line| line.starts_with("attach\t"))
+        .unwrap()
+        .to_owned();
+    let arguments: serde_json::Value =
+        serde_json::from_str(attach_line.split_once('\t').unwrap().1).unwrap();
+    let target_pid = arguments["pid"].as_u64().unwrap() as u32;
+    wait_group_gone(adapter_pid).await;
+    wait_group_gone(target_pid).await;
+    fs::remove_file(root.join("reject-start")).unwrap();
+    let retry = manager
+        .spawn_and_attach(
+            "owner",
+            ws,
+            &adapter,
+            DebugOwnedAttachRequest::new(&program).with_arg("30"),
+        )
+        .await
+        .unwrap();
     manager.terminate("owner", retry.id).await.unwrap();
 }
 
@@ -263,33 +362,36 @@ async fn real_process_disconnect_hang_escalates_to_forced_cleanup() {
 #[tokio::test]
 async fn real_process_target_exit_during_attach_finalizes_once() {
     let (root, ws, adapter) = setup("exit");
-    let program = copy_target(&root);
-    let manager = manager(Duration::from_millis(50));
+    fs::write(root.join("signal-target-exit"), b"").unwrap();
+    let program = root.join("target-exit-probe");
+    fs::copy(fixture(), &program).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let pid_marker = root.join("target-pid");
+    let exit_marker = root.join("attach-seen");
+    let manager = manager(Duration::from_millis(500));
     let result = manager
         .spawn_and_attach(
             "owner",
             ws.clone(),
             &adapter,
-            DebugOwnedAttachRequest::new(&program).with_arg("0"),
+            DebugOwnedAttachRequest::new(&program)
+                .with_arg("--target-exit-after")
+                .with_arg(pid_marker.to_string_lossy().into_owned())
+                .with_arg(exit_marker.to_string_lossy().into_owned()),
         )
         .await;
-    if let Ok(snapshot) = result {
-        timeout(Duration::from_secs(2), async {
-            loop {
-                if matches!(
-                    manager.snapshot("owner", snapshot.id).unwrap().state,
-                    DebugSessionState::Ended(_)
-                ) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-    }
+    assert!(result.is_err());
+    let target_pid: u32 = fs::read_to_string(pid_marker).unwrap().parse().unwrap();
+    wait_group_gone(target_pid).await;
     let adapter_pid = logged_pid(&root, "adapter_pid");
     wait_group_gone(adapter_pid).await;
+    assert!(matches!(
+        manager.sessions("owner")[0].state,
+        DebugSessionState::Ended(_)
+    ));
+    assert_eq!(manager.sessions("owner").len(), 1);
+    fs::remove_file(root.join("signal-target-exit")).unwrap();
+    let program = copy_target(&root);
     let retry = manager
         .spawn_and_attach(
             "owner",
@@ -342,4 +444,68 @@ async fn real_process_dead_adapter_with_open_pipes_cannot_spawn_owned_target() {
         .await
         .unwrap();
     manager.terminate("owner", retry.id).await.unwrap();
+}
+
+#[tokio::test]
+async fn real_process_invalid_inputs_are_rejected_before_adapter_spawn() {
+    let (root, ws, adapter) = setup("pre-spawn-denial");
+    let manager = manager(Duration::from_millis(100));
+    let outside = workspace("outside-target");
+    let outside_program = copy_target(&outside);
+    let program_link = root.join("program-link");
+    std::os::unix::fs::symlink(&outside_program, &program_link).unwrap();
+    assert!(
+        manager
+            .launch(
+                "owner",
+                ws.clone(),
+                &adapter,
+                DebugLaunchRequest::new(&program_link)
+            )
+            .await
+            .is_err()
+    );
+
+    let program = copy_target(&root);
+    let cwd_link = root.join("cwd-link");
+    std::os::unix::fs::symlink(&outside, &cwd_link).unwrap();
+    assert!(
+        manager
+            .launch(
+                "owner",
+                ws.clone(),
+                &adapter,
+                DebugLaunchRequest::new(&program).with_cwd(&cwd_link)
+            )
+            .await
+            .is_err()
+    );
+
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        manager
+            .launch(
+                "owner",
+                ws.clone(),
+                &adapter,
+                DebugLaunchRequest::new(&program)
+            )
+            .await
+            .is_err()
+    );
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o4755)).unwrap();
+    assert!(
+        manager
+            .spawn_and_attach(
+                "owner",
+                ws,
+                &adapter,
+                DebugOwnedAttachRequest::new(&program)
+            )
+            .await
+            .is_err()
+    );
+
+    assert!(!root.join("fake-dap.log").exists());
+    assert!(manager.sessions("owner").is_empty());
 }

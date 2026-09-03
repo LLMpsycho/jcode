@@ -126,15 +126,10 @@ async fn launch_waits_for_both_initialized_and_start_response() {
     let (_, mut adapter, task, _, _) = begin_start("both", false).await;
     let launch = recv_request(&mut adapter, "launch").await;
     adapter.respond_ok(&launch, None).await.unwrap();
-    assert!(
-        timeout(Duration::from_millis(20), async {
-            while !task.is_finished() {
-                tokio::task::yield_now().await
-            }
-        })
-        .await
-        .is_err()
-    );
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!task.is_finished(), "start response alone must not commit");
     adapter.event("initialized", None).await.unwrap();
     assert!(matches!(
         task.await.unwrap().unwrap().state,
@@ -170,17 +165,17 @@ async fn launch_accepts_initialized_before_start_response() {
 
 #[tokio::test]
 async fn configuration_done_is_omitted_when_not_supported() {
-    let (_, mut adapter, task, _, _) = begin_start("no-config", false).await;
+    let (manager, mut adapter, task, _, _) = begin_start("no-config", false).await;
     let launch = recv_request(&mut adapter, "launch").await;
     adapter.event("initialized", None).await.unwrap();
     adapter.respond_ok(&launch, None).await.unwrap();
-    task.await.unwrap().unwrap();
-    match timeout(Duration::from_millis(20), adapter.recv()).await {
-        Err(_) | Ok(Err(DapError::TransportClosed)) => {}
-        Ok(Ok(Message::Request(request))) => assert_ne!(request.command, "configurationDone"),
-        Ok(Ok(_)) => {}
-        Ok(Err(error)) => panic!("unexpected adapter error: {error}"),
-    }
+    let snapshot = task.await.unwrap().unwrap();
+    assert!(matches!(snapshot.state, DebugSessionState::Running));
+    assert!(matches!(
+        manager.snapshot("owner", snapshot.id).unwrap().state,
+        DebugSessionState::Running
+    ));
+    assert!(timeout(Duration::ZERO, adapter.recv()).await.is_err());
 }
 
 #[tokio::test]
@@ -191,6 +186,10 @@ async fn early_stopped_event_is_not_overwritten_by_launch_completion() {
         .event("stopped", Some(json!({"reason":"entry"})))
         .await
         .unwrap();
+    for _ in 0..4 {
+        tokio::task::yield_now().await;
+    }
+    assert!(!task.is_finished(), "stopped is not initialized");
     adapter.event("initialized", None).await.unwrap();
     adapter.respond_ok(&launch, None).await.unwrap();
     assert!(matches!(
@@ -373,15 +372,15 @@ async fn disconnect_body(policy: DebugTerminationPolicy) -> serde_json::Value {
 #[tokio::test]
 async fn disconnect_uses_terminate_debuggee_for_launch() {
     assert_eq!(
-        disconnect_body(DebugTerminationPolicy::AdapterLaunched).await["terminateDebuggee"],
-        true
+        disconnect_body(DebugTerminationPolicy::AdapterLaunched).await,
+        json!({"restart":false,"terminateDebuggee":true,"suspendDebuggee":false})
     );
 }
 #[tokio::test]
 async fn disconnect_does_not_delegate_target_termination_for_owned_attach() {
     assert_eq!(
-        disconnect_body(DebugTerminationPolicy::OwnedAttach).await["terminateDebuggee"],
-        false
+        disconnect_body(DebugTerminationPolicy::OwnedAttach).await,
+        json!({"restart":false,"terminateDebuggee":false,"suspendDebuggee":false})
     );
 }
 #[tokio::test]
@@ -466,10 +465,14 @@ async fn wrong_owner_cannot_observe_or_terminate_a_starting_session() {
     let (manager, mut adapter, task, _, _) = begin_start("wrong-owner", false).await;
     let _ = recv_request(&mut adapter, "launch").await;
     let id = manager.sessions("owner")[0].id;
+    let before = manager.snapshot("owner", id).unwrap().state;
     assert!(manager.sessions("other").is_empty());
     assert!(manager.snapshot("other", id).is_err());
     assert!(manager.terminate("other", id).await.is_err());
+    assert_eq!(manager.snapshot("owner", id).unwrap().state, before);
+    assert!(timeout(Duration::ZERO, adapter.recv()).await.is_err());
     task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
 }
 
 #[cfg(windows)]
@@ -546,10 +549,20 @@ async fn target_exit_during_attach_cleans_target_adapter_and_owner_slot() {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_attach_grants_only_the_owned_adapter_pid() {
-    let source = include_str!("../process.rs");
-    assert!(source.contains("libc::PR_SET_PTRACER"));
-    assert!(source.contains("adapter_pid as libc::c_ulong"));
-    assert!(!source.contains("PR_SET_PTRACER_ANY"));
+    use std::cell::Cell;
+    let option = Cell::new(0);
+    let value = Cell::new(0);
+    crate::process::test_set_ptracer_with(4242, |seen_option, seen_value| {
+        option.set(seen_option);
+        value.set(seen_value);
+        0
+    })
+    .unwrap();
+    assert_eq!(option.get(), libc::PR_SET_PTRACER);
+    assert_eq!(value.get(), 4242);
+    assert_ne!(value.get(), libc::PR_SET_PTRACER_ANY as libc::c_ulong);
+    assert!(crate::process::test_set_ptracer_with(4242, |_, _| -1).is_err());
+    assert!(crate::process::test_set_ptracer_with(0, |_, _| 0).is_err());
 }
 #[cfg(not(target_os = "linux"))]
 #[test]

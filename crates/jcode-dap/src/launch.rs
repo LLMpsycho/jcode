@@ -99,6 +99,14 @@ impl DebugLaunchRequest {
     }
 }
 request_type!(DebugOwnedAttachRequest);
+/// Owned attach accepts a program specification, never caller PID authority.
+/// ```compile_fail
+/// # use jcode_dap::{DebugAdapterConfig, DebugSessionManager, DebugWorkspaceKey};
+/// # async fn proof(m: &DebugSessionManager, w: DebugWorkspaceKey, a: &DebugAdapterConfig) {
+/// m.spawn_and_attach("owner", w, a, 1234_u32).await;
+/// # }
+/// ```
+impl DebugOwnedAttachRequest {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DebugSessionStart {

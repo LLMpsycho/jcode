@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
@@ -109,6 +109,19 @@ impl OwnedChildProcess {
                 "adapter cwd must be an absolute path".into(),
             ));
         }
+        let command_identity = config.command.canonicalize()?;
+        if command_identity != config.command || !command_identity.is_file() {
+            return Err(DapError::InvalidMessage(
+                "adapter executable identity changed before spawn".into(),
+            ));
+        }
+        validate_spawn_executable(&command_identity)?;
+        let cwd_identity = config.cwd.canonicalize()?;
+        if cwd_identity != config.cwd || !cwd_identity.is_dir() {
+            return Err(DapError::InvalidMessage(
+                "adapter working directory identity changed before spawn".into(),
+            ));
+        }
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
@@ -154,7 +167,22 @@ impl OwnedChildProcess {
     ) -> Result<Self> {
         #[cfg(not(target_os = "linux"))]
         let _ = allowed_tracer_pid;
-        let mut command = Command::new(&target.program);
+        let program_identity = target.program.canonicalize()?;
+        if program_identity != target.program || !program_identity.is_file() {
+            return Err(DapError::InvalidDebugProgram {
+                path: target.program.clone(),
+                message: "program identity changed before spawn".into(),
+            });
+        }
+        validate_spawn_executable(&program_identity)?;
+        let cwd_identity = target.cwd.canonicalize()?;
+        if cwd_identity != target.cwd || !cwd_identity.is_dir() {
+            return Err(DapError::InvalidDebugWorkingDirectory {
+                path: target.cwd.clone(),
+                message: "working directory identity changed before spawn".into(),
+            });
+        }
+        let mut command = Command::new(&program_identity);
         command
             .args(&target.args)
             .current_dir(&target.cwd)
@@ -170,14 +198,7 @@ impl OwnedChildProcess {
         if let Some(adapter_pid) = allowed_tracer_pid {
             // SAFETY: pre_exec invokes only the async-signal-safe prctl syscall and creates no allocations.
             unsafe {
-                command.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PTRACER, adapter_pid as libc::c_ulong, 0, 0, 0) == 0
-                    {
-                        Ok(())
-                    } else {
-                        Err(std::io::Error::last_os_error())
-                    }
-                });
+                command.pre_exec(move || set_ptracer(adapter_pid));
             }
         }
         let child = command.spawn()?;
@@ -236,6 +257,53 @@ impl OwnedChildProcess {
             }
         }
     }
+}
+
+fn validate_spawn_executable(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = path.metadata()?.permissions().mode();
+        if mode & 0o111 == 0 || mode & 0o6000 != 0 {
+            return Err(DapError::InvalidMessage(
+                "executable permissions changed before spawn".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_ptracer(adapter_pid: u32) -> std::io::Result<()> {
+    set_ptracer_with(adapter_pid, |option, value| unsafe {
+        libc::prctl(option, value, 0, 0, 0)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn set_ptracer_with(
+    adapter_pid: u32,
+    call: impl FnOnce(libc::c_int, libc::c_ulong) -> libc::c_int,
+) -> std::io::Result<()> {
+    if adapter_pid == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "tracer PID must be nonzero",
+        ));
+    }
+    if call(libc::PR_SET_PTRACER, adapter_pid as libc::c_ulong) == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) fn test_set_ptracer_with(
+    adapter_pid: u32,
+    call: impl FnOnce(libc::c_int, libc::c_ulong) -> libc::c_int,
+) -> std::io::Result<()> {
+    set_ptracer_with(adapter_pid, call)
 }
 
 impl OwnedChildObserver {

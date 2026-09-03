@@ -57,7 +57,7 @@ This branch implements the DAP protocol foundation, owner-scoped session manager
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
 - Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
-- Deterministic fake-adapter tests verify initialize advertising, canonical literal launch arguments, and initialize, launch, initialized, configurationDone ordering. Mandatory real framed subprocess tests cover launch, internally sourced attach PID, target and adapter cleanup, startup rejection, cancellation cleanup, disconnect escalation, and target-exit races.
+- Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, deadline cleanup, and scoped Linux ptracer arguments. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and target-exit finalization.
 
 Focused validation commands:
 
@@ -71,7 +71,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 85 tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
+All focused DAP checks pass with 110 tests: 59 library tests, 19 client integration tests, 10 framing/protocol tests, 11 real launch-process tests, 8 owned-process tests, and 3 DAP type tests. The repository-wide code-size budget still reports unrelated pre-existing drift outside these crates. Every production and test file in `crates/jcode-dap` remains below 1,200 lines.
 
 ## Deliberately deferred
 
