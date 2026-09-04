@@ -719,7 +719,7 @@ fn shaped_output(
     if truncated {
         text = text.chars().take(max_chars).collect::<String>();
         text.push_str("\n… output truncated");
-        if action != LspAction::Diagnostics {
+        if !matches!(action, LspAction::Diagnostics) {
             items = json!([]);
         }
     }
