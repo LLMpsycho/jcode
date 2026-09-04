@@ -230,7 +230,10 @@ impl Agent {
     ) {
         let config = crate::advisor::config_for_current_session();
         let manager = crate::advisor::advisor_manager();
-        if !manager.is_enabled(&self.session.id, config.enabled) {
+        if config.max_reviews_per_session == 0
+            || config.max_notes_per_turn == 0
+            || !manager.is_enabled(&self.session.id, config.enabled)
+        {
             return;
         }
         let mut input = crate::advisor::AdvisorTurnInput::from_completed_turn(
