@@ -18,12 +18,15 @@ async fn runtime_services_registry_includes_shared_dap_tool() {
     assert!(registry.tool_names().await.iter().any(|name| name == "dap"));
 }
 
-use crate::message::{Message, ToolDefinition};
+use crate::message::{Message, StreamEvent, ToolDefinition};
 use crate::provider::{EventStream, Provider};
 use async_trait::async_trait;
+use futures::stream;
 use serde_json::Value;
 
 struct MockProvider;
+
+struct BlockingNoteProvider;
 
 #[async_trait]
 impl Provider for MockProvider {
@@ -45,6 +48,35 @@ impl Provider for MockProvider {
 
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(MockProvider)
+    }
+}
+
+#[async_trait]
+impl Provider for BlockingNoteProvider {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> anyhow::Result<EventStream> {
+        assert!(tools.is_empty());
+        Ok(Box::pin(stream::iter(vec![
+            Ok(StreamEvent::TextDelta(
+                r#"{"severity":"blocker","summary":"verify first","evidence":[],"recommended_action":"acknowledge after verification","blocking":true}"#.to_string(),
+            )),
+            Ok(StreamEvent::MessageEnd {
+                stop_reason: Some("end_turn".to_string()),
+            }),
+        ])))
+    }
+
+    fn name(&self) -> &str {
+        "blocking-note"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self)
     }
 }
 
@@ -312,6 +344,76 @@ async fn test_batch_resolves_function_namespaced_tools() {
     assert!(result.output.contains("--- [1] bash ---"));
     assert!(result.output.contains("--- [2] bash ---"));
     assert!(!result.output.contains("functions."));
+}
+
+#[tokio::test]
+async fn advisor_gate_applies_to_risky_calls_nested_inside_batch() {
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
+    let registry = Registry::new(provider).await;
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    let target = temp.path().join("must-not-exist.txt");
+    let session_id = "test-advisor-gates-batch-subcall";
+    let manager = crate::advisor::advisor_manager();
+    manager.remove(session_id);
+    manager.set_enabled(session_id, true);
+    assert!(manager.schedule_turn(
+        session_id.to_string(),
+        Arc::new(BlockingNoteProvider),
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        crate::advisor::AdvisorTurnInput::default(),
+        crate::config::AdvisorConfig {
+            enabled: true,
+            ..crate::config::AdvisorConfig::default()
+        },
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if manager
+                .snapshot(session_id)
+                .is_some_and(|snapshot| snapshot.status == crate::advisor::AdvisorStatus::Ready)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("advisor blocker should become ready");
+
+    let result = registry
+        .execute(
+            "batch",
+            serde_json::json!({
+                "tool_calls": [{
+                    "tool": "write",
+                    "file_path": target,
+                    "content": "this must be blocked"
+                }]
+            }),
+            ToolContext {
+                session_id: session_id.to_string(),
+                message_id: "test".to_string(),
+                tool_call_id: "test".to_string(),
+                working_dir: Some(temp.path().to_path_buf()),
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: ToolExecutionMode::Direct,
+            },
+        )
+        .await
+        .expect("batch itself should complete with a failed subcall");
+
+    manager.remove(session_id);
+    assert!(
+        result
+            .output
+            .contains("advisor blocked future risky tool `write`")
+    );
+    assert!(result.output.contains("Completed: 0 succeeded, 1 failed"));
+    assert!(
+        !target.exists(),
+        "blocked batch subcall must not write a file"
+    );
 }
 
 #[tokio::test]

@@ -1006,6 +1006,10 @@ pub(in crate::tui::app) fn handle_server_event(
             let _ = app.acknowledge_pending_soft_interrupt(id);
             false
         }
+        ServerEvent::AdvisorResult { result, .. } => {
+            app.push_display_message(DisplayMessage::system(result.message));
+            true
+        }
         ServerEvent::Interrupted => {
             crate::logging::info(&format!(
                 "REMOTE_INTERRUPT_EVENT_RECEIVED kind=interrupted session={:?} current_message_id={:?} is_processing={} status={:?} streaming_text_bytes={} pending_soft_interrupts={} queued_messages={}",

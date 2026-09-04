@@ -953,6 +953,13 @@ impl RemoteConnection {
         Ok(id)
     }
 
+    pub async fn advisor(&mut self, request: crate::protocol::AdvisorRequest) -> Result<u64> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        self.send_request(Request::Advisor { id, request }).await?;
+        Ok(id)
+    }
+
     /// Trigger immediate memory extraction on the server for the active session.
     pub async fn trigger_memory_extraction(&mut self) -> Result<()> {
         let id = self.next_request_id;

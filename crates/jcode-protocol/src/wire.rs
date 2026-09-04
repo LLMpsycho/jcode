@@ -181,6 +181,13 @@ pub enum Request {
     #[serde(rename = "state")]
     GetState { id: u64 },
 
+    /// Inspect or control the advisor for the active session.
+    #[serde(rename = "advisor")]
+    Advisor {
+        id: u64,
+        request: crate::AdvisorRequest,
+    },
+
     /// Execute a debug command (debug socket only)
     #[serde(rename = "debug_command")]
     DebugCommand {
@@ -825,6 +832,12 @@ pub enum ServerEvent {
     /// Acknowledgment of request
     #[serde(rename = "ack")]
     Ack { id: u64 },
+
+    #[serde(rename = "advisor_result")]
+    AdvisorResult {
+        id: u64,
+        result: crate::AdvisorControlResult,
+    },
 
     /// Streaming text delta
     #[serde(rename = "text_delta")]

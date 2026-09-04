@@ -214,7 +214,8 @@ impl Agent {
         start_message_index: usize,
     ) {
         let config = crate::advisor::config_for_current_session();
-        if !config.enabled {
+        let manager = crate::advisor::advisor_manager();
+        if !manager.is_enabled(&self.session.id, config.enabled) {
             return;
         }
         let input = crate::advisor::AdvisorTurnInput::from_completed_turn(
@@ -223,7 +224,7 @@ impl Agent {
             self.get_tool_call_summaries(12),
             turn_succeeded,
         );
-        let _ = crate::advisor::advisor_manager().schedule_turn(
+        let _ = manager.schedule_turn(
             self.session.id.clone(),
             self.provider_fork(),
             self.soft_interrupt_queue(),

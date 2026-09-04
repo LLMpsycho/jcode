@@ -1,5 +1,5 @@
 use super::{connect_socket, debug_socket_path, socket_path};
-use crate::protocol::{HistoryMessage, Request, ServerEvent, TranscriptMode};
+use crate::protocol::{AdvisorRequest, HistoryMessage, Request, ServerEvent, TranscriptMode};
 use crate::transport::{ReadHalf, WriteHalf};
 use anyhow::Result;
 use std::path::PathBuf;
@@ -323,6 +323,17 @@ impl Client {
             auth: None,
             prefer_strongest: false,
         };
+        let json = serde_json::to_string(&request)? + "\n";
+        self.writer.write_all(json.as_bytes()).await?;
+        Ok(id)
+    }
+
+    /// Control or inspect the advisor for the currently subscribed session.
+    pub async fn advisor(&mut self, request: AdvisorRequest) -> Result<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let request = Request::Advisor { id, request };
         let json = serde_json::to_string(&request)? + "\n";
         self.writer.write_all(json.as_bytes()).await?;
         Ok(id)

@@ -11,7 +11,7 @@ use crate::provider::Provider;
 use futures::StreamExt;
 use jcode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -21,6 +21,7 @@ const MAX_INPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOLS: usize = 12;
 const MAX_EVIDENCE: usize = 8;
 const MAX_PRIVATE_CONTEXT: usize = 8;
+const MAX_NOTE_METADATA: usize = 32;
 const ADVISOR_REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const ADVISOR_SYSTEM_PROMPT: &str = "You are Jcode's independent advisor. Review only the bounded evidence from the completed primary turn. You have no tools and must not request actions or additional context. Return exactly one JSON object with severity (nit, concern, or blocker), summary, evidence (an array of concise strings), recommended_action, and blocking. Do not include markdown or hidden reasoning. A blocker is reserved for unsafe actions, data-integrity risks, or an unmet hard acceptance criterion.";
 
@@ -212,6 +213,26 @@ pub struct AdvisorRuntimeSnapshot {
     pub private_context_len: usize,
     pub notes_emitted: usize,
     pub last_error: Option<String>,
+    pub unresolved_blocking_notes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorNoteDisposition {
+    Unresolved,
+    Acknowledged,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisorNoteMetadata {
+    pub id: String,
+    pub severity: AdvisorSeverity,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub recommended_action: String,
+    pub blocking: bool,
+    pub disposition: AdvisorNoteDisposition,
 }
 
 struct PendingReview {
@@ -232,12 +253,15 @@ struct AdvisorRuntime {
     last_error: Option<String>,
     active_review_id: u64,
     pending: Option<PendingReview>,
+    enabled_override: Option<bool>,
+    notes: VecDeque<AdvisorNoteMetadata>,
 }
 
 #[derive(Default)]
 pub struct AdvisorManager {
     sessions: Mutex<HashMap<String, AdvisorRuntime>>,
     next_review_id: AtomicU64,
+    next_note_id: AtomicU64,
 }
 
 impl AdvisorManager {
@@ -252,7 +276,96 @@ impl AdvisorManager {
             private_context_len: runtime.private_context.len(),
             notes_emitted: runtime.notes_emitted,
             last_error: runtime.last_error.clone(),
+            unresolved_blocking_notes: runtime
+                .notes
+                .iter()
+                .filter(|note| {
+                    note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved
+                })
+                .count(),
         })
+    }
+
+    pub fn notes(&self, owner_session_id: &str) -> Vec<AdvisorNoteMetadata> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(owner_session_id)
+                    .map(|runtime| runtime.notes.iter().cloned().collect())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_enabled(&self, owner_session_id: &str, enabled: bool) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let runtime = sessions.entry(owner_session_id.to_string()).or_default();
+            runtime.enabled_override = Some(enabled);
+            if !enabled {
+                runtime.pending = None;
+                runtime.status = AdvisorStatus::Idle;
+                runtime.active_review_id = self
+                    .next_review_id
+                    .fetch_add(1, AtomicOrdering::Relaxed)
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    pub fn is_enabled(&self, owner_session_id: &str, configured_default: bool) -> bool {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(owner_session_id)
+                    .and_then(|runtime| runtime.enabled_override)
+            })
+            .unwrap_or(configured_default)
+    }
+
+    pub fn resolve_note(
+        &self,
+        owner_session_id: &str,
+        id: &str,
+        disposition: AdvisorNoteDisposition,
+    ) -> bool {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return false;
+        };
+        let Some(note) = sessions
+            .get_mut(owner_session_id)
+            .and_then(|runtime| runtime.notes.iter_mut().find(|note| note.id == id))
+        else {
+            return false;
+        };
+        note.disposition = disposition;
+        true
+    }
+
+    pub fn blocks_tool_call(
+        &self,
+        owner_session_id: &str,
+        tool_name: &str,
+        input: &serde_json::Value,
+    ) -> Option<String> {
+        if !is_risky_tool_call(tool_name, input) {
+            return None;
+        }
+        let sessions = self.sessions.lock().ok()?;
+        let runtime = sessions.get(owner_session_id)?;
+        if !runtime
+            .enabled_override
+            .unwrap_or_else(|| config_for_current_session().enabled)
+        {
+            return None;
+        }
+        runtime
+            .notes
+            .iter()
+            .find(|note| note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved)
+            .map(|note| format!("advisor blocked future risky tool `{tool_name}` until note {} is acknowledged, dismissed, or advisor is disabled", note.id))
     }
 
     pub fn remove(&self, owner_session_id: &str) {
@@ -269,10 +382,10 @@ impl AdvisorManager {
         input: AdvisorTurnInput,
         config: AdvisorConfig,
     ) -> bool {
-        if !config.enabled || config.max_notes_per_turn == 0 || config.max_reviews_per_session == 0
-        {
+        if config.max_notes_per_turn == 0 || config.max_reviews_per_session == 0 {
             return false;
         }
+        let configured_enabled = config.enabled;
         let cadence = config.review_every_n_turns.max(1) as u64;
         let max_reviews_per_session = config.max_reviews_per_session as u64;
 
@@ -291,6 +404,13 @@ impl AdvisorManager {
             let Ok(mut sessions) = self.sessions.lock() else {
                 return false;
             };
+            if !sessions
+                .get(&owner_session_id)
+                .and_then(|runtime| runtime.enabled_override)
+                .unwrap_or(configured_enabled)
+            {
+                return false;
+            }
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
             runtime.turns_observed = runtime.turns_observed.saturating_add(1);
             if (runtime.turns_observed - 1) % cadence != 0
@@ -523,6 +643,26 @@ impl AdvisorManager {
             } else {
                 runtime.last_note_hash = Some(note_hash);
                 runtime.notes_emitted += 1;
+                let note_id = self
+                    .next_note_id
+                    .fetch_add(1, AtomicOrdering::Relaxed)
+                    .saturating_add(1);
+                runtime.notes.push_back(AdvisorNoteMetadata {
+                    id: format!("adv-{note_id:016x}"),
+                    severity: note.severity,
+                    summary: redact_secrets(&note.summary),
+                    evidence: note
+                        .evidence
+                        .iter()
+                        .map(|evidence| redact_secrets(evidence))
+                        .collect(),
+                    recommended_action: redact_secrets(&note.recommended_action),
+                    blocking: note.blocking,
+                    disposition: AdvisorNoteDisposition::Unresolved,
+                });
+                while runtime.notes.len() > MAX_NOTE_METADATA {
+                    runtime.notes.pop_front();
+                }
                 true
             }
         };
@@ -584,6 +724,117 @@ pub fn mode_label(mode: AdvisorMode) -> &'static str {
         AdvisorMode::Interactive => "interactive",
         AdvisorMode::SelfdevGuardian => "selfdev-guardian",
         AdvisorMode::FinalReview => "final-review",
+    }
+}
+
+fn input_action(input: &serde_json::Value) -> Option<&str> {
+    input.get("action").and_then(serde_json::Value::as_str)
+}
+
+fn action_is_not(input: &serde_json::Value, safe: &[&str]) -> bool {
+    input_action(input).is_none_or(|action| !safe.contains(&action))
+}
+
+/// Classify only calls that can write durable state, execute code/processes, or
+/// perform an externally visible action. Composite tools such as `batch` are
+/// intentionally not listed: every nested call re-enters `Registry::execute`
+/// and is classified using its resolved tool name and actual input.
+pub fn is_risky_tool_call(name: &str, input: &serde_json::Value) -> bool {
+    match name {
+        "bash"
+        | "write"
+        | "edit"
+        | "multiedit"
+        | "patch"
+        | "apply_patch"
+        | "anchored_edit"
+        | "open"
+        | "maintainer_feedback"
+        | "todo" => true,
+        "browser" => action_is_not(
+            input,
+            &[
+                "status",
+                "list_tabs",
+                "get_active_tab",
+                "list_frames",
+                "snapshot",
+                "get_content",
+                "interactables",
+                "wait",
+                "screenshot",
+            ],
+        ),
+        "macos_computer_use" => action_is_not(
+            input,
+            &[
+                "screenshot",
+                "ocr",
+                "ui",
+                "find_element",
+                "get_value",
+                "check_permissions",
+                "discover",
+            ],
+        ),
+        "gmail" => action_is_not(
+            input,
+            &["search", "read", "list", "threads", "thread", "labels"],
+        ),
+        "schedule" => action_is_not(input, &["list"]),
+        "selfdev" => action_is_not(
+            input,
+            &["status", "find-config", "socket-info", "socket-help"],
+        ),
+        "bg" => action_is_not(
+            input,
+            &[
+                "list",
+                "status",
+                "output",
+                "tail",
+                "watch",
+                "delivery",
+                "subscribe",
+                "wait",
+            ],
+        ),
+        "side_panel" => action_is_not(input, &["status", "load"]),
+        "memory" => action_is_not(input, &["recall", "search", "list", "related"]),
+        "initiative" => action_is_not(input, &["list", "show"]),
+        "skill_manage" => action_is_not(input, &["list", "read"]),
+        "integration_tools" => action_is_not(input, &["search", "details"]),
+        "lsp" => input.get("apply").and_then(serde_json::Value::as_bool) == Some(true),
+        "dap" => action_is_not(
+            input,
+            &[
+                "sessions",
+                "threads",
+                "stack_trace",
+                "scopes",
+                "variables",
+                "output",
+                "step_in_targets",
+            ],
+        ),
+        "swarm" => action_is_not(
+            input,
+            &[
+                "read",
+                "list",
+                "list_channels",
+                "channel_members",
+                "status",
+                "summary",
+                "read_context",
+                "plan_status",
+                "task_graph",
+                "list_models",
+            ],
+        ),
+        "mcp" | "mcp_call" => true,
+        _ if name.starts_with("mcp__") => true,
+        _ => false,
     }
 }
 
@@ -1216,5 +1467,129 @@ mod tests {
         .bounded(false);
 
         assert!(serde_json::to_vec(&input).expect("serialize").len() <= MAX_INPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disabled() {
+        let manager = Arc::new(AdvisorManager::default());
+        manager.set_enabled("gating", true);
+        assert!(manager.schedule_turn(
+            "gating".to_string(),
+            Arc::new(AdvisorProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                response: r#"{"severity":"blocker","summary":"unsafe publication","evidence":["bounded"],"recommended_action":"verify first","blocking":false}"#.to_string(),
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            enabled_config(),
+        ));
+        wait_for_status(&manager, "gating", AdvisorStatus::Ready).await;
+
+        let notes = manager.notes("gating");
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].blocking,
+            "severity, not model boolean, controls gating"
+        );
+        let empty = serde_json::json!({});
+        assert!(manager.blocks_tool_call("gating", "read", &empty).is_none());
+        assert!(manager.blocks_tool_call("gating", "bash", &empty).is_some());
+
+        assert!(
+            manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Acknowledged,)
+        );
+        assert!(manager.blocks_tool_call("gating", "bash", &empty).is_none());
+
+        manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Unresolved);
+        manager.set_enabled("gating", false);
+        assert!(
+            manager
+                .blocks_tool_call("gating", "write", &empty)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn risky_tool_classifier_distinguishes_read_only_and_mutating_actions() {
+        let cases = [
+            ("browser", serde_json::json!({"action":"snapshot"}), false),
+            ("browser", serde_json::json!({"action":"click"}), true),
+            ("gmail", serde_json::json!({"action":"read"}), false),
+            ("gmail", serde_json::json!({"action":"send"}), true),
+            ("schedule", serde_json::json!({"action":"list"}), false),
+            ("schedule", serde_json::json!({"action":"cancel"}), true),
+            ("memory", serde_json::json!({"action":"recall"}), false),
+            ("memory", serde_json::json!({"action":"remember"}), true),
+            (
+                "lsp",
+                serde_json::json!({"action":"rename","apply":false}),
+                false,
+            ),
+            (
+                "lsp",
+                serde_json::json!({"action":"rename","apply":true}),
+                true,
+            ),
+            ("dap", serde_json::json!({"action":"threads"}), false),
+            ("dap", serde_json::json!({"action":"evaluate"}), true),
+            ("swarm", serde_json::json!({"action":"list"}), false),
+            ("swarm", serde_json::json!({"action":"spawn"}), true),
+            ("mcp__server__read", serde_json::json!({}), true),
+        ];
+
+        for (name, input, expected) in cases {
+            assert_eq!(
+                is_risky_tool_call(name, &input),
+                expected,
+                "unexpected risk classification for {name} with {input}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn enable_override_activates_globally_disabled_advisor() {
+        let manager = Arc::new(AdvisorManager::default());
+        manager.set_enabled("enabled-override", true);
+        assert!(manager.is_enabled("enabled-override", false));
+
+        assert!(manager.schedule_turn(
+            "enabled-override".to_string(),
+            Arc::new(AdvisorProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                response: r#"{"severity":"nit","summary":"ok","evidence":[],"recommended_action":"continue","blocking":false}"#.to_string(),
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            AdvisorConfig::default(),
+        ));
+        wait_for_status(&manager, "enabled-override", AdvisorStatus::Ready).await;
+    }
+
+    #[tokio::test]
+    async fn disabling_fences_an_in_flight_review_and_discards_its_note() {
+        let manager = Arc::new(AdvisorManager::default());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        assert!(manager.schedule_turn(
+            "disable-in-flight".to_string(),
+            Arc::new(BlockingAdvisorProvider {
+                release: Arc::clone(&release),
+                response: r#"{"severity":"blocker","summary":"late","evidence":[],"recommended_action":"stop","blocking":true}"#.to_string(),
+            }),
+            Arc::clone(&queue),
+            AdvisorTurnInput::default(),
+            enabled_config(),
+        ));
+        wait_for_status(&manager, "disable-in-flight", AdvisorStatus::Reviewing).await;
+
+        manager.set_enabled("disable-in-flight", false);
+        release.notify_waiters();
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+
+        let snapshot = manager.snapshot("disable-in-flight").expect("snapshot");
+        assert_eq!(snapshot.status, AdvisorStatus::Idle);
+        assert!(!manager.is_enabled("disable-in-flight", true));
+        assert!(manager.notes("disable-in-flight").is_empty());
+        assert!(queue.lock().expect("queue").is_empty());
     }
 }
