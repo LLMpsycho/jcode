@@ -68,6 +68,60 @@ struct ModeCaptureProvider {
     systems: Arc<Mutex<Vec<String>>>,
 }
 
+struct PrematureAdvisorProvider {
+    emit_error: bool,
+}
+
+#[async_trait]
+impl Provider for PrematureAdvisorProvider {
+    fn name(&self) -> &str {
+        "premature-advisor"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self { emit_error: self.emit_error })
+    }
+
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[crate::message::ToolDefinition],
+        _system: &str,
+        _resume: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        let mut events = vec![Ok(StreamEvent::TextDelta(
+            r#"{"severity":"blocker","summary":"uncommitted","evidence":[],"recommended_action":"stop","blocking":true}"#.into(),
+        ))];
+        if self.emit_error {
+            events.push(Ok(StreamEvent::Error {
+                message: "provider failed OPENAI_API_KEY=fixture-private-value".into(),
+                retry_after_secs: None,
+            }));
+        }
+        Ok(Box::pin(stream::iter(events)))
+    }
+}
+
+#[tokio::test]
+async fn advisor_error_events_and_premature_eof_never_publish_partial_notes() {
+    for emit_error in [false, true] {
+        let manager = Arc::new(AdvisorManager::default());
+        let queue = Arc::new(Mutex::new(Vec::new()));
+        assert!(manager.schedule_turn(
+            "premature".into(),
+            Arc::new(PrematureAdvisorProvider { emit_error }),
+            queue.clone(),
+            AdvisorTurnInput::default(),
+            enabled_config(),
+        ));
+        wait_for_status(&manager, "premature", AdvisorStatus::Failed).await;
+        assert!(manager.notes("premature").is_empty());
+        assert!(queue.lock().expect("queue").is_empty());
+        let error = manager.snapshot("premature").expect("state").last_error.expect("error");
+        assert!(!error.contains("fixture-private-value"));
+    }
+}
+
 #[async_trait]
 impl Provider for AdvisorProvider {
     async fn complete(

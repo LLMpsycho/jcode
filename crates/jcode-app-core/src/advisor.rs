@@ -639,6 +639,7 @@ impl AdvisorManager {
         };
 
         let mut output = String::new();
+        let mut completed = false;
         while let Some(event) = stream.next().await {
             match event {
                 Ok(StreamEvent::TextDelta(text)) => {
@@ -652,7 +653,14 @@ impl AdvisorManager {
                         return;
                     }
                 }
-                Ok(StreamEvent::MessageEnd { .. }) => break,
+                Ok(StreamEvent::MessageEnd { .. }) => {
+                    completed = true;
+                    break;
+                }
+                Ok(StreamEvent::Error { message, .. }) => {
+                    self.fail(&owner_session_id, review_id, message);
+                    return;
+                }
                 Ok(_) => {}
                 Err(error) => {
                     self.fail(
@@ -663,6 +671,15 @@ impl AdvisorManager {
                     return;
                 }
             }
+        }
+
+        if !completed {
+            self.fail(
+                &owner_session_id,
+                review_id,
+                "advisor stream ended without completion".into(),
+            );
+            return;
         }
 
         let note: AdvisorNote = match serde_json::from_str(output.trim()) {
