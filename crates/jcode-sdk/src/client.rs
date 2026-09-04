@@ -1074,12 +1074,16 @@ impl JcodeClient {
                     call_id,
                     name,
                     output,
+                    title,
+                    metadata,
                     error,
                     ..
                 } => result.tool_calls.push(ToolCall {
                     call_id,
                     name,
                     output,
+                    title,
+                    metadata,
                     error,
                 }),
                 ApiEvent::TokenUsage {
@@ -1183,6 +1187,8 @@ pub struct ToolCall {
     pub call_id: String,
     pub name: String,
     pub output: String,
+    pub title: Option<String>,
+    pub metadata: Option<serde_json::Value>,
     pub error: Option<String>,
 }
 

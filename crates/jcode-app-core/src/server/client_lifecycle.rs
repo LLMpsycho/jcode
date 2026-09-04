@@ -377,6 +377,7 @@ pub(super) async fn handle_client(
     file_touch: FileTouchService,
     file_snapshots: FileSnapshotLedger,
     lsp_pool: Arc<jcode_lsp::LspServicePool>,
+    dap_service: Option<crate::tool::dap::DapService>,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -433,6 +434,7 @@ pub(super) async fn handle_client(
                             swarm_coordinators: &swarm_coordinators,
                             file_touch: &file_touch,
                             file_snapshots: &file_snapshots,
+                            dap_service: &dap_service,
                             channel_subscriptions: &channel_subscriptions,
                             channel_subscriptions_by_session: &channel_subscriptions_by_session,
                             client_connections: &client_connections,
@@ -497,8 +499,13 @@ pub(super) async fn handle_client(
 
     let provider = provider_template.fork_for_new_session();
     let t0 = std::time::Instant::now();
-    let registry =
-        Registry::new_with_services(provider.clone(), file_snapshots.clone(), lsp_pool).await;
+    let registry = Registry::new_with_runtime_services(
+        provider.clone(),
+        file_snapshots.clone(),
+        Some(lsp_pool),
+        dap_service.clone(),
+    )
+    .await;
     let registry_ms = t0.elapsed().as_millis();
 
     let mut swarm_enabled = crate::config::config().features.swarm;
@@ -1462,6 +1469,10 @@ pub(super) async fn handle_client(
                     if crate::session::session_exists(&target_session_id)
                         || sessions.read().await.contains_key(&target_session_id)
                     {
+                        let _dap_lifecycle_guard = match &dap_service {
+                            Some(service) => Some(service.lock_lifecycle_transition().await),
+                            None => None,
+                        };
                         let pre_resume_session_id = client_session_id.clone();
                         agent = crate::hooks::with_client_terminal_env(
                             active_terminal_env.clone(),
@@ -1704,6 +1715,10 @@ pub(super) async fn handle_client(
                         info.client_instance_id = client_instance_id.clone();
                     }
                 }
+                let _dap_lifecycle_guard = match &dap_service {
+                    Some(service) => Some(service.lock_lifecycle_transition().await),
+                    None => None,
+                };
                 agent = crate::hooks::with_client_terminal_env(
                     active_terminal_env.clone(),
                     handle_resume_session(
@@ -2401,6 +2416,7 @@ pub(super) async fn handle_client(
                     &mcp_pool,
                     &soft_interrupt_queues,
                     &file_snapshots,
+                    &dap_service,
                     &swarm_mutation_runtime,
                     &client_connections,
                 )
@@ -2446,6 +2462,7 @@ pub(super) async fn handle_client(
                     &event_counter,
                     &swarm_event_tx,
                     &soft_interrupt_queues,
+                    &dap_service,
                     &swarm_mutation_runtime,
                 )
                 .await;
@@ -2654,6 +2671,7 @@ pub(super) async fn handle_client(
                     &provider_template,
                     &soft_interrupt_queues,
                     &file_snapshots,
+                    &dap_service,
                     &client_connections,
                     &swarm_members,
                     &swarms_by_id,
@@ -2824,6 +2842,7 @@ pub(super) async fn handle_client(
             &event_history,
             &event_counter,
             &swarm_event_tx,
+            &dap_service,
         ),
     )
     .await?;

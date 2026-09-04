@@ -339,10 +339,16 @@ pub(super) fn handle_run_subagent(
         match result {
             Ok(output) => {
                 let output_text = output.output.clone();
+                let (title, metadata) = crate::protocol::bounded_tool_done_fields(
+                    output.title.clone(),
+                    output.metadata.clone(),
+                );
                 let _ = tx.send(ServerEvent::ToolDone {
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: output_text,
+                    title,
+                    metadata,
                     error: None,
                 });
                 let persist = {
@@ -365,6 +371,8 @@ pub(super) fn handle_run_subagent(
                     id: tool_call_id.clone(),
                     name: tool_name,
                     output: error_msg.clone(),
+                    title: None,
+                    metadata: None,
                     error: Some(error_msg.clone()),
                 });
                 let persist = {

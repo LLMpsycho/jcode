@@ -383,6 +383,19 @@ args = []
 root_markers = ["go.mod", "go.work"]
 file_extensions = ["go"]
 
+[dap]
+# Debugging is opt-in. Jcode never downloads debug adapters; commands must
+# already be installed and resolvable from PATH (or configured as absolute paths).
+enabled = false
+# Evaluation can execute code in the stopped debuggee and requires an explicit opt-in.
+allow_evaluate = false
+max_output_bytes = 1048576
+max_opaque_handles_per_owner = 8192
+
+[dap.adapters.lldb-dap]
+kind = "lldb-dap"
+command = "lldb-dap"
+
 [acp]
 # Agent Client Protocol adapter compatibility profile: standard, extended, or full.
 # standard emits only spec-compatible ACP messages.

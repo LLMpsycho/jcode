@@ -45,6 +45,7 @@ pub(super) async fn create_headless_session(
     _swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
     file_snapshots: &FileSnapshotLedger,
+    dap_service: &Option<crate::tool::dap::DapService>,
     selfdev_requested: bool,
     model_override: Option<String>,
     provider_key_override: Option<String>,
@@ -69,8 +70,13 @@ pub(super) async fn create_headless_session(
     };
 
     let provider = provider_template.fork();
-    let registry =
-        Registry::new_with_file_snapshots(provider.clone(), file_snapshots.clone()).await;
+    let registry = Registry::new_with_runtime_services(
+        provider.clone(),
+        file_snapshots.clone(),
+        None,
+        dap_service.clone(),
+    )
+    .await;
 
     if memory_scope == HeadlessMemoryScope::IsolatedTest {
         registry.enable_memory_test_mode().await;

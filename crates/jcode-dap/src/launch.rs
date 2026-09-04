@@ -252,8 +252,8 @@ impl AdapterProfile {
             lines_start_at1: Some(true),
             columns_start_at1: Some(true),
             path_format: Some("path".into()),
-            supports_variable_type: None,
-            supports_variable_paging: None,
+            supports_variable_type: Some(true),
+            supports_variable_paging: Some(true),
             supports_run_in_terminal_request: Some(false),
         }
     }

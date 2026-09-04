@@ -1861,6 +1861,7 @@ pub(super) async fn handle_comm_assign_next(
     provider_template: &Arc<dyn crate::provider::Provider>,
     soft_interrupt_queues: &super::SessionInterruptQueues,
     file_snapshots: &FileSnapshotLedger,
+    dap_service: &Option<crate::tool::dap::DapService>,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -1939,6 +1940,7 @@ pub(super) async fn handle_comm_assign_next(
                 mcp_pool,
                 soft_interrupt_queues,
                 file_snapshots,
+                dap_service,
                 client_connections,
             )
             .await

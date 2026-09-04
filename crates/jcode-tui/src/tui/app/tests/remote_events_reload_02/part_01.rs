@@ -261,6 +261,8 @@ fn test_handle_server_event_remote_observe_tracks_tool_exec_and_done() {
             id: "tool_read".to_string(),
             name: "read".to_string(),
             output: "1 fn main() {}".to_string(),
+            title: None,
+            metadata: None,
             error: None,
         },
         &mut remote,
@@ -477,6 +479,8 @@ fn test_handle_remote_event_redraws_observe_tool_done_immediately() {
                 id: "tool_read".to_string(),
                 name: "read".to_string(),
                 output: "1 fn main() {}".to_string(),
+                title: None,
+                metadata: None,
                 error: None,
             }),
         ))

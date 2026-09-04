@@ -1,6 +1,37 @@
 use super::*;
 
+fn client_close_reason(status: DapClientStatus, owns_adapter: bool) -> DebugSessionEndReason {
+    if owns_adapter
+        && matches!(
+            status.close_cause,
+            Some(crate::client::ClientCloseCause::ReaderEof)
+        )
+    {
+        DebugSessionEndReason::AdapterExited { exit_code: None }
+    } else {
+        DebugSessionEndReason::TransportClosed
+    }
+}
+
 impl SessionEntry {
+    pub(super) fn register_inspection(&self, token: &Arc<InspectionToken>) {
+        let mut active = lock(&self.active_inspections);
+        active.retain(|candidate| candidate.strong_count() > 0);
+        active.push(Arc::downgrade(token));
+    }
+
+    pub(super) fn invalidate_inspections(&self, cause: InspectionTokenCause) {
+        let tokens = {
+            let mut active = lock(&self.active_inspections);
+            let tokens = active.iter().filter_map(Weak::upgrade).collect::<Vec<_>>();
+            active.retain(|candidate| candidate.strong_count() > 0);
+            tokens
+        };
+        for token in tokens {
+            token.invalidate(cause);
+        }
+    }
+
     pub(super) fn snapshot(&self) -> Option<DebugSessionSnapshot> {
         let data = lock(&self.data);
         Some(DebugSessionSnapshot {
@@ -14,12 +45,24 @@ impl SessionEntry {
         })
     }
 
-    pub(super) fn fence_terminal(&self) {
+    pub(super) fn fence_terminal(&self, cause: InspectionInvalidation) {
+        let _publication = lock(&self.publication);
+        self.invalidate_inspections(match cause {
+            InspectionInvalidation::AdapterOrTargetExited => {
+                InspectionTokenCause::AdapterOrTargetExited
+            }
+            InspectionInvalidation::TransportFailure => InspectionTokenCause::TransportFailure,
+            InspectionInvalidation::ManagerOrOwnerShutdown => {
+                InspectionTokenCause::ManagerOrOwnerShutdown
+            }
+        });
         if !self.closed.swap(true, Ordering::AcqRel) {
             let mut data = lock(&self.data);
+            data.inspection_invalidation.get_or_insert(cause);
             if !data.state.is_terminal() && !matches!(data.state, DebugSessionState::Terminating) {
                 if let Some(next) = data.execution_revision.checked_add(1) {
                     data.execution_revision = next;
+                    data.frame_identities.clear();
                 }
                 notify(self, &mut data);
             }
@@ -27,8 +70,10 @@ impl SessionEntry {
     }
 
     pub(super) fn advance_execution(&self, data: &mut SessionData) -> bool {
+        self.invalidate_inspections(InspectionTokenCause::Revision);
         if let Some(next) = data.execution_revision.checked_add(1) {
             data.execution_revision = next;
+            data.frame_identities.clear();
             true
         } else {
             self.closed.store(true, Ordering::Release);
@@ -58,12 +103,12 @@ pub(super) async fn supervise(
             ),
         })
     } else if observed.closed {
-        Some(DebugSessionEndReason::TransportClosed)
+        Some(client_close_reason(observed, process.is_some()))
     } else {
         None
     };
     if let Some(reason) = initial_end {
-        entry.fence_terminal();
+        entry.fence_terminal(InspectionInvalidation::from_end_reason(&reason));
         if let Some(core) = core.upgrade() {
             let _ignored = core.finalize(entry, reason, true, false).await;
         }
@@ -104,7 +149,7 @@ pub(super) async fn supervise(
                     if non_output_loss > 0 {
                         Some(DebugSessionEndReason::ProtocolError { message: format!("{non_output_loss} oversized non-output DAP event(s) were lost") })
                     } else if current.closed {
-                        Some(DebugSessionEndReason::TransportClosed)
+                        Some(client_close_reason(current, process.is_some()))
                     } else {
                         None
                     }
@@ -138,7 +183,7 @@ pub(super) async fn supervise(
             }
         };
         if let Some(reason) = end {
-            entry.fence_terminal();
+            entry.fence_terminal(InspectionInvalidation::from_end_reason(&reason));
             if let Some(core) = core.upgrade() {
                 let _ignored = core.finalize(entry.clone(), reason, true, false).await;
             }
@@ -156,6 +201,7 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
             });
         }
     };
+    let publication = lock(&entry.publication);
     let mut data = lock(&entry.data);
     if matches!(
         data.state,
@@ -215,12 +261,14 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
         }
         SessionEvent::Terminated => {
             drop(data);
-            entry.fence_terminal();
+            drop(publication);
+            entry.fence_terminal(InspectionInvalidation::AdapterOrTargetExited);
             return Some(DebugSessionEndReason::DebuggeeExited { exit_code: None });
         }
         SessionEvent::Exited(exit_code) => {
             drop(data);
-            entry.fence_terminal();
+            drop(publication);
+            entry.fence_terminal(InspectionInvalidation::AdapterOrTargetExited);
             return Some(DebugSessionEndReason::DebuggeeExited { exit_code });
         }
         SessionEvent::Ignore => return None,

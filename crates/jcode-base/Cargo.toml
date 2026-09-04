@@ -54,6 +54,7 @@ jcode-gateway-types = { path = "../jcode-gateway-types" }
 jcode-import-core = { path = "../jcode-import-core" }
 jcode-logging = { path = "../jcode-logging" }
 jcode-lsp-types = { path = "../jcode-lsp-types" }
+jcode-dap-types = { path = "../jcode-dap-types" }
 
 # OAuth
 base64 = "0.22"

@@ -4,12 +4,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use super::{DapClient, EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_BYTES, MAX_RETAINED_EVENT_SIZE};
+use super::{
+    ClientCloseCause, DapClient, EVENT_CHANNEL_CAPACITY, MAX_RETAINED_EVENT_BYTES,
+    MAX_RETAINED_EVENT_SIZE,
+};
 use crate::testing::FakeAdapter;
 use crate::{DapError, FrameDecoder, Message, Request, Response, decode_message, encode_message};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
 use tokio::sync::oneshot;
+
+#[path = "tests/admission_race_tests.rs"]
+mod admission_race_tests;
+mod phase30f_contract_tests;
 
 fn request(message: Message) -> crate::Request {
     match message {
@@ -470,6 +477,7 @@ async fn reader_eof_interrupts_a_blocked_writer_and_pending_request() {
             dropped: Arc::clone(&writer_dropped),
         },
     );
+    let mut status = client.subscribe_status();
     let request = tokio::spawn({
         let client = client.clone();
         async move {
@@ -484,6 +492,14 @@ async fn reader_eof_interrupts_a_blocked_writer_and_pending_request() {
         .unwrap();
 
     eof_sender.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), status.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        status.borrow().close_cause,
+        Some(ClientCloseCause::ReaderEof)
+    );
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(1), request)
             .await

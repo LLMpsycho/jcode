@@ -4,6 +4,10 @@ use super::{dim_color, rgb, tool_color, truncate_line_preserving_suffix_to_width
 use ratatui::prelude::*;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+#[path = "ui_tools/dap.rs"]
+mod dap;
+pub(super) use dap::result_summary_lines as dap_result_summary_lines;
+
 pub(super) use jcode_tui_tool_display::concise_tool_error_summary;
 pub(crate) use jcode_tui_tool_display::{
     canonical_tool_name, is_edit_tool_name, resolve_display_tool_name, tool_output_looks_failed,
@@ -1140,6 +1144,7 @@ pub(super) fn get_tool_summary_with_budget(
             })
             .unwrap_or_default(),
         "browser" => browser_summary(tool, max_width),
+        "dap" => dap::summarize(tool, bounded(50)),
         "gmail" => {
             let action = tool
                 .input

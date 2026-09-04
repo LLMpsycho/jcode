@@ -261,6 +261,7 @@ pub(super) async fn handle_debug_client(
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touch: FileTouchService,
     file_snapshots: FileSnapshotLedger,
+    dap_service: Option<crate::tool::dap::DapService>,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -444,6 +445,7 @@ pub(super) async fn handle_debug_client(
                             &swarm_event_tx,
                             &soft_interrupt_queues,
                             &file_snapshots,
+                            &dap_service,
                             mcp_pool.clone(),
                         )
                         .await?

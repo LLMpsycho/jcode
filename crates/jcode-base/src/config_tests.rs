@@ -3,6 +3,7 @@ use super::{
     McpToolsMode, ProviderConfig, ReadGuardMode, SessionPickerResumeAction, SwarmSpawnMode,
     ToolConfig, config_env_fingerprint, populate_context_limits_from_config_ref,
 };
+use jcode_dap_types::DapAdapterKind;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -78,6 +79,74 @@ fn lsp_unknown_keys_and_invalid_types_fail_with_field_context() {
         .expect_err("invalid LSP field types must fail")
         .to_string();
     assert!(invalid.contains("request_timeout_seconds") || invalid.contains("integer"));
+}
+
+#[test]
+fn dap_defaults_and_configuration_are_safe_and_strict() {
+    let defaults = Config::default();
+    assert!(!defaults.dap.enabled);
+    assert!(!defaults.dap.allow_evaluate);
+    assert_eq!(
+        defaults.dap.adapters["lldb-dap"].kind,
+        DapAdapterKind::LldbDap
+    );
+    assert_eq!(defaults.dap.adapters["lldb-dap"].command, "lldb-dap");
+    assert!(defaults.dap.validation_issues().is_empty());
+
+    let configured: Config = toml::from_str(
+        r#"
+[dap]
+enabled = true
+allow_evaluate = true
+max_output_bytes = 2048
+max_opaque_handles_per_owner = 64
+
+[dap.adapters.custom]
+kind = "lldb-dap"
+command = "/opt/debug/custom-dap"
+"#,
+    )
+    .expect("documented DAP configuration should parse");
+    assert!(configured.dap.enabled);
+    assert!(configured.dap.allow_evaluate);
+    assert_eq!(
+        configured.dap.adapters["custom"].kind,
+        DapAdapterKind::LldbDap
+    );
+    assert_eq!(
+        configured.dap.adapters["custom"].command,
+        "/opt/debug/custom-dap"
+    );
+
+    let unknown = toml::from_str::<Config>("[dap]\ndownload_adapters = true\n")
+        .expect_err("unknown DAP keys must not be ignored")
+        .to_string();
+    assert!(unknown.contains("download_adapters"));
+
+    let unsupported = toml::from_str::<Config>(
+        "[dap.adapters.custom]\nkind = \"custom\"\ncommand = \"custom-dap\"\n",
+    )
+    .expect_err("unsupported DAP adapter kinds must fail")
+    .to_string();
+    assert!(unsupported.contains("custom"));
+}
+
+#[test]
+fn dap_configuration_reports_out_of_bounds_limits() {
+    let config: Config =
+        toml::from_str("[dap]\nmax_output_bytes = 0\nmax_opaque_handles_per_owner = 999999\n")
+            .expect("integer DAP limits should parse before semantic validation");
+    let issues = config.dap.validation_issues();
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("max_output_bytes"))
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|issue| issue.contains("max_opaque_handles_per_owner"))
+    );
 }
 
 #[test]

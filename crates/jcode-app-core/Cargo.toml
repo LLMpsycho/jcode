@@ -92,6 +92,7 @@ jcode-core = { path = "../jcode-core" }
 jcode-edit-core = { path = "../jcode-edit-core" }
 jcode-edit-types = { path = "../jcode-edit-types" }
 jcode-lsp = { path = "../jcode-lsp" }
+jcode-dap = { path = "../jcode-dap" }
 jcode-message-types = { path = "../jcode-message-types" }
 jcode-overnight-core = { path = "../jcode-overnight-core" }
 jcode-plan = { path = "../jcode-plan" }

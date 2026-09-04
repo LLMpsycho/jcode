@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "tools/dap.rs"]
+mod dap;
+
 #[test]
 fn test_summarize_apply_patch_input_ignores_begin_marker() {
     let patch = "*** Begin Patch\n*** Update File: src/lib.rs\n@@\n-old\n+new\n*** End Patch\n";

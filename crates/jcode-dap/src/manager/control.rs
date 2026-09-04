@@ -196,6 +196,7 @@ async fn control_owned(
             return Err(error);
         }
     };
+    let _publication = lock(&entry.publication);
     let mut data = lock(&entry.data);
     if !entry.closed.load(Ordering::Acquire)
         && data.execution_revision == initial_revision.0
@@ -489,6 +490,7 @@ fn validate_granularity(
     Ok(())
 }
 fn commit_running_if_current(entry: &SessionEntry, revision: DebugExecutionRevision) {
+    let _publication = lock(&entry.publication);
     let mut data = lock(&entry.data);
     if !entry.closed.load(Ordering::Acquire)
         && data.execution_revision == revision.0

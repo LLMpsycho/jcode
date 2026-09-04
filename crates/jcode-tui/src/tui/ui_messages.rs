@@ -4128,6 +4128,16 @@ pub(crate) fn render_tool_message(
     if let Some(discovery_lines) = render_discovery_card(tc, &msg.content, is_error, row_width) {
         lines.extend(discovery_lines);
     }
+    if let Some(dap_lines) =
+        tools_ui::dap_result_summary_lines(tc, &msg.content, row_width.saturating_sub(6).max(1))
+    {
+        for detail in dap_lines {
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(detail, Style::default().fg(dim_color())),
+            ]));
+        }
+    }
 
     // Optionally render the full agentgrep search output inline in the
     // transcript. Gated behind `display.show_agentgrep_output` (default false)

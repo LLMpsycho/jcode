@@ -624,6 +624,8 @@ impl Agent {
                             id: tool_use_id.clone(),
                             name: tool_name,
                             output: content.clone(),
+                            title: None,
+                            metadata: None,
                             error: if is_error {
                                 Some("Tool error".to_string())
                             } else {
@@ -1305,6 +1307,8 @@ impl Agent {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: error_msg.clone(),
+                        title: None,
+                        metadata: None,
                         error: Some(error_msg.clone()),
                     });
                     self.add_message(
@@ -1443,10 +1447,16 @@ impl Agent {
                     match result {
                         Ok(output) => {
                             let output = cap_tool_output_for_history(&tc.name, output);
+                            let (title, metadata) = crate::protocol::bounded_tool_done_fields(
+                                output.title.clone(),
+                                output.metadata.clone(),
+                            );
                             let _ = event_tx.send(ServerEvent::ToolDone {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 output: output.output.clone(),
+                                title,
+                                metadata,
                                 error: None,
                             });
 
@@ -1479,6 +1489,8 @@ impl Agent {
                                 id: tc.id.clone(),
                                 name: tc.name.clone(),
                                 output: error_msg.clone(),
+                                title: None,
+                                metadata: None,
                                 error: Some(error_msg.clone()),
                             });
 
@@ -1513,6 +1525,8 @@ impl Agent {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: interrupted_msg.clone(),
+                        title: None,
+                        metadata: None,
                         error: if is_error {
                             Some("interrupted by reload".to_string())
                         } else {
@@ -1567,6 +1581,8 @@ impl Agent {
                         id: tc.id.clone(),
                         name: tc.name.clone(),
                         output: bg_msg.clone(),
+                        title: None,
+                        metadata: None,
                         error: None,
                     });
 

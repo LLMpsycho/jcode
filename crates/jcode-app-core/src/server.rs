@@ -714,6 +714,8 @@ pub struct Server {
     file_snapshots: FileSnapshotLedger,
     /// Shared, worktree-isolated language server processes.
     lsp_pool: Arc<jcode_lsp::LspServicePool>,
+    /// Shared debug adapter sessions, owned by this server runtime.
+    dap_service: Option<crate::tool::dap::DapService>,
     /// Shared ownership of core swarm coordination state.
     swarm_state: SwarmState,
     /// Shared context by swarm (swarm_id -> key -> SharedContext)
@@ -786,6 +788,20 @@ impl Server {
 
         let file_snapshots = FileSnapshotLedger::new();
         let lsp_pool = Arc::new(jcode_lsp::LspServicePool::new());
+        let config = crate::config::config();
+        let dap_service = if config.dap.enabled {
+            match crate::tool::dap::DapService::from_config(&config.dap) {
+                Ok(service) => Some(service),
+                Err(error) => {
+                    crate::logging::error(&format!(
+                        "DAP is disabled because its configuration is invalid: {error}"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Initialize the background runner even when ambient mode is disabled so
         // session-targeted scheduled tasks still have a live delivery loop.
@@ -819,6 +835,7 @@ impl Server {
             file_touch: FileTouchService::new(),
             file_snapshots,
             lsp_pool,
+            dap_service,
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
@@ -964,10 +981,11 @@ impl Server {
 
             let previous_status = session.status.clone();
             let provider = self.provider.fork();
-            let registry = crate::tool::Registry::new_with_services(
+            let registry = crate::tool::Registry::new_with_runtime_services(
                 provider.clone(),
                 self.file_snapshots.clone(),
-                Arc::clone(&self.lsp_pool),
+                Some(Arc::clone(&self.lsp_pool)),
+                self.dap_service.clone(),
             )
             .await;
             if session.is_canary {

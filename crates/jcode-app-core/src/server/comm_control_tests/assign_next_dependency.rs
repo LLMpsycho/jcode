@@ -76,6 +76,7 @@ async fn assign_next_prefers_worker_with_dependency_context() {
         &provider,
         &soft_interrupt_queues,
         &crate::server::FileSnapshotLedger::new(),
+        &None,
         &client_connections,
         &swarm_members,
         &swarms_by_id,

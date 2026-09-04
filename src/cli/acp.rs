@@ -1524,11 +1524,13 @@ impl EventMapper {
                 id,
                 name,
                 output,
+                title,
+                metadata,
                 error,
             } => vec![json!({
                 "sessionUpdate": "tool_call_update",
                 "toolCallId": id,
-                "title": tool_title(&name),
+                "title": title.unwrap_or_else(|| tool_title(&name)),
                 "kind": tool_kind(&name),
                 "status": if error.is_some() { "failed" } else { "completed" },
                 "content": [{
@@ -1540,6 +1542,7 @@ impl EventMapper {
                 }],
                 "rawOutput": {
                     "output": output,
+                    "metadata": metadata,
                     "error": error,
                 }
             })],
@@ -1992,6 +1995,8 @@ mod tests {
             id: "tool1".to_string(),
             name: "bash".to_string(),
             output: "ok".to_string(),
+            title: None,
+            metadata: None,
             error: None,
         });
         assert_eq!(done[0]["status"], "completed");
