@@ -79,7 +79,9 @@ impl Provider for PrematureAdvisorProvider {
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(Self { emit_error: self.emit_error })
+        Arc::new(Self {
+            emit_error: self.emit_error,
+        })
     }
 
     async fn complete(
@@ -117,7 +119,11 @@ async fn advisor_error_events_and_premature_eof_never_publish_partial_notes() {
         wait_for_status(&manager, "premature", AdvisorStatus::Failed).await;
         assert!(manager.notes("premature").is_empty());
         assert!(queue.lock().expect("queue").is_empty());
-        let error = manager.snapshot("premature").expect("state").last_error.expect("error");
+        let error = manager
+            .snapshot("premature")
+            .expect("state")
+            .last_error
+            .expect("error");
         assert!(!error.contains("fixture-private-value"));
     }
 }

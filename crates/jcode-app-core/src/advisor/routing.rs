@@ -220,7 +220,13 @@ mod tests {
         };
         apply(&primary, &config).expect("explicit permitted API-key route");
         assert_eq!(
-            primary.selected.lock().expect("selection").as_ref().expect("route").runtime_key,
+            primary
+                .selected
+                .lock()
+                .expect("selection")
+                .as_ref()
+                .expect("route")
+                .runtime_key,
             RuntimeKey::OpenAIApiKey
         );
         let denied = AdvisorConfig {

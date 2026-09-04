@@ -19,4 +19,3 @@ pub(super) fn diagnostic_evidence(items: &[Diagnostic]) -> Vec<Value> {
         })
         .collect()
 }
-
