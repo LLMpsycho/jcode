@@ -95,11 +95,40 @@ git diff --check
 
 All focused DAP checks pass with 211 non-doc tests plus 2 compile-fail doctests: 174 crate-internal library/client/process tests, 12 Phase 30E contract/lifecycle subprocess tests, 1 repeated breakpoint/control subprocess test, 10 framing/protocol integration tests, 11 launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size and test-size budgets still report unrelated pre-existing drift outside these crates and are not claimed as passing. Every production and test file in `crates/jcode-dap` remains below 1,200 lines, with `manager.rs` at 999 lines.
 
-## Deliberately deferred
+## Current status and unfinished work
+
+Phase 30E is accepted at commit `9acbd29db55955121564c352c8aa7b228172fb68` with tree `c440734898c86ab60b3e6f7548d9b17add722da2`. Phase 30F state inspection has not entered the repository yet. The reviewed-v18 contract, checklist, executable acceptance gate, manifest, and deterministic bundle are sealed in scratch, but implementation remains blocked until two fresh independent reviews both return `ADVANCE`.
+
+The following work is not finished:
+
+- Obtain two independent `ADVANCE` verdicts for the sealed reviewed-v18 Phase 30F authority. Any blocking finding requires a newly named immutable revision and another full review.
+- Create the Phase 30F implementation worktree and branch from the exact accepted Phase 30E commit without changing that accepted base.
+- Make the first commit a behavior-preserving manager-construction and session-entry initialization extraction. This creates line-count headroom while keeping existing public APIs unchanged.
+- Add the exact additive inspection configuration, opaque handles, request/result DTOs, error and evaluate-outcome types, manager constructor, and four owner-scoped operations for stack traces, scopes, variables, and evaluate.
+- Correct the existing initialize wire keys to `clientID` and `adapterID`, advertise client variable paging and variable-type support, and preserve the accepted public initialize type shape.
+- Refactor the DAP client around one positive-`int32` outbound allocator and a tracked request path that distinguishes queue admission from physical write, preserves ordinary request compatibility, drains late responses safely, and isolates replacement client instances.
+- Add reusable publication and lifecycle fencing for revision changes, target or adapter exit, transport loss, owner shutdown, client replacement, caller drop, deadline settlement, and response publication.
+- Implement bounded stack, scope, variable, and evaluate response parsing with one operation deadline, retained blocking permits, strict DAP numeric domains, aggregate text limits, frame and variable provenance, cross-thread frame-ID uniqueness, paging rules, and no raw adapter identifiers in public results.
+- Add every canonical deterministic race, boundary, lifecycle, confidentiality, and compatibility test. The current binding inventory requires exactly 177 unit/integration tests and 21 real-subprocess cases, with each subprocess case repeated three times by the final gate.
+- Run formatting, focused all-target tests and doctests, strict Clippy, dependency-boundary and dependency-tree checks, diff and scope checks, public-surface checks, local line-count gates, exact inventory mapping, subprocess cleanup evidence, and honest BASE-versus-HEAD global-budget qualification.
+- Commit each dependency-ordered slice and run the sealed final acceptance gate from a clean implementation worktree. Phase 30F is complete only when the full gate passes and independent review accepts the exact implementation commit.
+
+## Remaining implementation order
+
+1. Accept the reviewed-v18 binding authority through two independent reviews.
+2. Extract manager construction and session-entry initialization without behavior changes.
+3. Add the public inspection API, configuration, initialize-wire compatibility, and constructor plumbing.
+4. Add shared outbound sequence allocation, tracked admission/correlation, bounded decode, and deterministic client test barriers.
+5. Add manager inspection preflight, thread acquisition, publication fencing, lifecycle settlement, and exact client-instance checks.
+6. Implement stack trace, scopes, variables, and evaluate in that order.
+7. Complete deterministic race and boundary coverage, then the real-subprocess acceptance matrix.
+8. Run the complete reviewed acceptance gate, resolve every failure, and bind the accepted Phase 30F commit and tree in this plan.
+
+## Deferred after Phase 30F
 
 - Adapter discovery and debugger profiles beyond configured `lldb-dap`.
 - Agent tool registration and TUI integration.
-- Stack trace, frame selection, scopes, variables, evaluate, step-in targets, and higher-level debug policy.
+- Step-in targets and higher-level debug policy beyond the bounded Phase 30F inspection surface.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
