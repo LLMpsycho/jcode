@@ -910,6 +910,57 @@ pub struct AutoReviewConfig {
     pub model: Option<String>,
 }
 
+/// Internal second-model advisor configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvisorConfig {
+    /// Enable advisor turn capture and review scheduling (default: false).
+    pub enabled: bool,
+    /// Advisor operating mode.
+    pub mode: AdvisorMode,
+    /// Optional model-selection request applied to the forked provider.
+    pub model: Option<String>,
+    /// Maximum notes the advisor may publish for one primary turn.
+    pub max_notes_per_turn: usize,
+    /// Minimum severity that may gate a future risky operation.
+    pub block_on_severity: AdvisorSeverity,
+    /// Redact recognized secrets before advisor context is retained or sent.
+    pub redact: bool,
+}
+
+impl Default for AdvisorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: AdvisorMode::Interactive,
+            model: None,
+            max_notes_per_turn: 1,
+            block_on_severity: AdvisorSeverity::Blocker,
+            redact: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdvisorMode {
+    #[default]
+    Interactive,
+    SelfdevGuardian,
+    FinalReview,
+}
+
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum AdvisorSeverity {
+    Nit,
+    Concern,
+    #[default]
+    Blocker,
+}
+
 /// Integration discovery configuration (legacy `[sponsors]` section name).
 ///
 /// Integration discovery makes third-party developer tools discoverable to

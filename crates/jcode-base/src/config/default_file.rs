@@ -666,6 +666,26 @@ swarm_max_concurrent_agents = 32
 # JCODE_HOOK_ERROR.
 # post_tool = ""
 
+[advisor]
+# Internal second-model review after a primary turn. Disabled by default, so it
+# has no provider or runtime cost until explicitly enabled.
+enabled = false
+# interactive | selfdev-guardian | final-review
+mode = "interactive"
+# Optional model-selection request accepted by the active provider. It is
+# applied only to the fork and does not mutate the primary session. Use the
+# same canonical syntax accepted by /model, for example
+# "openrouter:anthropic/claude-sonnet-4".
+# model = "openrouter:anthropic/claude-sonnet-4"
+# Maximum notes delivered for one completed primary turn.
+max_notes_per_turn = 1
+# Minimum severity allowed to mark a future risky operation as blocked.
+# Phase 4's first slice records this policy but does not enforce tool gating yet.
+block_on_severity = "blocker"
+# Redact recognized credentials and secret-like values before advisor context
+# is retained or sent.
+redact = true
+
 [ambient]
 # Ambient mode: background agent that maintains your codebase
 # Enable ambient mode (default: false)
@@ -799,6 +819,17 @@ mod tests {
             ReasoningDisplayMode::Full,
             "the shipped user config must keep the full reasoning trace visible"
         );
+    }
+
+    #[test]
+    fn default_config_template_documents_safe_advisor_defaults() {
+        let contents = Config::default_config_file_contents();
+        let parsed: Config = toml::from_str(&contents).expect("default config should parse");
+        assert!(!parsed.advisor.enabled);
+        assert_eq!(parsed.advisor.mode, AdvisorMode::Interactive);
+        assert_eq!(parsed.advisor.max_notes_per_turn, 1);
+        assert_eq!(parsed.advisor.block_on_severity, AdvisorSeverity::Blocker);
+        assert!(parsed.advisor.redact);
     }
 
     /// Colors are only discoverable if the template mentions them, since most

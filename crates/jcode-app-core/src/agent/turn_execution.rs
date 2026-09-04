@@ -4,6 +4,7 @@ use crate::{terminal_eprintln as eprintln, terminal_println as println};
 impl Agent {
     /// Run a single turn with the given user message
     pub async fn run_once(&mut self, user_message: &str) -> Result<()> {
+        self.inject_soft_interrupts();
         self.add_message(
             Role::User,
             vec![ContentBlock::Text {
@@ -15,8 +16,10 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        let _ = self.run_turn(true).await?;
-        Ok(())
+        let start_message_index = self.message_count();
+        let result = self.run_turn(true).await.map(|_| ());
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        result
     }
 
     pub async fn run_once_capture(&mut self, user_message: &str) -> Result<String> {
@@ -29,6 +32,7 @@ impl Agent {
         user_message: &str,
         display_role: Option<crate::session::StoredDisplayRole>,
     ) -> Result<String> {
+        self.inject_soft_interrupts();
         self.add_message_with_display_role(
             Role::User,
             vec![ContentBlock::Text {
@@ -41,7 +45,10 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        self.run_turn(false).await
+        let start_message_index = self.message_count();
+        let result = self.run_turn(false).await;
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        result
     }
 
     /// Run one conversation turn with streaming events via mpsc channel (per-client)
@@ -87,6 +94,16 @@ impl Agent {
             );
         }
 
+        // Deliver completed background advisor notes before the next user
+        // objective reaches the provider. Existing mid-turn injection points
+        // remain responsible for notes that arrive while a turn is running.
+        let advisor_interrupts = self.inject_soft_interrupts();
+        for event in
+            Self::build_soft_interrupt_events(advisor_interrupts, "advisor_preflight", None)
+        {
+            let _ = event_tx.send(event);
+        }
+
         self.current_turn_system_reminder =
             system_reminder.filter(|value| !value.trim().is_empty());
 
@@ -98,6 +115,7 @@ impl Agent {
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
         result
     }
 
@@ -189,8 +207,34 @@ impl Agent {
         crate::hooks::dispatch_observer(event);
     }
 
+    fn schedule_advisor_review(
+        &self,
+        objective: &str,
+        turn_succeeded: bool,
+        start_message_index: usize,
+    ) {
+        let config = crate::advisor::config_for_current_session();
+        if !config.enabled {
+            return;
+        }
+        let input = crate::advisor::AdvisorTurnInput::from_completed_turn(
+            objective,
+            self.latest_assistant_text_after(start_message_index),
+            self.get_tool_call_summaries(12),
+            turn_succeeded,
+        );
+        let _ = crate::advisor::advisor_manager().schedule_turn(
+            self.session.id.clone(),
+            self.provider_fork(),
+            self.soft_interrupt_queue(),
+            input,
+            config,
+        );
+    }
+
     /// Clear conversation history
     pub fn clear(&mut self) {
+        crate::advisor::advisor_manager().remove(&self.session.id);
         let preserve_canary = self.session.is_canary;
         let preserve_testing_build = self.session.testing_build.clone();
         let preserve_debug = self.session.is_debug;
@@ -658,6 +702,7 @@ impl Agent {
 
         let assign_start = Instant::now();
         let previous_session_id = self.session.id.clone();
+        crate::advisor::advisor_manager().remove(&previous_session_id);
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
