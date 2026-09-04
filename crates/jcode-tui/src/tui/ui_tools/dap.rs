@@ -134,11 +134,17 @@ pub(crate) fn result_summary_lines(
         .get("action")
         .and_then(|value| value.as_str())
         .unwrap_or("dap");
-    let parsed = serde_json::from_str::<serde_json::Value>(content.trim()).ok();
-    let envelope = parsed.as_ref().filter(|value| {
-        value.get("protocol").and_then(|value| value.as_str()) == Some("jcode.dap.v1")
-            && value.get("action").and_then(|value| value.as_str()) == Some(action)
-    });
+    let parsed = serde_json::from_str::<serde_json::Value>(content.trim());
+    let envelope = match &parsed {
+        Ok(value)
+            if value.get("protocol").and_then(|value| value.as_str())
+                == Some("jcode.dap.v1")
+                && value.get("action").and_then(|value| value.as_str()) == Some(action) =>
+        {
+            Some(value)
+        }
+        _ => None,
+    };
     let root = envelope.and_then(|value| value.get("result"));
     let mut details = Vec::new();
     if let Some(value) = root {
@@ -233,17 +239,26 @@ pub(crate) fn result_summary_lines(
         }
     }
     if details.is_empty() {
-        if parsed.is_some() && envelope.is_none() {
-            details.push("Result: unsupported DAP result envelope".to_string());
-        } else {
-            let fallback = content
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("completed");
-            details.push(format!(
-                "Result: {}",
-                truncate_middle_display(fallback.trim(), 60)
-            ));
+        match &parsed {
+            Ok(_) if envelope.is_none() => {
+                details.push("Result: unsupported DAP result envelope".to_string());
+            }
+            Err(error) => {
+                details.push(format!(
+                    "Result: invalid DAP result ({})",
+                    truncate_middle_display(&error.to_string(), 40)
+                ));
+            }
+            Ok(_) => {
+                let fallback = content
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("completed");
+                details.push(format!(
+                    "Result: {}",
+                    truncate_middle_display(fallback.trim(), 60)
+                ));
+            }
         }
     }
     details.truncate(3);
