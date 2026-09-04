@@ -89,6 +89,28 @@ fn message_text(message: &Message) -> &str {
     content_text(&message.content)
 }
 
+fn seed_reviewing_advisor(agent: &Agent) {
+    let config = crate::config::AdvisorConfig {
+        enabled: true,
+        ..crate::config::AdvisorConfig::default()
+    };
+    assert!(crate::advisor::advisor_manager().schedule_turn(
+        agent.session.id.clone(),
+        Arc::new(DelayedProvider {
+            open_delay: Duration::from_secs(5),
+            first_event_delay: Duration::ZERO,
+        }),
+        Arc::new(std::sync::Mutex::new(Vec::new())),
+        crate::advisor::AdvisorTurnInput::default(),
+        config,
+    ));
+    assert!(
+        crate::advisor::advisor_manager()
+            .snapshot(&agent.session.id)
+            .is_some()
+    );
+}
+
 #[async_trait]
 impl Provider for DelayedProvider {
     async fn complete(
@@ -2052,5 +2074,65 @@ async fn fable_guardrail_reconsideration_recovers_the_streaming_turn() {
     assert!(
         text.contains("Reconsidered and completed safely"),
         "{text:?}"
+    );
+}
+
+#[tokio::test]
+async fn rewind_and_undo_reset_advisor_context() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(DelayedProvider {
+        open_delay: Duration::ZERO,
+        first_event_delay: Duration::ZERO,
+    });
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+    agent.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "first".to_string(),
+            cache_control: None,
+        }],
+    );
+    agent.add_message(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "answer".to_string(),
+            cache_control: None,
+        }],
+    );
+
+    seed_reviewing_advisor(&agent);
+    assert_eq!(agent.rewind_to_message(1), Ok(1));
+    assert!(
+        crate::advisor::advisor_manager()
+            .snapshot(&agent.session.id)
+            .is_none()
+    );
+
+    seed_reviewing_advisor(&agent);
+    assert_eq!(agent.undo_rewind(), Ok(1));
+    assert!(
+        crate::advisor::advisor_manager()
+            .snapshot(&agent.session.id)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn compaction_application_resets_advisor_context() {
+    let _guard = crate::storage::lock_test_env();
+    let provider: Arc<dyn Provider> = Arc::new(DelayedProvider {
+        open_delay: Duration::ZERO,
+        first_event_delay: Duration::ZERO,
+    });
+    let registry = Registry::new(provider.clone()).await;
+    let mut agent = Agent::new(provider, registry);
+
+    seed_reviewing_advisor(&agent);
+    agent.note_compaction_applied();
+    assert!(
+        crate::advisor::advisor_manager()
+            .snapshot(&agent.session.id)
+            .is_none()
     );
 }

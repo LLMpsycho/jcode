@@ -51,6 +51,9 @@ foundation from the full advisor product.
 - Closing, clearing, or restoring the owner session removes the prior advisor
   runtime. Unique review generations fence late completions from a recreated
   session with the same public session identifier.
+- Rewind, rewind undo, and applied compaction discard the prior advisor cursor,
+  private context, deduplication state, and pending reviews so changed history
+  cannot receive stale notes.
 - Provider and parser failures are redacted before logging or runtime storage.
 
 ## Validation completed for this slice
@@ -68,6 +71,7 @@ Focused tests exercise:
 - deduplication across consecutive reviewed turns;
 - bounded latest-review coalescing while a provider call is active;
 - stale completion fencing across runtime recreation;
+- advisor reset on rewind, rewind undo, and compaction application;
 - severity-derived urgency and safe-boundary soft-interrupt delivery;
 - compilation of streaming and non-streaming turn lifecycle integration.
 
@@ -86,7 +90,6 @@ features below.
 ### Lifecycle semantics
 
 - Define and test resume behavior across daemon/process restart.
-- Reset or re-prime the cursor and private context on rewind and compaction.
 - Add a handled-note acknowledgement and immunity window, rather than relying
   only on exact-note deduplication.
 - Add explicit call-rate and session-budget policy beyond one in-flight review

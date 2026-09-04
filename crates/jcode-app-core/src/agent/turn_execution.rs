@@ -304,6 +304,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
+        crate::advisor::advisor_manager().remove(&self.session.id);
         self.persist_session_best_effort("conversation rewind");
         Ok(removed)
     }
@@ -322,6 +323,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
+        crate::advisor::advisor_manager().remove(&self.session.id);
         self.persist_session_best_effort("conversation rewind undo");
         Ok(restored)
     }
