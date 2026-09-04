@@ -183,6 +183,10 @@ impl AgentGrepTool {
 
 #[async_trait]
 impl Tool for AgentGrepTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "agentgrep"
     }

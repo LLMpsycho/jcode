@@ -289,6 +289,10 @@ struct SessionFileCollection {
 
 #[async_trait]
 impl Tool for SessionSearchTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "session_search"
     }

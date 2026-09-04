@@ -424,6 +424,11 @@ fn has_sufficient_detail(value: &str, field: &str) -> bool {
 
 #[async_trait]
 impl Tool for DiscoverToolsTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["search", "details"], ToolCapability::ChangeState)
+    }
+
     fn name(&self) -> &str {
         "integration_tools"
     }

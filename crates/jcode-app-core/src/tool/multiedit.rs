@@ -52,6 +52,10 @@ struct EditOperation {
 
 #[async_trait]
 impl Tool for MultiEditTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::WriteFiles
+    }
+
     fn name(&self) -> &str {
         "multiedit"
     }

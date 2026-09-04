@@ -46,6 +46,10 @@ impl ConversationSearchTool {
 
 #[async_trait]
 impl Tool for ConversationSearchTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "conversation_search"
     }

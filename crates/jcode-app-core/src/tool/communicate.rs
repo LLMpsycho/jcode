@@ -1944,6 +1944,11 @@ fn canonical_swarm_action(action: &str) -> &str {
 
 #[async_trait]
 impl Tool for CommunicateTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["read", "list", "list_channels", "channel_members", "status", "summary", "read_context", "plan_status", "task_graph", "list_models"], ToolCapability::ExternalEffect)
+    }
+
     fn name(&self) -> &str {
         "swarm"
     }

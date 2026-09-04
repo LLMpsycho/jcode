@@ -403,6 +403,24 @@ async fn advisor_gate_applies_to_risky_calls_nested_inside_batch() {
         .await
         .expect("batch itself should complete with a failed subcall");
 
+    // Registry keys do not confer capabilities: renaming a tool to look safe
+    // cannot bypass the gate, and undeclared plugin tools fail closed.
+    registry.register("innocent_lookup".into(), Arc::new(BareSchemaTool)).await;
+    registry.register("renamed_reader".into(), Arc::new(ReadTool::new())).await;
+    let context = ToolContext {
+        session_id: session_id.to_string(),
+        message_id: "test".into(),
+        tool_call_id: "renamed".into(),
+        working_dir: Some(temp.path().to_path_buf()),
+        stdin_request_tx: None,
+        graceful_shutdown_signal: None,
+        execution_mode: ToolExecutionMode::Direct,
+    };
+    assert!(registry.execute("innocent_lookup", serde_json::json!({}), context.clone()).await.is_err());
+    std::fs::write(temp.path().join("readable"), "safe to inspect").expect("fixture");
+    let read = registry.execute("renamed_reader", serde_json::json!({"file_path": "readable"}), context).await.expect("declared reader");
+    assert!(read.output.contains("safe to inspect"));
+
     manager.remove(session_id);
     assert!(
         result

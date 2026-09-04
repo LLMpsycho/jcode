@@ -105,6 +105,11 @@ fn goal_milestone_schema() -> Value {
 
 #[async_trait]
 impl Tool for InitiativeTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["list", "show"], ToolCapability::ChangeState)
+    }
+
     fn name(&self) -> &str {
         "initiative"
     }

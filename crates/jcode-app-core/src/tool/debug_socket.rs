@@ -41,6 +41,10 @@ impl DebugSocketTool {
 
 #[async_trait]
 impl Tool for DebugSocketTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Execute
+    }
+
     fn name(&self) -> &str {
         "debug_socket"
     }

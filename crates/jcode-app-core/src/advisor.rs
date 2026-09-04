@@ -348,9 +348,9 @@ impl AdvisorManager {
         &self,
         owner_session_id: &str,
         tool_name: &str,
-        input: &serde_json::Value,
+        capability: crate::tool::ToolCapability,
     ) -> Option<String> {
-        if !is_risky_tool_call(tool_name, input) {
+        if !capability.requires_advisor_clearance() {
             return None;
         }
         let sessions = self.sessions.lock().ok()?;
@@ -724,117 +724,6 @@ pub fn mode_label(mode: AdvisorMode) -> &'static str {
         AdvisorMode::Interactive => "interactive",
         AdvisorMode::SelfdevGuardian => "selfdev-guardian",
         AdvisorMode::FinalReview => "final-review",
-    }
-}
-
-fn input_action(input: &serde_json::Value) -> Option<&str> {
-    input.get("action").and_then(serde_json::Value::as_str)
-}
-
-fn action_is_not(input: &serde_json::Value, safe: &[&str]) -> bool {
-    input_action(input).is_none_or(|action| !safe.contains(&action))
-}
-
-/// Classify only calls that can write durable state, execute code/processes, or
-/// perform an externally visible action. Composite tools such as `batch` are
-/// intentionally not listed: every nested call re-enters `Registry::execute`
-/// and is classified using its resolved tool name and actual input.
-pub fn is_risky_tool_call(name: &str, input: &serde_json::Value) -> bool {
-    match name {
-        "bash"
-        | "write"
-        | "edit"
-        | "multiedit"
-        | "patch"
-        | "apply_patch"
-        | "anchored_edit"
-        | "open"
-        | "maintainer_feedback"
-        | "todo" => true,
-        "browser" => action_is_not(
-            input,
-            &[
-                "status",
-                "list_tabs",
-                "get_active_tab",
-                "list_frames",
-                "snapshot",
-                "get_content",
-                "interactables",
-                "wait",
-                "screenshot",
-            ],
-        ),
-        "macos_computer_use" => action_is_not(
-            input,
-            &[
-                "screenshot",
-                "ocr",
-                "ui",
-                "find_element",
-                "get_value",
-                "check_permissions",
-                "discover",
-            ],
-        ),
-        "gmail" => action_is_not(
-            input,
-            &["search", "read", "list", "threads", "thread", "labels"],
-        ),
-        "schedule" => action_is_not(input, &["list"]),
-        "selfdev" => action_is_not(
-            input,
-            &["status", "find-config", "socket-info", "socket-help"],
-        ),
-        "bg" => action_is_not(
-            input,
-            &[
-                "list",
-                "status",
-                "output",
-                "tail",
-                "watch",
-                "delivery",
-                "subscribe",
-                "wait",
-            ],
-        ),
-        "side_panel" => action_is_not(input, &["status", "load"]),
-        "memory" => action_is_not(input, &["recall", "search", "list", "related"]),
-        "initiative" => action_is_not(input, &["list", "show"]),
-        "skill_manage" => action_is_not(input, &["list", "read"]),
-        "integration_tools" => action_is_not(input, &["search", "details"]),
-        "lsp" => input.get("apply").and_then(serde_json::Value::as_bool) == Some(true),
-        "dap" => action_is_not(
-            input,
-            &[
-                "sessions",
-                "threads",
-                "stack_trace",
-                "scopes",
-                "variables",
-                "output",
-                "step_in_targets",
-            ],
-        ),
-        "swarm" => action_is_not(
-            input,
-            &[
-                "read",
-                "list",
-                "list_channels",
-                "channel_members",
-                "status",
-                "summary",
-                "read_context",
-                "plan_status",
-                "task_graph",
-                "list_models",
-            ],
-        ),
-        "mcp" | "mcp_call" => true,
-        _ if name.starts_with("mcp__") => true,
-        _ => false,
     }
 }
 
@@ -1491,59 +1380,22 @@ mod tests {
             notes[0].blocking,
             "severity, not model boolean, controls gating"
         );
-        let empty = serde_json::json!({});
-        assert!(manager.blocks_tool_call("gating", "read", &empty).is_none());
-        assert!(manager.blocks_tool_call("gating", "bash", &empty).is_some());
+        use crate::tool::ToolCapability;
+        assert!(manager.blocks_tool_call("gating", "read", ToolCapability::ReadOnly).is_none());
+        assert!(manager.blocks_tool_call("gating", "bash", ToolCapability::Execute).is_some());
 
         assert!(
             manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Acknowledged,)
         );
-        assert!(manager.blocks_tool_call("gating", "bash", &empty).is_none());
+        assert!(manager.blocks_tool_call("gating", "bash", ToolCapability::Execute).is_none());
 
         manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Unresolved);
         manager.set_enabled("gating", false);
         assert!(
             manager
-                .blocks_tool_call("gating", "write", &empty)
+                .blocks_tool_call("gating", "write", ToolCapability::WriteFiles)
                 .is_none()
         );
-    }
-
-    #[test]
-    fn risky_tool_classifier_distinguishes_read_only_and_mutating_actions() {
-        let cases = [
-            ("browser", serde_json::json!({"action":"snapshot"}), false),
-            ("browser", serde_json::json!({"action":"click"}), true),
-            ("gmail", serde_json::json!({"action":"read"}), false),
-            ("gmail", serde_json::json!({"action":"send"}), true),
-            ("schedule", serde_json::json!({"action":"list"}), false),
-            ("schedule", serde_json::json!({"action":"cancel"}), true),
-            ("memory", serde_json::json!({"action":"recall"}), false),
-            ("memory", serde_json::json!({"action":"remember"}), true),
-            (
-                "lsp",
-                serde_json::json!({"action":"rename","apply":false}),
-                false,
-            ),
-            (
-                "lsp",
-                serde_json::json!({"action":"rename","apply":true}),
-                true,
-            ),
-            ("dap", serde_json::json!({"action":"threads"}), false),
-            ("dap", serde_json::json!({"action":"evaluate"}), true),
-            ("swarm", serde_json::json!({"action":"list"}), false),
-            ("swarm", serde_json::json!({"action":"spawn"}), true),
-            ("mcp__server__read", serde_json::json!({}), true),
-        ];
-
-        for (name, input, expected) in cases {
-            assert_eq!(
-                is_risky_tool_call(name, &input),
-                expected,
-                "unexpected risk classification for {name} with {input}"
-            );
-        }
     }
 
     #[tokio::test]

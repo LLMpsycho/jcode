@@ -77,7 +77,7 @@ use std::sync::{LazyLock, RwLock as StdRwLock};
 use tokio::sync::RwLock;
 
 pub(crate) use jcode_tool_core::intent_schema_property;
-pub use jcode_tool_core::{StdinInputRequest, Tool, ToolContext, ToolExecutionMode};
+pub use jcode_tool_core::{StdinInputRequest, Tool, ToolCapability, ToolContext, ToolExecutionMode};
 pub use jcode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
 
@@ -802,14 +802,6 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
-        if let Some(message) = crate::advisor::advisor_manager().blocks_tool_call(
-            &ctx.session_id,
-            resolved_name,
-            &input,
-        ) {
-            return Err(anyhow::anyhow!(message));
-        }
-
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.
         if crate::hooks::hook_configured("pre_tool") {
@@ -841,6 +833,13 @@ impl Registry {
             Self::tool_lifecycle_fields("start", name, resolved_name, &input, &ctx),
         );
 
+        if let Some(message) = crate::advisor::advisor_manager().blocks_tool_call(
+            &ctx.session_id,
+            resolved_name,
+            tool.capability(&input),
+        ) {
+            return Err(anyhow::anyhow!(message));
+        }
         let started_at = std::time::Instant::now();
         let mut result = tool.execute(input.clone(), ctx.clone()).await;
         if let (Some(lsp_pool), Ok(output)) = (&self.lsp_pool, &mut result) {

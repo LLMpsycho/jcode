@@ -462,6 +462,11 @@ async fn wait_many_polling(
 
 #[async_trait]
 impl Tool for BgTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["list", "status", "output", "tail", "watch", "delivery", "subscribe", "wait"], ToolCapability::Execute)
+    }
+
     fn name(&self) -> &str {
         "bg"
     }

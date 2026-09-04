@@ -96,6 +96,11 @@ struct GmailInput {
 
 #[async_trait]
 impl Tool for GmailTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["search", "read", "list", "threads", "thread", "labels"], ToolCapability::ExternalEffect)
+    }
+
     fn name(&self) -> &str {
         "gmail"
     }

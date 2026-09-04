@@ -147,6 +147,10 @@ struct NextScheduleInput {
 
 #[async_trait]
 impl Tool for EndAmbientCycleTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ChangeState
+    }
+
     fn name(&self) -> &str {
         "end_ambient_cycle"
     }
@@ -299,6 +303,10 @@ struct ScheduleInput {
 
 #[async_trait]
 impl Tool for ScheduleAmbientTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ChangeState
+    }
+
     fn name(&self) -> &str {
         "schedule_ambient"
     }
@@ -549,6 +557,10 @@ fn build_permission_review_context(
 
 #[async_trait]
 impl Tool for RequestPermissionTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ChangeState
+    }
+
     fn name(&self) -> &str {
         "request_permission"
     }
@@ -754,6 +766,11 @@ struct ScheduleToolInput {
 
 #[async_trait]
 impl Tool for ScheduleTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["list"], ToolCapability::ChangeState)
+    }
+
     fn name(&self) -> &str {
         "schedule"
     }
@@ -1042,6 +1059,10 @@ impl SendChannelMessageTool {
 
 #[async_trait]
 impl Tool for SendChannelMessageTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ExternalEffect
+    }
+
     fn name(&self) -> &str {
         "send_message"
     }

@@ -840,6 +840,10 @@ mod destructive_gate;
 use destructive_gate::destructive_command_refusal;
 #[async_trait]
 impl Tool for BashTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Execute
+    }
+
     fn name(&self) -> &str {
         "bash"
     }

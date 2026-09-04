@@ -40,6 +40,10 @@ impl McpSearchTool {
 
 #[async_trait]
 impl Tool for McpSearchTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "mcp_search"
     }
@@ -137,6 +141,10 @@ impl McpCallTool {
 
 #[async_trait]
 impl Tool for McpCallTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Unknown
+    }
+
     fn name(&self) -> &str {
         "mcp_call"
     }
@@ -242,6 +250,10 @@ impl McpManagementTool {
 
 #[async_trait]
 impl Tool for McpManagementTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Unknown
+    }
+
     fn name(&self) -> &str {
         "mcp"
     }

@@ -20,6 +20,10 @@ struct InvalidInput {
 
 #[async_trait]
 impl Tool for InvalidTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "invalid"
     }

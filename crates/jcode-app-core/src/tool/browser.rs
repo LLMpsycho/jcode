@@ -163,6 +163,11 @@ impl BrowserProvider for FirefoxBridgeProvider {
 
 #[async_trait]
 impl Tool for BrowserTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["status", "list_tabs", "get_active_tab", "list_frames", "snapshot", "get_content", "interactables", "wait", "screenshot"], ToolCapability::ExternalEffect)
+    }
+
     fn name(&self) -> &str {
         "browser"
     }
