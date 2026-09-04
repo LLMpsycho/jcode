@@ -67,6 +67,7 @@ pub(super) async fn maybe_handle_session_admin_command(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
     file_snapshots: &FileSnapshotLedger,
+    dap_service: &Option<crate::tool::dap::DapService>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
 ) -> Result<Option<String>> {
     if let Some((working_dir, selfdev_requested)) = parse_create_session_command(cmd) {
@@ -85,6 +86,7 @@ pub(super) async fn maybe_handle_session_admin_command(
             swarm_plans,
             soft_interrupt_queues,
             file_snapshots,
+            dap_service,
             selfdev_requested,
             None,
             None,
@@ -116,6 +118,9 @@ pub(super) async fn maybe_handle_session_admin_command(
         }
 
         let removed_agent = super::remove_session_entry(sessions, target_id).await;
+        if let Some(service) = dap_service {
+            service.cleanup_owner(target_id).await;
+        }
         remove_session_interrupt_queue(soft_interrupt_queues, target_id).await;
         remove_background_tool_signal(target_id);
         if let Some(ref agent_arc) = removed_agent {

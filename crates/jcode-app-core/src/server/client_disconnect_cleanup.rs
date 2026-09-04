@@ -77,6 +77,7 @@ pub(super) async fn cleanup_client_connection(
     event_history: &Arc<RwLock<std::collections::VecDeque<SwarmEvent>>>,
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
+    dap_service: &Option<crate::tool::dap::DapService>,
 ) -> Result<()> {
     let disconnected_while_processing = client_is_processing
         || processing_task
@@ -116,6 +117,10 @@ pub(super) async fn cleanup_client_connection(
         ));
         event_handle.abort();
         return Ok(());
+    }
+
+    if let Some(service) = dap_service {
+        service.cleanup_owner(client_session_id).await;
     }
 
     {
@@ -269,7 +274,37 @@ pub(super) async fn cleanup_client_connection(
 
 #[cfg(test)]
 mod tests {
-    use super::{DisconnectDisposition, disconnect_disposition};
+    use super::{
+        ClientConnectionInfo, DisconnectDisposition, disconnect_disposition,
+        session_has_live_successor,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Instant;
+    use tokio::sync::{RwLock, mpsc};
+
+    #[tokio::test]
+    async fn reconnect_successor_prevents_destructive_owner_cleanup() {
+        let (disconnect_tx, _disconnect_rx) = mpsc::unbounded_channel();
+        let connections = Arc::new(RwLock::new(HashMap::from([(
+            "successor".to_string(),
+            ClientConnectionInfo {
+                client_id: "successor".to_string(),
+                session_id: "resumed-session".to_string(),
+                client_instance_id: None,
+                debug_client_id: None,
+                connected_at: Instant::now(),
+                last_seen: Instant::now(),
+                is_processing: false,
+                current_tool_name: None,
+                terminal_env: Vec::new(),
+                disconnect_tx,
+            },
+        )])));
+
+        assert!(session_has_live_successor(&connections, "resumed-session").await);
+        assert!(!session_has_live_successor(&connections, "detached-session").await);
+    }
 
     #[test]
     fn idle_disconnect_is_closed() {

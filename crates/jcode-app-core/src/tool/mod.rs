@@ -11,6 +11,7 @@ mod communicate;
 mod computer;
 mod config_edit_notice;
 mod conversation_search;
+pub(crate) mod dap;
 mod debug_socket;
 mod discover;
 mod discover_secrets;
@@ -355,12 +356,27 @@ impl Registry {
         Self::new_inner(Some(file_snapshots), None).await
     }
 
+    #[cfg(test)]
     pub(crate) async fn new_with_services(
         _provider: Arc<dyn Provider>,
         file_snapshots: crate::server::FileSnapshotLedger,
         lsp_pool: Arc<jcode_lsp::LspServicePool>,
     ) -> Self {
         Self::new_inner(Some(file_snapshots), Some(lsp_pool)).await
+    }
+
+    pub(crate) async fn new_with_runtime_services(
+        _provider: Arc<dyn Provider>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+        lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
+        dap_service: Option<dap::DapService>,
+    ) -> Self {
+        let registry = Self::new_inner(Some(file_snapshots), lsp_pool).await;
+        if let Some(service) = dap_service {
+            let mut tools = registry.tools.write().await;
+            Self::insert_tool(&mut tools, "dap", service.tool());
+        }
+        registry
     }
 
     async fn new_inner(

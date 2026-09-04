@@ -578,6 +578,7 @@ pub(super) async fn spawn_swarm_agent(
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
     file_snapshots: &FileSnapshotLedger,
+    dap_service: &Option<crate::tool::dap::DapService>,
     client_connections: &ClientConnections,
 ) -> anyhow::Result<String> {
     let resolved_working_dir =
@@ -668,6 +669,7 @@ pub(super) async fn spawn_swarm_agent(
                 swarm_plans,
                 soft_interrupt_queues,
                 file_snapshots,
+                dap_service,
                 coordinator_is_canary,
                 spawn_model.clone(),
                 spawn_provider_key.clone(),
@@ -851,6 +853,7 @@ pub(super) async fn handle_comm_spawn(
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
     file_snapshots: &FileSnapshotLedger,
+    dap_service: &Option<crate::tool::dap::DapService>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
     client_connections: &ClientConnections,
 ) {
@@ -930,6 +933,7 @@ pub(super) async fn handle_comm_spawn(
         mcp_pool,
         soft_interrupt_queues,
         file_snapshots,
+        dap_service,
         client_connections,
     )
     .await
@@ -999,6 +1003,7 @@ pub(super) async fn handle_comm_stop(
     event_counter: &Arc<std::sync::atomic::AtomicU64>,
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     soft_interrupt_queues: &SessionInterruptQueues,
+    dap_service: &Option<crate::tool::dap::DapService>,
     swarm_mutation_runtime: &SwarmMutationRuntime,
 ) {
     // Stopping is authorized per-target by ownership (the requester is the
@@ -1084,6 +1089,9 @@ pub(super) async fn handle_comm_stop(
     };
 
     let removed_agent = super::remove_session_entry(sessions, &target_session).await;
+    if let Some(service) = dap_service {
+        service.cleanup_owner(&target_session).await;
+    }
     let removed_live_agent = removed_agent.is_some();
     if let Some(agent_arc) = removed_agent {
         remove_session_interrupt_queue(soft_interrupt_queues, &target_session).await;

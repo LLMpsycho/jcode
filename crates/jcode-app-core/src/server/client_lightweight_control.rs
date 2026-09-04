@@ -65,6 +65,7 @@ pub(super) struct LightweightControlContext<'a> {
     pub(super) swarm_coordinators: &'a Arc<RwLock<HashMap<String, String>>>,
     pub(super) file_touch: &'a FileTouchService,
     pub(super) file_snapshots: &'a FileSnapshotLedger,
+    pub(super) dap_service: &'a Option<crate::tool::dap::DapService>,
     pub(super) channel_subscriptions: &'a ChannelSubscriptions,
     pub(super) channel_subscriptions_by_session: &'a ChannelSubscriptions,
     pub(super) client_connections: &'a Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
@@ -93,6 +94,7 @@ pub(super) async fn handle_lightweight_control_request(
         swarm_coordinators,
         file_touch,
         file_snapshots,
+        dap_service,
         channel_subscriptions,
         channel_subscriptions_by_session,
         client_connections,
@@ -442,6 +444,7 @@ pub(super) async fn handle_lightweight_control_request(
                 mcp_pool,
                 soft_interrupt_queues,
                 file_snapshots,
+                dap_service,
                 swarm_mutation_runtime,
                 client_connections,
             )
@@ -479,6 +482,7 @@ pub(super) async fn handle_lightweight_control_request(
                 event_counter,
                 swarm_event_tx,
                 soft_interrupt_queues,
+                dap_service,
                 swarm_mutation_runtime,
             )
             .await;
@@ -678,6 +682,7 @@ pub(super) async fn handle_lightweight_control_request(
                 provider_template,
                 soft_interrupt_queues,
                 file_snapshots,
+                dap_service,
                 client_connections,
                 swarm_members,
                 swarms_by_id,

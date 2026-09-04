@@ -2,6 +2,22 @@
 
 use super::*;
 
+#[tokio::test]
+async fn runtime_services_registry_includes_shared_dap_tool() {
+    let provider = Arc::new(MockProvider) as Arc<dyn crate::provider::Provider>;
+    let service = dap::DapService::from_config(&jcode_dap::DapConfig::default())
+        .expect("default DAP config should construct a service");
+    let registry = Registry::new_with_runtime_services(
+        provider,
+        crate::server::FileSnapshotLedger::new(),
+        None,
+        Some(service),
+    )
+    .await;
+
+    assert!(registry.tool_names().await.iter().any(|name| name == "dap"));
+}
+
 use crate::message::{Message, ToolDefinition};
 use crate::provider::{EventStream, Provider};
 use async_trait::async_trait;
