@@ -36,18 +36,13 @@ jobs:
           echo '=== branch/base ==='
           git status --short --branch
           git log -1 --oneline
-          echo '=== advisor manager lifecycle callsites ==='
-          grep -R -n -E 'advisor_manager\(\)' crates/jcode-app-core/src | head -200 || true
-          echo '=== compaction/rewind/reset callsites ==='
-          grep -R -n -E 'Compacted|compaction|rewind_to_message|undo_rewind|reset_runtime_state_for_session_change' crates/jcode-app-core/src/agent crates/jcode-app-core/src/server | head -250 || true
-          echo '=== AdvisorConfig ==='
-          grep -R -n -B8 -A90 -E 'struct AdvisorConfig|enum AdvisorMode|enum AdvisorSeverity' crates/jcode-config-types crates/jcode-base | head -320 || true
-          echo '=== provider routing surface ==='
-          grep -R -n -E 'model_routes|set_route_selection|active_credential|credential_mode|RouteSelection|RuntimeKey' crates/jcode-provider-core crates/jcode-app-core/src/provider crates/jcode-app-core/src/agent | head -320 || true
-          echo '=== tool registry direct map uses ==='
-          grep -n -E 'tools\.(insert|get|remove)|tools\.iter|tools\.values|tools\.keys|register\(' crates/jcode-app-core/src/tool/mod.rs | head -320 || true
-          grep -R -n -E '\.register\(' crates/jcode-app-core/src/mcp | head -120 || true
-          echo '=== phase acceptance/selfdev/socket tests ==='
-          find crates -type f \( -path '*test*' -o -name '*tests.rs' \) | grep -E 'selfdev|socket|advisor|reload|resume' | sort | head -250 || true
-          echo '=== plan audit docs ==='
-          ls -1 docs/plans/omp-overtake
+          echo '=== todo stable contracts ==='
+          grep -n -E '^pub fn (load_todos|load_goals|load_plan)|^pub struct (TodoItem|TodoGoal|TodoPlan)' crates/jcode-base/src/todo.rs crates/jcode-task-types/src/lib.rs || true
+          echo '=== session message fields ==='
+          grep -n -A80 -E '^pub struct Session \{' crates/jcode-base/src/session.rs crates/jcode-session-types/src/lib.rs | head -180 || true
+          echo '=== tool output fields ==='
+          grep -n -A100 -E '^pub struct ToolOutput|^pub enum ContentBlock' crates/jcode-tool-types/src/lib.rs crates/jcode-message-types/src/lib.rs | head -240 || true
+          echo '=== model-route cost/permission metadata ==='
+          grep -R -n -E 'RouteCheapnessEstimate|cheapness|ResolvedCredential' crates/jcode-provider-core/src | head -220 || true
+          echo '=== tests using captured advisor prompt ==='
+          grep -R -n -E 'AdvisorTurnInput|advisor.*prompt|ModeCaptureProvider' crates/jcode-app-core/src/*test* crates/jcode-app-core/src/advisor.rs | head -260 || true
