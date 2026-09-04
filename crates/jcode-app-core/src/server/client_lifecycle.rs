@@ -1,7 +1,6 @@
 use super::available_models_dedup::available_models_dedup_key;
 #[path = "processing_completion.rs"]
 mod processing_completion;
-use processing_completion::ProcessingCompletion;
 use super::client_actions::{
     AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
     handle_notify_session, handle_rename_session, handle_run_subagent, handle_set_feature,
@@ -65,6 +64,7 @@ use crate::transport::Stream;
 use anyhow::Result;
 use futures::FutureExt;
 use jcode_agent_runtime::{InterruptSignal, SoftInterruptSource, StreamError};
+use processing_completion::ProcessingCompletion;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{

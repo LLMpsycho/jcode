@@ -48,7 +48,10 @@ mod tests {
         );
         ready.send(()).expect("owner ready");
         task.await.expect("publisher");
-        assert!(matches!(observed.recv().await, Some(ServerEvent::Done { id: 7 })));
+        assert!(matches!(
+            observed.recv().await,
+            Some(ServerEvent::Done { id: 7 })
+        ));
     }
 
     #[tokio::test]
