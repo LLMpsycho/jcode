@@ -37,7 +37,7 @@ fn advisor_system_prompt(mode: AdvisorMode) -> String {
             "Self-development guardian mode: remain strictly read-only. Check evaluator integrity, promotion and release claims, scope drift, safety, rollback readiness, and benchmark validity. Cite supplied evidence for every finding and never perform or propose an unverified mutation as completed."
         }
         AdvisorMode::FinalReview => {
-            "Final-review mode: give an independent evidence-referencing verdict on whether the stated objective and acceptance criteria are satisfied. Identify any missing verification explicitly and do not infer success from implementation alone."
+            "Final-review mode: give an independent evidence-referencing verdict in the summary on whether the stated objective and acceptance criteria are satisfied. Identify any missing verification explicitly and do not infer success from implementation alone. Every evidence entry must be a nonempty verbatim excerpt from the supplied objective, diff, diagnostics, verification status, todos, acceptance criteria, or tool results. Use an inconclusive verdict when acceptance cannot be verified."
         }
     };
     format!("{ADVISOR_SYSTEM_PROMPT}\n\n{mode_contract}")
@@ -143,6 +143,7 @@ impl AdvisorTurnInput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdvisorNote {
     pub severity: AdvisorSeverity,
     pub summary: String,
@@ -657,6 +658,10 @@ impl AdvisorManager {
             }
         };
         let note = note.bounded(&config);
+        if config.mode == AdvisorMode::FinalReview && !evidence::grounded(&input, &note) {
+            self.fail(&owner_session_id, review_id, "final review did not cite supplied evidence".into());
+            return;
+        }
         let note_hash = note.dedupe_hash();
         let should_deliver = {
             let Ok(mut sessions) = self.sessions.lock() else {

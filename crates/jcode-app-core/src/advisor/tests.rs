@@ -90,7 +90,7 @@ impl Provider for ModeCaptureProvider {
             .push(system.to_string());
         Ok(Box::pin(stream::iter(vec![
             Ok(StreamEvent::TextDelta(
-                r#"{"severity":"nit","summary":"ok","evidence":[],"recommended_action":"continue","blocking":false}"#.to_string(),
+                r#"{"severity":"nit","summary":"ok","evidence":["bounded acceptance"],"recommended_action":"continue","blocking":false}"#.to_string(),
             )),
             Ok(StreamEvent::MessageEnd {
                 stop_reason: Some("end_turn".to_string()),
@@ -590,7 +590,7 @@ async fn configured_mode_contract_reaches_the_forked_provider() {
                 systems: Arc::clone(&systems),
             }),
             Arc::new(Mutex::new(Vec::new())),
-            AdvisorTurnInput::default(),
+            AdvisorTurnInput { objective: "bounded acceptance".into(), ..AdvisorTurnInput::default() },
             AdvisorConfig {
                 enabled: true,
                 mode,

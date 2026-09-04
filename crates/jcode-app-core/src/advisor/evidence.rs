@@ -6,6 +6,16 @@ use tokio::io::AsyncReadExt;
 
 const MAX_ITEMS: usize = 32;
 
+pub(super) fn grounded(input: &AdvisorTurnInput, note: &AdvisorNote) -> bool {
+    let sources = [&input.objective, &input.latest_primary_turn, &input.diff_summary,
+        &input.diagnostics, &input.verification_status, &input.outstanding_todos,
+        &input.acceptance_criteria];
+    !note.evidence.is_empty() && note.evidence.iter().all(|quote| {
+        !quote.trim().is_empty() && (sources.iter().any(|source| source.contains(quote))
+            || input.tools.iter().any(|tool| tool.result.contains(quote)))
+    })
+}
+
 #[derive(Default)]
 pub(super) struct TurnEvidence {
     tools: VecDeque<AdvisorToolInput>,
@@ -160,6 +170,17 @@ async fn bounded_diff(root: Option<&Path>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_review_rejects_invented_evidence() {
+        let input = AdvisorTurnInput { verification_status: "Declared check unit tests: failed, exit Some(1)".into(), ..AdvisorTurnInput::default() };
+        let mut note = AdvisorNote { severity: AdvisorSeverity::Concern, summary: "Acceptance not met".into(), evidence: vec!["unit tests: passed".into()], recommended_action: "fix tests".into(), blocking: false };
+        assert!(!grounded(&input, &note));
+        note.evidence = vec!["unit tests: failed, exit Some(1)".into()];
+        assert!(grounded(&input, &note));
+        note.evidence.clear();
+        assert!(!grounded(&input, &note));
+    }
 
     #[tokio::test]
     async fn advisor_evidence_is_scoped_redacted_and_does_not_infer_verification() {
