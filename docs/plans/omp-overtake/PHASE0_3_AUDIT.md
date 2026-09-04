@@ -52,6 +52,15 @@ for the exact revision and counts; no unexecuted suite is claimed as passing.
 A Rust toolchain is not installed in this local workspace, so Rust execution is
 performed by GitHub Actions rather than inferred from source inspection.
 
+The first full library audit at `72574294403d993319324a99dcec9a878a612a4f`
+passed 211 DAP, 32 edit-core and 32 LSP tests, plus the 32 evaluator tests and
+dependency boundaries. The following tool-level Rust LSP checks exposed a CI
+setup gap: Rustup's executable shim was discoverable, but the analyzer component
+was not installed. The focused workflow now installs `rust-analyzer` and
+`rust-src`, pins its toolchain and checks the analyzer version before testing.
+Final tool-level results are recorded in PR #10; the failed setup is not claimed
+as a successful real-server run.
+
 Existing repository-level gates were checked separately:
 
 - `.github/workflows/ci.yml` has duplicate top-level `env` mappings on the pinned

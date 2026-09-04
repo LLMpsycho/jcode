@@ -25,11 +25,14 @@ jobs:
       JCODE_CI: '1'
       JCODE_DEV_FEATURE_PROFILE: minimal
       CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          components: rustfmt, rust-analyzer, rust-src
+      - name: Verify real LSP audit dependency
+        run: rust-analyzer --version
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
