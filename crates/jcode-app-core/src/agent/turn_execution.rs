@@ -596,6 +596,10 @@ impl Agent {
         input: serde_json::Value,
     ) -> Result<crate::tool::ToolOutput> {
         self.validate_tool_allowed(name)?;
+        if let Some(message) = crate::advisor::advisor_manager().blocks_tool(&self.session.id, name)
+        {
+            anyhow::bail!(message);
+        }
 
         let call_id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -58,6 +58,20 @@ foundation from the full advisor product.
   private context, deduplication state, and pending reviews so changed history
   cannot receive stale notes.
 - Provider and parser failures are redacted before logging or runtime storage.
+- Published notes also retain bounded, redacted metadata under opaque `adv-*`
+  identifiers. At most 32 note records are held per live session runtime.
+
+### Controls and enforcement
+
+- The protocol supports advisor status, inspect, dismiss, acknowledge, enable,
+  and disable requests against the connection's active session.
+- Remote TUI clients expose those controls as `/advisor status|inspect|dismiss
+  <id>|ack <id>|on|off` and render the server result in chat.
+- Unresolved severity-derived blocking notes gate only future risky write, exec,
+  publication, scheduling, desktop-control, and MCP tool starts. Read-only tools
+  remain available. Acknowledge, dismiss, or session disable releases the gate.
+- The check occurs immediately before registry execution. It does not cancel or
+  otherwise affect a tool that was already running when a note arrived.
 
 ### Mode contracts
 
@@ -90,6 +104,7 @@ Focused tests exercise:
 - advisor reset on rewind, rewind undo, and compaction application;
 - severity-derived urgency and safe-boundary soft-interrupt delivery;
 - distinct tool-less contracts for all three configured advisor modes;
+- opaque bounded note metadata and blocker release after acknowledge or disable;
 - compilation of streaming and non-streaming turn lifecycle integration.
 
 The focused test and compile commands are recorded in the implementing commit.
@@ -107,17 +122,17 @@ features below.
 ### Lifecycle semantics
 
 - Define and test resume behavior across daemon/process restart.
-- Add a handled-note acknowledgement and immunity window, rather than relying
-  only on exact-note deduplication.
+- Persist handled-note state across daemon/process restart. Current controls and
+  note metadata are intentionally live-runtime only.
+- Add a handled-note immunity window beyond exact-note deduplication.
 
 ### Enforcement and controls
 
-- Gate only future destructive, write, and exec tools for unresolved blocker
-  notes. Never interrupt an atomic publication already in progress.
-- Add inspect, dismiss, acknowledge, and disable controls in the CLI/TUI and
-  protocol surfaces.
-- Persist only the minimum state needed for those controls and never persist
-  unredacted advisor evidence.
+- Refine the conservative risky-tool classification with first-class tool
+  capability metadata instead of name-based classification.
+- Add non-TUI CLI presentation if a standalone advisor control command is
+  needed; the shipped surface is the remote TUI protocol path.
+- Persist only the minimum redacted state needed for restart-safe controls.
 
 ### Mode-specific behavior
 
@@ -127,7 +142,6 @@ features below.
 ### Acceptance tests still required
 
 - Resume, rewind, compaction, and reload behavior.
-- Blocker gating limited to future risky tools and release after acknowledgement.
 - No concern storms after a note is handled.
-- User inspect, dismiss, acknowledge, and disable flows.
+- Daemon-restart persistence for inspect, dismiss, acknowledge, and disable.
 - Mode-specific real-provider behavior and an evidence-grounded final verdict.

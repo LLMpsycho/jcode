@@ -2068,6 +2068,57 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
+                if trimmed == "/advisor" || trimmed == "/advisor status" {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Status)
+                        .await?;
+                    return Ok(());
+                }
+                if trimmed == "/advisor inspect" {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Inspect)
+                        .await?;
+                    return Ok(());
+                }
+                if trimmed == "/advisor on" {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Enable)
+                        .await?;
+                    return Ok(());
+                }
+                if trimmed == "/advisor off" {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Disable)
+                        .await?;
+                    return Ok(());
+                }
+                if let Some(id) = trimmed
+                    .strip_prefix("/advisor dismiss ")
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Dismiss(id.to_string()))
+                        .await?;
+                    return Ok(());
+                }
+                if let Some(id) = trimmed
+                    .strip_prefix("/advisor ack ")
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                {
+                    remote
+                        .advisor(crate::protocol::AdvisorRequest::Acknowledge(id.to_string()))
+                        .await?;
+                    return Ok(());
+                }
+                if trimmed.starts_with("/advisor") {
+                    app.push_display_message(DisplayMessage::error(
+                        "Usage: /advisor status|inspect|dismiss <id>|ack <id>|on|off".to_string(),
+                    ));
+                    return Ok(());
+                }
+
                 if trimmed == "/compact mode" || trimmed == "/compact mode status" {
                     let mode = app
                         .remote_compaction_mode

@@ -11,7 +11,7 @@ use crate::provider::Provider;
 use futures::StreamExt;
 use jcode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, hash_map::DefaultHasher};
+use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -21,6 +21,7 @@ const MAX_INPUT_BYTES: usize = 32 * 1024;
 const MAX_TOOLS: usize = 12;
 const MAX_EVIDENCE: usize = 8;
 const MAX_PRIVATE_CONTEXT: usize = 8;
+const MAX_NOTE_METADATA: usize = 32;
 const ADVISOR_REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const ADVISOR_SYSTEM_PROMPT: &str = "You are Jcode's independent advisor. Review only the bounded evidence from the completed primary turn. You have no tools and must not request actions or additional context. Return exactly one JSON object with severity (nit, concern, or blocker), summary, evidence (an array of concise strings), recommended_action, and blocking. Do not include markdown or hidden reasoning. A blocker is reserved for unsafe actions, data-integrity risks, or an unmet hard acceptance criterion.";
 
@@ -212,6 +213,27 @@ pub struct AdvisorRuntimeSnapshot {
     pub private_context_len: usize,
     pub notes_emitted: usize,
     pub last_error: Option<String>,
+    pub enabled: bool,
+    pub unresolved_blocking_notes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorNoteDisposition {
+    Unresolved,
+    Acknowledged,
+    Dismissed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisorNoteMetadata {
+    pub id: String,
+    pub severity: AdvisorSeverity,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub recommended_action: String,
+    pub blocking: bool,
+    pub disposition: AdvisorNoteDisposition,
 }
 
 struct PendingReview {
@@ -232,12 +254,15 @@ struct AdvisorRuntime {
     last_error: Option<String>,
     active_review_id: u64,
     pending: Option<PendingReview>,
+    enabled_override: Option<bool>,
+    notes: VecDeque<AdvisorNoteMetadata>,
 }
 
 #[derive(Default)]
 pub struct AdvisorManager {
     sessions: Mutex<HashMap<String, AdvisorRuntime>>,
     next_review_id: AtomicU64,
+    next_note_id: AtomicU64,
 }
 
 impl AdvisorManager {
@@ -252,7 +277,72 @@ impl AdvisorManager {
             private_context_len: runtime.private_context.len(),
             notes_emitted: runtime.notes_emitted,
             last_error: runtime.last_error.clone(),
+            enabled: runtime.enabled_override.unwrap_or(true),
+            unresolved_blocking_notes: runtime
+                .notes
+                .iter()
+                .filter(|note| {
+                    note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved
+                })
+                .count(),
         })
+    }
+
+    pub fn notes(&self, owner_session_id: &str) -> Vec<AdvisorNoteMetadata> {
+        self.sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| {
+                sessions
+                    .get(owner_session_id)
+                    .map(|runtime| runtime.notes.iter().cloned().collect())
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_enabled(&self, owner_session_id: &str, enabled: bool) {
+        if let Ok(mut sessions) = self.sessions.lock() {
+            let runtime = sessions.entry(owner_session_id.to_string()).or_default();
+            runtime.enabled_override = Some(enabled);
+            if !enabled {
+                runtime.pending = None;
+            }
+        }
+    }
+
+    pub fn resolve_note(
+        &self,
+        owner_session_id: &str,
+        id: &str,
+        disposition: AdvisorNoteDisposition,
+    ) -> bool {
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return false;
+        };
+        let Some(note) = sessions
+            .get_mut(owner_session_id)
+            .and_then(|runtime| runtime.notes.iter_mut().find(|note| note.id == id))
+        else {
+            return false;
+        };
+        note.disposition = disposition;
+        true
+    }
+
+    pub fn blocks_tool(&self, owner_session_id: &str, tool_name: &str) -> Option<String> {
+        if !is_risky_tool(tool_name) {
+            return None;
+        }
+        let sessions = self.sessions.lock().ok()?;
+        let runtime = sessions.get(owner_session_id)?;
+        if !runtime.enabled_override.unwrap_or(true) {
+            return None;
+        }
+        runtime
+            .notes
+            .iter()
+            .find(|note| note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved)
+            .map(|note| format!("advisor blocked future risky tool `{tool_name}` until note {} is acknowledged, dismissed, or advisor is disabled", note.id))
     }
 
     pub fn remove(&self, owner_session_id: &str) {
@@ -292,6 +382,9 @@ impl AdvisorManager {
                 return false;
             };
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
+            if runtime.enabled_override == Some(false) {
+                return false;
+            }
             runtime.turns_observed = runtime.turns_observed.saturating_add(1);
             if (runtime.turns_observed - 1) % cadence != 0
                 || runtime.cursor >= max_reviews_per_session
@@ -523,6 +616,26 @@ impl AdvisorManager {
             } else {
                 runtime.last_note_hash = Some(note_hash);
                 runtime.notes_emitted += 1;
+                let note_id = self
+                    .next_note_id
+                    .fetch_add(1, AtomicOrdering::Relaxed)
+                    .saturating_add(1);
+                runtime.notes.push_back(AdvisorNoteMetadata {
+                    id: format!("adv-{note_id:016x}"),
+                    severity: note.severity,
+                    summary: redact_secrets(&note.summary),
+                    evidence: note
+                        .evidence
+                        .iter()
+                        .map(|evidence| redact_secrets(evidence))
+                        .collect(),
+                    recommended_action: redact_secrets(&note.recommended_action),
+                    blocking: note.blocking,
+                    disposition: AdvisorNoteDisposition::Unresolved,
+                });
+                while runtime.notes.len() > MAX_NOTE_METADATA {
+                    runtime.notes.pop_front();
+                }
                 true
             }
         };
@@ -585,6 +698,23 @@ pub fn mode_label(mode: AdvisorMode) -> &'static str {
         AdvisorMode::SelfdevGuardian => "selfdev-guardian",
         AdvisorMode::FinalReview => "final-review",
     }
+}
+
+pub fn is_risky_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "bash"
+            | "write"
+            | "edit"
+            | "multiedit"
+            | "patch"
+            | "apply_patch"
+            | "anchored_edit"
+            | "gmail"
+            | "schedule"
+            | "selfdev"
+            | "macos_computer_use"
+    ) || name.starts_with("mcp__")
 }
 
 #[cfg(test)]
@@ -1216,5 +1346,39 @@ mod tests {
         .bounded(false);
 
         assert!(serde_json::to_vec(&input).expect("serialize").len() <= MAX_INPUT_BYTES);
+    }
+
+    #[tokio::test]
+    async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disabled() {
+        let manager = Arc::new(AdvisorManager::default());
+        assert!(manager.schedule_turn(
+            "gating".to_string(),
+            Arc::new(AdvisorProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                response: r#"{"severity":"blocker","summary":"unsafe publication","evidence":["bounded"],"recommended_action":"verify first","blocking":false}"#.to_string(),
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            enabled_config(),
+        ));
+        wait_for_status(&manager, "gating", AdvisorStatus::Ready).await;
+
+        let notes = manager.notes("gating");
+        assert_eq!(notes.len(), 1);
+        assert!(
+            notes[0].blocking,
+            "severity, not model boolean, controls gating"
+        );
+        assert!(manager.blocks_tool("gating", "read").is_none());
+        assert!(manager.blocks_tool("gating", "bash").is_some());
+
+        assert!(
+            manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Acknowledged,)
+        );
+        assert!(manager.blocks_tool("gating", "bash").is_none());
+
+        manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Unresolved);
+        manager.set_enabled("gating", false);
+        assert!(manager.blocks_tool("gating", "write").is_none());
     }
 }
