@@ -54,6 +54,8 @@ jobs:
         run: scripts/dev_cargo.sh test --locked -p jcode-tool-core --lib
       - name: Build isolated selfdev binary
         run: scripts/dev_cargo.sh build --locked --profile selfdev --bin jcode
+      - name: Isolated socket restart, reload, immunity and mode acceptance
+        run: python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode
       - name: Enforce formatting result
         if: always() && steps.formatting.outcome == 'failure'
         run: exit 1
