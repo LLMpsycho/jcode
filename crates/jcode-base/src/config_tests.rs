@@ -101,22 +101,16 @@ allow_evaluate = true
 max_output_bytes = 2048
 max_opaque_handles_per_owner = 64
 
-[dap.adapters.custom]
-kind = "lldb-dap"
-command = "/opt/debug/custom-dap"
+[dap.adapters.gdb]
+kind = "gdb-dap"
+command = "/opt/debug/gdb"
 "#,
     )
     .expect("documented DAP configuration should parse");
     assert!(configured.dap.enabled);
     assert!(configured.dap.allow_evaluate);
-    assert_eq!(
-        configured.dap.adapters["custom"].kind,
-        DapAdapterKind::LldbDap
-    );
-    assert_eq!(
-        configured.dap.adapters["custom"].command,
-        "/opt/debug/custom-dap"
-    );
+    assert_eq!(configured.dap.adapters["gdb"].kind, DapAdapterKind::GdbDap);
+    assert_eq!(configured.dap.adapters["gdb"].command, "/opt/debug/gdb");
 
     let unknown = toml::from_str::<Config>("[dap]\ndownload_adapters = true\n")
         .expect_err("unknown DAP keys must not be ignored")

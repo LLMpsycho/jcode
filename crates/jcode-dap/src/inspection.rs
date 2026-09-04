@@ -116,6 +116,28 @@ pub struct DebugStackFrameHandle {
     pub(crate) frame_id: i32,
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub struct DebugStepInTargetHandle {
+    pub(crate) manager_id: u64,
+    pub(crate) session_id: DebugSessionId,
+    pub(crate) execution_revision: DebugExecutionRevision,
+    pub(crate) thread_id: i32,
+    pub(crate) frame_id: i32,
+    pub(crate) target_id: i32,
+}
+
+impl fmt::Debug for DebugStepInTargetHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<debug-step-in-target-handle>")
+    }
+}
+
+impl fmt::Display for DebugStepInTargetHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<debug-step-in-target-handle>")
+    }
+}
+
 impl fmt::Debug for DebugStackFrameHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("<debug-stack-frame-handle>")
@@ -195,6 +217,29 @@ pub struct DebugStackFrameLocation {
     pub column: u64,
     pub end_line: Option<u64>,
     pub end_column: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DebugStepInTargetsRequest {
+    pub frame: DebugStackFrameHandle,
+    pub expected_execution_revision: Option<DebugExecutionRevision>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DebugStepInTargetsResult {
+    pub execution_revision: DebugExecutionRevision,
+    pub targets: Vec<DebugStepInTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DebugStepInTarget {
+    pub handle: DebugStepInTargetHandle,
+    pub label: String,
+    pub line: Option<u64>,
+    pub column: Option<u64>,
+    pub end_line: Option<u64>,
+    pub end_column: Option<u64>,
+    pub instruction_pointer_reference: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -434,6 +479,7 @@ pub enum DebugEvaluateUnknownReason {
 #[non_exhaustive]
 pub enum DebugInspectionOperation {
     StackTrace,
+    StepInTargets,
     Scopes,
     Variables,
     Evaluate,
@@ -443,6 +489,7 @@ pub enum DebugInspectionOperation {
 #[non_exhaustive]
 pub enum DebugInspectionCapability {
     DelayedStackTraceLoading,
+    StepInTargets,
     EvaluateForHovers,
     ClipboardContext,
 }
@@ -461,6 +508,7 @@ pub enum DebugInspectionRequestReason {
 #[non_exhaustive]
 pub enum DebugInspectionLimit {
     StackFrames,
+    StepInTargets,
     FrameHandlesPerExecutionRevision,
     Scopes,
     Variables,
@@ -484,6 +532,7 @@ pub enum DebugInspectionResponseReason {
     InvalidInteger,
     InvalidPresentationHint,
     DuplicateFrameId,
+    DuplicateTargetId,
     ReturnedMoreThanRequested,
     TooManyItems,
     AggregateTextTooLarge,

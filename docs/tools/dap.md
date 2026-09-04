@@ -8,11 +8,11 @@ The tool takes `intent` plus action-specific inputs. It does not take an owner, 
 
 ## Actions
 
-The tool exposes 17 actions:
+The tool exposes 18 actions:
 
 | Action | Purpose |
 |---|---|
-| `launch` | Launch a workspace-contained executable under `lldb-dap`. |
+| `launch` | Launch a workspace-contained executable under a configured `lldb-dap` or native `gdb-dap` profile. |
 | `attach` | Spawn a target owned by Jcode and attach to that target. No PID is accepted. |
 | `sessions` | List the caller's bounded session summaries. |
 | `output` | Read a cursor-based page of retained debugger output. |
@@ -26,11 +26,21 @@ The tool exposes 17 actions:
 | `step_in` | Step into on an authorized stopped thread. |
 | `step_out` | Step out on an authorized stopped thread. |
 | `stack_trace` | Read a bounded page of frames and receive opaque frame tokens. |
-| `scopes` | Read bounded scopes for an opaque frame token. |
+| `step_in_targets` | Discover bounded adapter-provided targets for an opaque frame token, or the unambiguous current frame when omitted. |
+| `scopes` | Read bounded scopes for an opaque frame token, or the unambiguous current frame when omitted. |
 | `variables` | Read a bounded page from an opaque variable token. |
 | `evaluate` | Evaluate an expression after global and per-call opt-in. |
 
 Unsupported adapter capabilities produce structured errors rather than raw DAP fallbacks. There is deliberately no `request` action.
+
+The `adapter` field is optional for `launch` and `attach`. If omitted, Jcode chooses the first available configured profile, preferring `lldb-dap` for compatibility. If supplied, that exact configured adapter must be available and Jcode does not fall back to another debugger.
+
+When `step_in_targets` returns one or more opaque target tokens, pass one as
+`target` to `step_in`. Target tokens are scoped to the owner, debug session,
+stack frame, and current execution revision. They expire as soon as execution
+advances or debugger state is refreshed at a later stop. If `frame` is omitted,
+Jcode requests one frame from the stopped thread and proceeds only when the
+thread choice is unambiguous.
 
 ## Launch example
 

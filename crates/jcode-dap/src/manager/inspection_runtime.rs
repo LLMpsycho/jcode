@@ -1,13 +1,14 @@
 use super::*;
 use crate::{
     DebugEvaluateContext, DebugEvaluateOutcome, DebugEvaluateOutcomeUnknown, DebugEvaluateRequest,
-    DebugEvaluateResult, DebugEvaluateTarget, DebugEvaluateUnknownReason,
+    DebugEvaluateResult, DebugEvaluateTarget, DebugEvaluateUnknownReason, DebugExecutionRevision,
     DebugInspectionCapability, DebugInspectionError, DebugInspectionLimit,
     DebugInspectionOperation, DebugInspectionRequestReason, DebugInspectionResponseReason,
     DebugScope, DebugScopeLocation, DebugScopePresentationHint, DebugScopesRequest,
     DebugScopesResult, DebugSource, DebugSourcePresentationHint, DebugStackFrame,
     DebugStackFrameHandle, DebugStackFrameLocation, DebugStackFramePresentationHint,
-    DebugStackTraceRequest, DebugStackTraceResult, DebugThreadId, DebugVariable,
+    DebugStackTraceRequest, DebugStackTraceResult, DebugStepInTarget, DebugStepInTargetHandle,
+    DebugStepInTargetsRequest, DebugStepInTargetsResult, DebugThreadId, DebugVariable,
     DebugVariableAttribute, DebugVariableFilter, DebugVariableHandle, DebugVariableKind,
     DebugVariablePresentationHint, DebugVariableValue, DebugVariableVisibility,
     DebugVariablesRequest, DebugVariablesResult,
@@ -147,6 +148,14 @@ impl DebugSessionManager {
     ) -> std::result::Result<DebugScopesResult, DebugInspectionError> {
         scopes_owned(self, _owner_session_id, _id, _request).await
     }
+    pub async fn step_in_targets(
+        &self,
+        owner_session_id: &str,
+        id: DebugSessionId,
+        request: DebugStepInTargetsRequest,
+    ) -> std::result::Result<DebugStepInTargetsResult, DebugInspectionError> {
+        step_in_targets_owned(self, owner_session_id, id, request).await
+    }
     pub async fn variables(
         &self,
         _owner_session_id: &str,
@@ -164,6 +173,7 @@ impl DebugSessionManager {
         evaluate_owned(self, _owner_session_id, _id, _request).await
     }
 }
+
 async fn stack_trace_owned(
     manager: &DebugSessionManager,
     owner: &str,
@@ -1184,3 +1194,6 @@ fn validate_variable(
 #[path = "inspection_parse.rs"]
 mod inspection_parse;
 use inspection_parse::*;
+#[path = "step_in_targets.rs"]
+mod step_in_targets;
+use step_in_targets::step_in_targets_owned;

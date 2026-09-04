@@ -15,6 +15,7 @@ pub const MAX_OPAQUE_HANDLES_PER_OWNER: usize = 65_536;
 pub enum DapAdapterKind {
     #[default]
     LldbDap,
+    GdbDap,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +266,10 @@ mod tests {
         assert_eq!(config.adapters["lldb-dap"].kind, DapAdapterKind::LldbDap);
         assert_eq!(config.adapters["lldb-dap"].command, "lldb-dap");
         assert!(config.validation_issues().is_empty());
+        assert_eq!(
+            serde_json::from_value::<DapAdapterKind>(json!("gdb-dap")).unwrap(),
+            DapAdapterKind::GdbDap
+        );
     }
 
     #[test]

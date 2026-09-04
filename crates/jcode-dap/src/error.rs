@@ -187,6 +187,11 @@ pub enum DapError {
     },
     #[error("execution revision space is exhausted for debug session {session_id}")]
     ExecutionRevisionExhausted { session_id: DebugSessionId },
+    #[error("invalid step-in target for debug session {session_id}: {message}")]
+    InvalidStepInTarget {
+        session_id: DebugSessionId,
+        message: String,
+    },
     #[error("debug operation task {operation} failed: {message}")]
     DebugOperationTaskFailed {
         operation: &'static str,

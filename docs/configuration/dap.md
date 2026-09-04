@@ -12,11 +12,17 @@ allow_evaluate = false
 [dap.adapters.lldb-dap]
 kind = "lldb-dap"
 command = "/absolute/path/to/lldb-dap"
+
+[dap.adapters.gdb]
+kind = "gdb-dap"
+command = "/absolute/path/to/gdb"
 ```
 
-The adapter command must already exist and be executable. Use an absolute command path when deterministic resolution is required. Jcode does not search for, install, update, or download debug adapters.
+The adapter command must already exist and be executable. Relative commands are resolved against the server's `PATH`; use an absolute command path when deterministic resolution is required. Jcode does not auto-discover candidates, install, update, or download debug adapters.
 
-The only initial adapter kind is `lldb-dap`. Program and working-directory values are resolved under the `ToolContext` workspace, and user-provided launch arguments are passed literally without a shell. Adapter environment overrides are not exposed.
+The supported explicit adapter kinds are `lldb-dap` and GDB's native `gdb-dap` mode. Jcode starts GDB with the fixed `--interpreter=dap` argument. Program and working-directory values are resolved under the `ToolContext` workspace, and user-provided launch arguments are passed literally without a shell. Adapter environment overrides and adapter command arguments are not exposed.
+
+When a DAP tool request omits `adapter`, Jcode selects only from configured adapters whose command currently resolves to a validated executable. It preserves the historical `lldb-dap` preference, then checks the remaining configured IDs in deterministic order. An explicitly requested unavailable adapter never falls back to another profile and returns configuration guidance instead.
 
 ## Evaluation requires two opt-ins
 
@@ -34,7 +40,7 @@ The subsystem applies bounded defaults for:
 - retained output event count, retained UTF-8 bytes, and output page size;
 - adapter stderr retention;
 - breakpoint sources and breakpoints per source;
-- thread snapshots, stack frames, scopes, and variables per response;
+- thread snapshots, stack frames, step-in targets, scopes, and variables per response;
 - string fields, evaluate expressions, and evaluate results.
 
 Invalid or excessive limits fail configuration rather than silently disabling bounds. Output pages may be shorter than requested and include loss metadata when older data was evicted or oversized source events were discarded.

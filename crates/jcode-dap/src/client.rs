@@ -598,6 +598,7 @@ async fn read_loop<R>(
     R: AsyncRead + Send + Unpin + 'static,
 {
     let mut decoder = FrameDecoder::default();
+    let mut inbound_sequence = 0_i64;
     let mut buffer = [0_u8; 8192];
     let mut deferred_terminal = None;
     let (terminal_error, terminal_cause) = 'transport: loop {
@@ -669,7 +670,10 @@ async fn read_loop<R>(
                 );
             }
         };
-        for (frame_len, message) in messages {
+        for (frame_len, mut message) in messages {
+            if let Err(error) = normalize_inbound_sequence(&mut message, &mut inbound_sequence) {
+                break 'transport (error, ClientCloseCause::ProtocolFailure);
+            }
             match message {
                 Message::Response(response) => handle_response(&shared, response),
                 Message::Event(event) => {
@@ -700,6 +704,24 @@ async fn read_loop<R>(
         }
     };
     terminate_transport(&shared, terminal_error, terminal_cause);
+}
+
+fn normalize_inbound_sequence(message: &mut Message, last_sequence: &mut i64) -> Result<()> {
+    let sequence = match message {
+        Message::Request(request) => &mut request.seq,
+        Message::Response(response) => &mut response.seq,
+        Message::Event(event) => &mut event.seq,
+    };
+    if *sequence == 0 {
+        *last_sequence = last_sequence
+            .checked_add(1)
+            .filter(|value| *value <= i64::from(i32::MAX))
+            .ok_or_else(|| DapError::InvalidMessage("adapter sequence exhausted".to_owned()))?;
+        *sequence = *last_sequence;
+    } else {
+        *last_sequence = (*last_sequence).max(*sequence);
+    }
+    Ok(())
 }
 
 async fn reverse_response_loop(

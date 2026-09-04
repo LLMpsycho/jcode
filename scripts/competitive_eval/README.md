@@ -48,6 +48,14 @@ Each adapter fingerprints the executable with SHA-256 and a bounded `--version`
 probe. Missing binaries or capabilities produce `unsupported`, never an install
 or a weakened task.
 
+DAP tasks additionally require an existing `lldb-dap`. Set
+`JCODE_EVAL_LLDB_DAP=/absolute/path/to/lldb-dap` when it is not discoverable
+through `PATH` or `xcrun`. Fixture setup writes only the isolated trial's
+`JCODE_HOME/config.toml`; it never modifies the user's Jcode configuration.
+Verifier entry scripts are snapshotted in memory before the agent runs and
+materialized outside the writable workspace only after the owned agent process
+group exits. Replacing `verify.py` during a trial therefore cannot forge a pass.
+
 ## Tests
 
 ```sh

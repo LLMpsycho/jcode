@@ -53,6 +53,12 @@ fn main() -> std::io::Result<()> {
     let cwd = std::env::current_dir()?;
     let log_path = cwd.join("fake-dap.log");
     append_log(&log_path, &format!("adapter_pid\t{}", std::process::id()))?;
+    if let Some(mode) = mode {
+        append_log(
+            &log_path,
+            &format!("adapter_arg\t{}", mode.to_string_lossy()),
+        )?;
+    }
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let mut seq = 1_i64;
@@ -79,7 +85,8 @@ fn main() -> std::io::Result<()> {
                     "supportsConditionalBreakpoints":true,
                     "supportsHitConditionalBreakpoints":true,
                     "supportsLogPoints":true,
-                    "supportsSteppingGranularity":true
+                    "supportsSteppingGranularity":true,
+                    "supportsStepInTargetsRequest":true
                 })),
             )?;
         } else if command == "launch" || command == "attach" {
@@ -203,6 +210,28 @@ fn main() -> std::io::Result<()> {
                 &mut seq,
                 &request,
                 Some(json!({"threads":[{"id":1,"name":"main"},{"id":2,"name":"worker"}]})),
+            )?;
+        } else if command == "stackTrace" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({
+                    "stackFrames":[{"id":11,"name":"main","line":12,"column":9}],
+                    "totalFrames":1
+                })),
+            )?;
+        } else if command == "stepInTargets" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({
+                    "targets":[
+                        {"id":41,"label":"call helper","line":12,"column":9},
+                        {"id":42,"label":"call alternate","instructionPointerReference":"0x2a"}
+                    ]
+                })),
             )?;
         } else if command == "continue" {
             append_log(&log_path, "marker\tcontinue-received")?;

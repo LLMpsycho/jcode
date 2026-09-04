@@ -170,24 +170,26 @@ impl DebugSessionManager {
             start: Some(start),
         })?;
         let deadline = startup_deadline(self.core.config.startup_timeout)?;
+        let profile = AdapterProfile::from_kind(adapter.kind());
         adapter.revalidate()?;
+        let mut command = AdapterCommand::new(adapter.executable(), workspace.canonical_root());
+        for argument in profile.command_arguments() {
+            command = command.with_arg(*argument);
+        }
         let process = deadline_result(
             deadline,
             DebugStartupPhase::Initialize,
-            AdapterProcess::spawn(&AdapterCommand::new(
-                adapter.executable(),
-                workspace.canonical_root(),
-            )),
+            AdapterProcess::spawn(&command),
         )
         .await?;
         reservation.attach_process(process, DebugTerminationPolicy::AdapterLaunched)?;
         let result = async {
-            initialize(&reservation, AdapterProfile::LldbDap, deadline).await?;
+            initialize(&reservation, profile, deadline).await?;
             revalidate_program(&workspace, &resolved.target)?;
             start_after_initialize(
                 &reservation,
                 "launch",
-                AdapterProfile::LldbDap.launch_arguments(&resolved),
+                profile.launch_arguments(&resolved),
                 deadline,
             )
             .await
@@ -214,18 +216,20 @@ impl DebugSessionManager {
             start: None,
         })?;
         let deadline = startup_deadline(self.core.config.startup_timeout)?;
+        let profile = AdapterProfile::from_kind(adapter.kind());
         adapter.revalidate()?;
+        let mut command = AdapterCommand::new(adapter.executable(), workspace.canonical_root());
+        for argument in profile.command_arguments() {
+            command = command.with_arg(*argument);
+        }
         let process = deadline_result(
             deadline,
             DebugStartupPhase::Initialize,
-            AdapterProcess::spawn(&AdapterCommand::new(
-                adapter.executable(),
-                workspace.canonical_root(),
-            )),
+            AdapterProcess::spawn(&command),
         )
         .await?;
         reservation.attach_process(process, DebugTerminationPolicy::OwnedAttach)?;
-        if let Err(error) = initialize(&reservation, AdapterProfile::LldbDap, deadline).await {
+        if let Err(error) = initialize(&reservation, profile, deadline).await {
             return finish_start(reservation, Err(error)).await;
         }
         let adapter_pid = match reservation.live_adapter_pid().await {
@@ -278,7 +282,7 @@ impl DebugSessionManager {
             let start = start_after_initialize(
                 &reservation,
                 "attach",
-                AdapterProfile::LldbDap.attach_arguments(pid),
+                profile.attach_arguments(pid),
                 deadline,
             );
             tokio::pin!(start);

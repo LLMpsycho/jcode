@@ -9,7 +9,7 @@ use super::*;
 use crate::{
     DebugContinueRequest, DebugControlOperation, DebugControlResult, DebugExecutionRevision,
     DebugOperationConfig, DebugPauseRequest, DebugStepRequest, DebugSteppingGranularity,
-    DebugThread, DebugThreadId, DebugThreadsSnapshot,
+    DebugTargetedStepInRequest, DebugThread, DebugThreadId, DebugThreadsSnapshot,
 };
 
 pub(super) async fn threads_owned(
@@ -33,6 +33,7 @@ pub(super) async fn continue_owned(
         request.thread_id,
         request.expected_execution_revision,
         DebugSteppingGranularity::Statement,
+        None,
     )
     .await
 }
@@ -48,6 +49,7 @@ pub(super) async fn pause_owned(
         request.thread_id,
         request.expected_execution_revision,
         DebugSteppingGranularity::Statement,
+        None,
     )
     .await
 }
@@ -64,6 +66,33 @@ pub(super) async fn step_owned(
         request.thread_id,
         request.expected_execution_revision,
         request.granularity,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn targeted_step_in_owned(
+    entry: Arc<SessionEntry>,
+    operations: Arc<DebugOperationConfig>,
+    request: DebugTargetedStepInRequest,
+) -> Result<DebugControlResult> {
+    let expected = request
+        .expected_execution_revision
+        .unwrap_or(request.target.execution_revision);
+    if expected != request.target.execution_revision {
+        return Err(DapError::InvalidStepInTarget {
+            session_id: entry.id,
+            message: "target and expected execution revisions differ".to_owned(),
+        });
+    }
+    control_owned(
+        entry,
+        operations,
+        DebugControlOperation::StepIn,
+        Some(DebugThreadId::new(request.target.thread_id)),
+        Some(expected),
+        request.granularity,
+        Some(request.target),
     )
     .await
 }
@@ -75,6 +104,7 @@ async fn control_owned(
     requested_thread: Option<DebugThreadId>,
     expected: Option<DebugExecutionRevision>,
     granularity: DebugSteppingGranularity,
+    step_in_target: Option<crate::DebugStepInTargetHandle>,
 ) -> Result<DebugControlResult> {
     let deadline = operation_deadline(&operations)?;
     let _gate = deadline_gate(&entry, deadline, operation_name(operation)).await?;
@@ -96,6 +126,29 @@ async fn control_owned(
         }
         let revision = DebugExecutionRevision(data.execution_revision);
         validate_expected(&entry, expected, revision)?;
+        if let Some(target) = &step_in_target {
+            if target.session_id != entry.id {
+                return Err(DapError::InvalidStepInTarget {
+                    session_id: entry.id,
+                    message: "target belongs to another debug session".to_owned(),
+                });
+            }
+            if target.execution_revision != revision {
+                return Err(DapError::InvalidStepInTarget {
+                    session_id: entry.id,
+                    message: "target is stale".to_owned(),
+                });
+            }
+            if !matches!(
+                data.frame_identities.get(&target.frame_id),
+                Some((thread_id, _)) if *thread_id == target.thread_id
+            ) {
+                return Err(DapError::InvalidStepInTarget {
+                    session_id: entry.id,
+                    message: "target frame is unavailable".to_owned(),
+                });
+            }
+        }
         let (stopped_id, all_stopped) = match &data.state {
             DebugSessionState::Stopped(stopped) => (
                 stopped
@@ -157,6 +210,9 @@ async fn control_owned(
             }
         }
     }
+    if let Some(target) = &step_in_target {
+        arguments["targetId"] = json!(target.target_id);
+    }
     let response = client
         .request(
             command,
@@ -208,7 +264,8 @@ async fn control_owned(
                 | DebugControlOperation::StepOut
         )
     {
-        debug_assert!(entry.advance_execution(&mut data));
+        let advanced = entry.advance_execution(&mut data);
+        debug_assert!(advanced);
         data.state = DebugSessionState::Running;
         notify(&entry, &mut data);
     }
@@ -564,6 +621,29 @@ impl DebugSessionManager {
     ) -> Result<DebugControlResult> {
         self.step(owner, id, DebugControlOperation::StepIn, request)
             .await
+    }
+    pub async fn step_in_target(
+        &self,
+        owner: &str,
+        id: DebugSessionId,
+        request: DebugTargetedStepInRequest,
+    ) -> Result<DebugControlResult> {
+        let entry = self.core.authorized_entry(owner, id)?;
+        if request.target.manager_id != self.core.manager_id {
+            return Err(DapError::InvalidStepInTarget {
+                session_id: id,
+                message: "target was issued by another manager".to_owned(),
+            });
+        }
+        let operations = Arc::clone(&self.core.operations);
+        tokio::spawn(
+            async move { control::targeted_step_in_owned(entry, operations, request).await },
+        )
+        .await
+        .map_err(|error| DapError::DebugOperationTaskFailed {
+            operation: "stepIn",
+            message: error.to_string(),
+        })?
     }
     pub async fn step_out(
         &self,

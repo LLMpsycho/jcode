@@ -10,6 +10,7 @@ use crate::{
 #[non_exhaustive]
 pub enum DebugAdapterKind {
     LldbDap,
+    GdbDap,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,6 +22,12 @@ pub struct DebugAdapterConfig {
 
 impl DebugAdapterConfig {
     pub fn lldb_dap(executable: impl AsRef<Path>) -> Result<Self> {
+        Self::new(DebugAdapterKind::LldbDap, "lldb", executable)
+    }
+    pub fn gdb_dap(executable: impl AsRef<Path>) -> Result<Self> {
+        Self::new(DebugAdapterKind::GdbDap, "gdb", executable)
+    }
+    fn new(kind: DebugAdapterKind, adapter_id: &str, executable: impl AsRef<Path>) -> Result<Self> {
         let input = executable.as_ref();
         if !input.is_absolute() {
             return Err(DapError::InvalidAdapterConfiguration {
@@ -38,8 +45,8 @@ impl DebugAdapterConfig {
             message,
         })?;
         Ok(Self {
-            kind: DebugAdapterKind::LldbDap,
-            adapter_id: "lldb".into(),
+            kind,
+            adapter_id: adapter_id.into(),
             executable,
         })
     }
@@ -239,15 +246,33 @@ pub(crate) fn revalidate_program(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
 pub(crate) enum AdapterProfile {
     LldbDap,
+    GdbDap,
 }
 impl AdapterProfile {
+    pub(crate) fn from_kind(kind: DebugAdapterKind) -> Self {
+        match kind {
+            DebugAdapterKind::LldbDap => Self::LldbDap,
+            DebugAdapterKind::GdbDap => Self::GdbDap,
+        }
+    }
+    pub(crate) fn command_arguments(&self) -> &'static [&'static str] {
+        match self {
+            Self::LldbDap => &[],
+            Self::GdbDap => &["--interpreter=dap"],
+        }
+    }
     pub(crate) fn initialize_arguments(&self) -> InitializeRequestArguments {
         InitializeRequestArguments {
             client_id: Some("jcode".into()),
             client_name: Some("Jcode".into()),
-            adapter_id: "lldb".into(),
+            adapter_id: match self {
+                Self::LldbDap => "lldb",
+                Self::GdbDap => "gdb",
+            }
+            .into(),
             locale: None,
             lines_start_at1: Some(true),
             columns_start_at1: Some(true),

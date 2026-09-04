@@ -9,10 +9,11 @@ The completed foundations cover the DAP protocol, owner-scoped session manager, 
 Finished work:
 
 - 30A through 30C: stable DAP types, framing, protocol classification, asynchronous client behavior, transport shutdown, and owned adapter-process safety.
-- 30D: owner-scoped session management, bounded output, `lldb-dap` launch, and owned spawn-and-attach without caller-supplied PIDs.
+- 30D: owner-scoped session management, bounded output, explicit `lldb-dap` and native `gdb-dap` launch profiles, and owned spawn-and-attach without caller-supplied PIDs.
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
 - 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
+- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Target discovery defaults to the unambiguous current frame when no frame token is supplied. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair. Omitted adapter requests select only validated available configured profiles, while explicit unavailable selection fails without fallback.
 - Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
@@ -41,7 +42,8 @@ The remaining items are non-MVP follow-ups listed at the end of this document. T
 - Supervisors consume output and lifecycle events, observe transport closure and adapter exit, fail closed on receiver lag or non-output source loss, and keep request timeout recoverable.
 - Output retention is bounded by event count and UTF-8 bytes, keeps the newest UTF-8-safe tail, advances monotonic cursors through eviction, and reports ring eviction separately from oversized source loss.
 - Supervisor tasks hold weak manager references, so dropping the final manager synchronously closes transports and leaves process Drop only as the forced-cleanup backstop.
-- A built-in validated `lldb-dap` profile launches only canonical workspace-contained executable files with literal arguments and no shell, environment override, discovery, download, or network behavior.
+- Built-in validated `lldb-dap` and native GDB DAP profiles launch only canonical workspace-contained executable files with literal arguments and no shell, environment override, discovery, download, or network behavior. GDB receives only the fixed `--interpreter=dap` adapter argument.
+- Adapter omission checks the configured `lldb-dap` profile first and then configured IDs in deterministic order, selecting only a command that resolves to a validated executable. Explicit adapter selection never falls back when unavailable.
 - Owned attach spawns and retains the target child internally, authorizes only the owned adapter PID with Linux `PR_SET_PTRACER`, and never accepts a caller-supplied PID.
 - Startup uses one checked Tokio deadline across adapter spawn, initialize, launch or attach, initialized, configurationDone, and the start response. Adapter and target ownership enter the cancellation-safe reservation before protocol awaits.
 - Finalization asks the live adapter to disconnect within a bound, closes transport, then cleans the owned target and adapter process groups locally. Windows launch and attach fail closed before reservation or spawn.
@@ -50,6 +52,7 @@ The remaining items are non-MVP follow-ups listed at the end of this document. T
 - Every breakpoint event is queued in one bounded per-session queue while a transaction is in flight. Response sequence ordering installs adapter IDs before applying higher-sequence ID-only events, while overflow and ambiguous outcomes cannot claim synchronized state.
 - Per-entry operation gates serialize breakpoint mutation, ephemeral thread lookup, and execution control without holding synchronous state locks across I/O. Detached operations own the session entry and immutable operation config, never `Arc<ManagerCore>`; terminal closure prevents post-cleanup commits.
 - Ephemeral `threads`, `continue`, `pause`, `next`, `stepIn`, and `stepOut` operations enforce owner, state, thread, capability, deadline, and execution-revision checks. Bounded stack traces, scopes, variables, and evaluation use manager-issued revision-scoped handles that expire when execution advances.
+- Stack traces, scopes, and step-in target discovery resolve an omitted thread or frame only through the manager's bounded unambiguous stopped-state policy; ambiguous state remains an error.
 
 ## Verified behavior
 
@@ -78,7 +81,7 @@ The remaining items are non-MVP follow-ups listed at the end of this document. T
 - Stopped, continued, terminated, exited, stale-event, malformed-event, transport-close, exact broadcast-lag, oversized output, oversized lifecycle event, and already-closed attachment paths are covered.
 - Output count, byte, UTF-8 tail, paging, cursor, eviction, and source-loss accounting are covered.
 - Recoverable request timeout followed by a successful request, capability-driven cancellation, authorized request round trip, concurrent transport failure plus termination, cancellation of explicit, owner-cleanup, and shutdown callers, termination ownership ordering, attached-reservation cancellation, final-manager-drop closure, and extreme configuration durations are covered.
-- Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, serialized reservation-drop cleanup, deadline cleanup, scoped Linux ptracer arguments, and owned-target exit during attach. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and a reaped target exit that cannot commit a Running session.
+- Deterministic fake-adapter tests verify both initialized/start-response orders, successful omission of unsupported configurationDone, early-stop preservation, exact disconnect bodies, owner isolation, serialized reservation-drop cleanup, deadline cleanup, scoped Linux ptracer arguments, and owned-target exit during attach. Real framed subprocess tests cover launch, independently self-recorded owned-attach PIDs, fixed native GDB DAP invocation for launch and owned attach, launch and attach rejection with successful retry, target and adapter group cleanup, descendant cleanup after cancellation, disconnect escalation, dead-adapter denial before target spawn, and a reaped target exit that cannot commit a Running session.
 - `manager::breakpoints::tests::full_source_set_idempotence_remove_and_exact_revision` proves ordered full-source replacement, idempotence, removal, and exact-byte revision metadata.
 - The barrier-driven `manager::breakpoints::tests::reconciliation_contract` tests prove a response can arrive before a higher-sequence ID-only event while the supervisor queues that event before response reconciliation, newer queued events are applied in ascending sequence order, and public queue overflow returns `Indeterminate` without a synchronized claim. `queued_event_at_or_before_response_sequence_is_discarded` covers the inclusive older-event boundary.
 - Queue overflow immediately removes synchronized claims from existing sources because a dropped event can no longer be attributed safely.
@@ -108,7 +111,7 @@ cargo tree --manifest-path "$PWD/Cargo.toml" -p jcode-dap
 git diff --check
 ```
 
-All focused DAP checks pass with 211 non-doc tests plus 2 compile-fail doctests: 174 crate-internal library/client/process tests, 12 Phase 30E contract/lifecycle subprocess tests, 1 repeated breakpoint/control subprocess test, 10 framing/protocol integration tests, 11 launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size and test-size budgets still report unrelated pre-existing drift outside these crates and are not claimed as passing. Every production and test file in `crates/jcode-dap` remains below 1,200 lines, with `manager.rs` at 999 lines.
+All focused DAP checks pass with 423 non-doc tests plus 2 compile-fail doctests across crate-internal, protocol, lifecycle, launch-process, breakpoint/control, state-inspection, and stable-type suites. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size and test-size budgets still report unrelated pre-existing drift outside these crates and are not claimed as passing. Every production and test file in `crates/jcode-dap` remains below 1,200 lines, with `manager.rs` at 999 lines.
 
 ## Phase 30G agent-tool integration
 
@@ -119,7 +122,7 @@ The operator and agent-facing contract is documented in:
 - [`docs/tools/dap.md`](../../tools/dap.md)
 - [`docs/troubleshooting/dap.md`](../../troubleshooting/dap.md)
 
-The implemented boundary is opt-in and initially supports only configured `kind = "lldb-dap"`. Its 17 tool actions cover owned launch and attach, session inspection and cleanup, breakpoints, thread and execution control, bounded stack/scope/variable inspection, and doubly opted-in evaluation. `ToolContext` supplies the trusted owner and canonical workspace. Request JSON cannot override either boundary, and attach never accepts a PID.
+The implemented boundary is opt-in and supports configured `kind = "lldb-dap"` and `kind = "gdb-dap"` profiles. Its 18 tool actions cover owned launch and attach, session inspection and cleanup, breakpoints, thread and execution control, bounded stack/step-in-target/scope/variable inspection, and doubly opted-in evaluation. `ToolContext` supplies the trusted owner and canonical workspace. Request JSON cannot override either boundary, and attach never accepts a PID.
 
 Session and inspection identifiers are opaque owner-scoped tokens. Output, protocol messages, request concurrency, retained events, stack frames, scopes, variables, strings, and evaluation results remain bounded. The surface deliberately provides no adapter downloads or discovery, raw DAP request escape hatch, environment override, interactive shell, or cross-process session persistence. A transient transport replacement with a live successor for the same owner preserves the debug session. True owner disconnect, startup timeout or cancellation, adapter failure, explicit owner teardown, server reload, and shutdown converge on owned transport and process-group cleanup.
 
@@ -149,12 +152,11 @@ These checks pass, including 6 focused DAP agent-tool tests, the disconnect and 
 
 No item below blocks the completed Phase 3 MVP:
 
-- Adapter discovery and debugger profiles beyond configured `lldb-dap`.
-- Step-in targets and higher-level debug policy beyond the bounded 30F inspection APIs.
+- Adapter discovery beyond the explicit `lldb-dap` and native `gdb-dap` profiles.
+- Higher-level debug policy beyond bounded step-in target discovery and the 30F inspection APIs.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
 - Persistent cross-process debug-session recovery.
-- DAP competitive benchmark tasks.
 
 Before real debugger launch or reverse process requests are enabled on Windows, the runtime needs owned process-tree containment such as a Job Object. The current non-Unix fallback guarantees direct-child cleanup only and does not claim descendant-tree containment.

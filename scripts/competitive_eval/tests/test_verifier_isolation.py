@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,35 @@ from scripts.competitive_eval.tests.helpers import write_fixture
 
 
 class VerifierIsolationTests(unittest.TestCase):
+    def test_agent_cannot_replace_the_verifier_used_for_scoring(self) -> None:
+        class TamperingAdapter(MockAdapter):
+            def build_command(self, run):
+                script = (
+                    "from pathlib import Path; "
+                    "Path('solution.txt').write_text('wrong\\n'); "
+                    "Path('verify.py').write_text('raise SystemExit(0)\\n')"
+                )
+                return [sys.executable, "-c", script]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = write_fixture(root, "pass")
+            manifest = load_task_manifest(manifest_path)
+            run_dir = root / "result"
+            result = run_trial(
+                manifest,
+                manifest_path=manifest_path,
+                adapter=TamperingAdapter(),
+                config=TrialConfig("campaign", 1, run_dir),
+            )
+            self.assertEqual(result["status"], "fail")
+            self.assertEqual(result["failure_class"], "verifier")
+            self.assertIn("raise SystemExit(0)", (run_dir / "workspace/verify.py").read_text())
+            self.assertNotIn(
+                "raise SystemExit(0)",
+                (run_dir / "trusted-verifier/verify.py").read_text(),
+            )
+
     def test_each_trial_gets_fresh_workspace_home_and_temp_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

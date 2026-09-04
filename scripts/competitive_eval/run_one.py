@@ -33,6 +33,9 @@ else:
     from scripts.competitive_eval.redact import redact_mapping, redact_text, sensitive_values
 
 
+UNSUPPORTED_SETUP_EXIT = 78
+
+
 @dataclass(frozen=True)
 class TrialConfig:
     campaign_id: str
@@ -45,6 +48,24 @@ class TrialConfig:
     output_limit_bytes: int = 1024 * 1024
     max_fixture_files: int = 10_000
     max_fixture_bytes: int = 256 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class TrustedVerifier:
+    arguments: tuple[str, ...]
+    script_index: int
+    relative_path: Path
+    content: bytes
+    mode: int
+
+    def materialize(self, run_dir: Path) -> list[str]:
+        script = run_dir / "trusted-verifier" / self.relative_path
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_bytes(self.content)
+        script.chmod(self.mode)
+        arguments = list(self.arguments)
+        arguments[self.script_index] = str(script)
+        return arguments
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -102,6 +123,31 @@ def _snapshot_files(workspace: Path) -> dict[str, str]:
     return snapshot
 
 
+def _snapshot_verifier(workspace: Path, command: str) -> TrustedVerifier:
+    arguments = shlex.split(command)
+    if not arguments:
+        raise ValueError("verifier command cannot be empty")
+    root = workspace.resolve()
+    for index, argument in enumerate(arguments):
+        candidate = Path(argument)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        try:
+            candidate = candidate.resolve()
+            relative = candidate.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if candidate.is_file() and not candidate.is_symlink():
+            return TrustedVerifier(
+                tuple(arguments),
+                index,
+                relative,
+                candidate.read_bytes(),
+                candidate.stat().st_mode & 0o777,
+            )
+    raise ValueError("verifier command must reference a workspace-local regular file")
+
+
 def _write_artifact(path: Path, data: bytes, secrets: list[str], limit: int) -> None:
     text = data.decode("utf-8", errors="replace")
     redacted = redact_text(text, secrets).encode("utf-8")[: max(0, limit)]
@@ -123,6 +169,12 @@ def _isolated_environment(run: RunSpec, adapter: AgentAdapter) -> tuple[dict[str
         "JCODE_EVAL_ATTEMPT": str(run.attempt),
         "JCODE_EVAL_WORKSPACE": str(run.workspace),
     }
+    if "RUSTUP_HOME" not in environment:
+        original_home = environment.get("HOME")
+        if original_home:
+            default_rustup_home = Path(original_home) / ".rustup"
+            if default_rustup_home.is_dir():
+                isolation["RUSTUP_HOME"] = str(default_rustup_home)
     overrides = {**isolation, **adapter.environment(run)}
     environment.update(overrides)
     secrets = sensitive_values(environment)
@@ -191,6 +243,7 @@ def run_trial(
     prompt_file = _resolve_inside(workspace, task["prompt_file"], "prompt_file")
     if not prompt_file.is_file():
         raise ValueError(f"prompt file does not exist: {prompt_file}")
+    trusted_verifier = _snapshot_verifier(workspace, task["verifier"]["command"])
     run = RunSpec(
         campaign_id=config.campaign_id,
         task_id=task["id"],
@@ -233,8 +286,19 @@ def run_trial(
             _write_artifact(run_dir / "setup_stdout.log", setup_outcome.stdout, secrets, config.output_limit_bytes)
             _write_artifact(run_dir / "setup_stderr.log", setup_outcome.stderr, secrets, config.output_limit_bytes)
             if setup_outcome.timed_out or setup_outcome.returncode != 0:
-                result["status"] = "error"
-                result["failure_class"] = "setup_timeout" if setup_outcome.timed_out else "setup_exit"
+                unsupported = setup_outcome.returncode == UNSUPPORTED_SETUP_EXIT
+                result["status"] = "unsupported" if unsupported else "error"
+                result["failure_class"] = (
+                    "unsupported_capability"
+                    if unsupported
+                    else "setup_timeout"
+                    if setup_outcome.timed_out
+                    else "setup_exit"
+                )
+                if unsupported:
+                    result["unsupported_reason"] = (
+                        "setup reported an unavailable runtime capability"
+                    )
                 result["duration_ms"] = int((time.monotonic() - started) * 1000)
                 validate_manifest(result, "result")
                 atomic_write_json(result_path, result)
@@ -261,7 +325,7 @@ def run_trial(
         else:
             verifier = task["verifier"]
             verifier_outcome = run_process(
-                shlex.split(verifier["command"]), cwd=workspace, env=environment,
+                trusted_verifier.materialize(run_dir), cwd=workspace, env=environment,
                 timeout_seconds=verifier["timeout_seconds"], output_limit_bytes=config.output_limit_bytes,
             )
             _write_artifact(run_dir / "verifier_stdout.log", verifier_outcome.stdout, secrets, config.output_limit_bytes)

@@ -52,6 +52,20 @@ fn initialize_advertises_no_run_in_terminal_support() {
 }
 
 #[test]
+fn gdb_profile_uses_native_dap_interpreter_and_adapter_id() {
+    assert_eq!(
+        AdapterProfile::GdbDap.command_arguments(),
+        &["--interpreter=dap"]
+    );
+    let value = serde_json::to_value(AdapterProfile::GdbDap.initialize_arguments()).unwrap();
+    assert_eq!(value["adapterID"], "gdb");
+    assert_eq!(
+        AdapterProfile::GdbDap.attach_arguments(42),
+        json!({"pid":42})
+    );
+}
+
+#[test]
 fn initialize_arguments_advertise_phase_30f_client_capabilities() {
     let arguments = AdapterProfile::LldbDap.initialize_arguments();
     assert_eq!(arguments.supports_variable_type, Some(true));

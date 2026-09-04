@@ -54,6 +54,22 @@ class ManifestValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ManifestError, "pattern"):
                 load_task_manifest(manifest_path)
 
+    def test_repository_dap_fixtures_are_valid_and_require_debugger(self) -> None:
+        paths = sorted(
+            (REPO_ROOT / "scripts/competitive_eval/fixtures/dap").glob("*/task.json")
+        )
+        self.assertEqual(len(paths), 2)
+        identifiers = set()
+        for path in paths:
+            manifest = load_task_manifest(path)
+            identifiers.add(manifest["id"])
+            self.assertIn("debugger", manifest["agent"]["required_capabilities"])
+            self.assertEqual(manifest["setup"]["command"], "python3 setup.py")
+            self.assertTrue((path.parent / manifest["prompt_file"]).is_file())
+            self.assertTrue((path.parent / "setup.py").is_file())
+            self.assertTrue((path.parent / "verify.py").is_file())
+        self.assertEqual(len(identifiers), len(paths))
+
 
 class BaselineLockTests(unittest.TestCase):
     def test_repository_baseline_lock_is_valid(self) -> None:

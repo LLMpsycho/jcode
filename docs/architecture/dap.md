@@ -16,7 +16,9 @@ A manager permits one active root debug tree per owner and applies a global sess
 
 ## Process boundary
 
-The initial adapter profile is `kind = "lldb-dap"`. Jcode starts a configured absolute adapter executable with no shell. Programs, working directories, and breakpoint sources must resolve to canonical regular files inside the current workspace.
+The explicit adapter profiles are `kind = "lldb-dap"` and native `kind = "gdb-dap"`. Jcode starts a configured adapter executable with no shell, and the GDB profile adds only the fixed `--interpreter=dap` argument. Programs, working directories, and breakpoint sources must resolve to canonical regular files inside the current workspace.
+
+Omitted adapter selection is availability-gated and deterministic across the configured profiles. Explicit selection is fail-closed, so an unavailable requested adapter cannot silently switch debugger implementations.
 
 `attach` is owned attach, not arbitrary process attachment. Jcode starts the target itself, retains its process identity, and passes only that owned PID to the adapter. The tool schema has no PID input.
 
@@ -25,6 +27,10 @@ Adapter and target processes run in owned process groups with a controlled envir
 ## Protocol and data bounds
 
 DAP traffic uses bounded `Content-Length` framing. Incoming and outgoing JSON payloads are limited to 16 MiB. Pending requests, event queues, reverse-request responses, adapter stderr, retained output, stack frames, scopes, variables, strings, and evaluation results all have explicit limits.
+
+Jcode emits strictly positive sequence numbers. Incoming adapter responses and events also accept sequence zero for interoperability with the system `lldb-dap`, while reverse requests still require positive sequence numbers so correlated responses remain valid.
+
+Read-only stack and scope policy defaults to the stopped thread and top frame only when the manager can identify them unambiguously. `stepInTargets` uses the same bounded current-frame policy when no opaque frame token is supplied.
 
 Output is retained as a newest-first-safe UTF-8 tail with monotonic cursors. Pages report both ring eviction and source loss. Oversized output is dropped and counted. Loss of a non-output lifecycle event fails the session closed because state can no longer be trusted.
 

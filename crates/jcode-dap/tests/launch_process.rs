@@ -134,6 +134,29 @@ async fn real_process_launch_initializes_runs_and_terminates_adapter_tree() {
 }
 
 #[tokio::test]
+async fn real_process_gdb_profile_uses_native_dap_mode() {
+    let root = workspace("gdb-launch");
+    let ws = DebugWorkspaceKey::new(&root, "gdb-launch").unwrap();
+    let adapter = DebugAdapterConfig::gdb_dap(fixture()).unwrap();
+    let program = copy_target(&root);
+    let manager = manager(Duration::from_millis(100));
+    let snapshot = manager
+        .launch(
+            "owner",
+            ws,
+            &adapter,
+            DebugLaunchRequest::new(&program).with_arg("30"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snapshot.adapter_id, "gdb");
+    manager.terminate("owner", snapshot.id).await.unwrap();
+    let text = log(&root);
+    assert!(text.contains("adapter_arg\t--interpreter=dap"));
+    assert!(text.contains("\"adapterID\":\"gdb\""));
+}
+
+#[tokio::test]
 async fn real_process_lifecycle_system_pid_is_informational_only() {
     let (root, ws, adapter) = setup("lifecycle");
     fs::write(root.join("emit-lifecycle"), b"").unwrap();
@@ -211,6 +234,39 @@ async fn real_process_owned_attach_uses_the_manager_spawned_pid() {
     manager.terminate("owner", snapshot.id).await.unwrap();
     wait_group_gone(pid).await;
     assert!(log(&root).contains("\"terminateDebuggee\":false"));
+}
+
+#[tokio::test]
+async fn real_process_gdb_profile_applies_to_owned_attach() {
+    let root = workspace("gdb-attach");
+    let ws = DebugWorkspaceKey::new(&root, "gdb-attach").unwrap();
+    let adapter = DebugAdapterConfig::gdb_dap(fixture()).unwrap();
+    let program = root.join("target-probe");
+    fs::copy(fixture(), &program).unwrap();
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let marker = root.join("target-pid");
+    let manager = manager(Duration::from_millis(100));
+    let snapshot = manager
+        .spawn_and_attach(
+            "owner",
+            ws,
+            &adapter,
+            DebugOwnedAttachRequest::new(&program)
+                .with_arg("--target-probe")
+                .with_arg(marker.to_string_lossy().into_owned()),
+        )
+        .await
+        .unwrap();
+    let pid = match snapshot.start {
+        DebugSessionStart::OwnedAttach { pid, .. } => pid,
+        _ => panic!(),
+    };
+    wait_log(&root, &format!("verified_attach_pid\t{pid}")).await;
+    manager.terminate("owner", snapshot.id).await.unwrap();
+    wait_group_gone(pid).await;
+    let text = log(&root);
+    assert!(text.contains("adapter_arg\t--interpreter=dap"));
+    assert!(text.contains("\"adapterID\":\"gdb\""));
 }
 
 #[tokio::test]

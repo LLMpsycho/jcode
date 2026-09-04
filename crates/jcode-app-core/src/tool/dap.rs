@@ -2,26 +2,51 @@ use super::{Tool, ToolContext, ToolOutput};
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use jcode_dap::{
-    DebugAdapterConfig, DebugBreakpointId, DebugBreakpointMutation, DebugContinueRequest,
-    DebugEvaluateContext, DebugEvaluateOutcome, DebugEvaluateRequest, DebugEvaluateTarget,
-    DebugExecutionRevision, DebugLaunchRequest, DebugOutputCursor, DebugOwnedAttachRequest,
-    DebugPauseRequest, DebugRemoveBreakpointRequest, DebugScopesRequest, DebugSessionId,
-    DebugSessionManager, DebugSetBreakpointRequest, DebugSourceBreakpoint, DebugStackFrameHandle,
-    DebugStackTraceRequest, DebugStepRequest, DebugSteppingGranularity, DebugThreadId,
-    DebugVariableFilter, DebugVariableHandle, DebugVariablesRequest, DebugWorkspaceKey,
+    DebugAdapterConfig, DebugBreakpointMutation, DebugContinueRequest, DebugEvaluateContext,
+    DebugEvaluateOutcome, DebugEvaluateRequest, DebugEvaluateTarget, DebugLaunchRequest,
+    DebugOwnedAttachRequest, DebugPauseRequest, DebugRemoveBreakpointRequest, DebugScopesRequest,
+    DebugSessionId, DebugSessionManager, DebugSetBreakpointRequest, DebugSourceBreakpoint,
+    DebugStackFrameHandle, DebugStackTraceRequest, DebugStepInTargetsRequest, DebugStepRequest,
+    DebugSteppingGranularity, DebugTargetedStepInRequest, DebugThreadId, DebugVariableFilter,
+    DebugVariablesRequest, DebugWorkspaceKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 mod output;
+mod tokens;
+use tokens::TokenBroker;
+#[cfg(test)]
+use tokens::TokenKind;
 
 const MAX_OUTPUT_CHARS: usize = 24_000;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
+
+async fn resolve_frame_or_current<T, ResolveToken, ResolveCurrent, ResolveCurrentFuture>(
+    frame_token: Option<&str>,
+    thread_id: Option<DebugThreadId>,
+    resolve_token: ResolveToken,
+    resolve_current: ResolveCurrent,
+) -> Result<T>
+where
+    ResolveToken: FnOnce(&str) -> Result<T>,
+    ResolveCurrent: FnOnce(DebugStackTraceRequest) -> ResolveCurrentFuture,
+    ResolveCurrentFuture: Future<Output = Result<Option<T>>>,
+{
+    if let Some(frame_token) = frame_token {
+        return resolve_token(frame_token);
+    }
+    let mut request = DebugStackTraceRequest::new(1);
+    request.thread_id = thread_id;
+    resolve_current(request)
+        .await?
+        .ok_or_else(|| anyhow!("no current stack frame is available; supply a frame token"))
+}
 
 #[derive(Clone)]
 pub(crate) struct DapService {
@@ -103,455 +128,6 @@ impl DapService {
     }
 }
 
-struct TokenBroker {
-    max_per_owner: usize,
-    order: VecDeque<TokenKey>,
-    current_revisions: HashMap<String, HashMap<DebugSessionId, DebugExecutionRevision>>,
-    sessions: HashMap<String, Owned<DebugSessionId>>,
-    breakpoints: HashMap<String, Owned<DebugBreakpointId>>,
-    frames: HashMap<String, Owned<DebugStackFrameHandle>>,
-    variables: HashMap<String, Owned<DebugVariableHandle>>,
-    cursors: HashMap<String, Owned<DebugOutputCursor>>,
-    revisions: HashMap<String, Owned<DebugExecutionRevision>>,
-}
-
-struct Owned<T> {
-    owner: String,
-    session: Option<DebugSessionId>,
-    revision: Option<DebugExecutionRevision>,
-    value: T,
-}
-
-#[derive(Clone, Copy)]
-enum TokenKind {
-    Session,
-    Breakpoint,
-    Frame,
-    Variable,
-    Cursor,
-    Revision,
-}
-
-struct TokenKey {
-    kind: TokenKind,
-    token: String,
-}
-
-impl TokenBroker {
-    fn new(max_per_owner: usize) -> Self {
-        Self {
-            max_per_owner,
-            order: VecDeque::new(),
-            current_revisions: HashMap::new(),
-            sessions: HashMap::new(),
-            breakpoints: HashMap::new(),
-            frames: HashMap::new(),
-            variables: HashMap::new(),
-            cursors: HashMap::new(),
-            revisions: HashMap::new(),
-        }
-    }
-    fn token(prefix: &str) -> String {
-        format!("{prefix}_{}", Uuid::new_v4().simple())
-    }
-    fn owner_count(&self, owner: &str) -> usize {
-        self.sessions.values().filter(|v| v.owner == owner).count()
-            + self
-                .breakpoints
-                .values()
-                .filter(|v| v.owner == owner)
-                .count()
-            + self.frames.values().filter(|v| v.owner == owner).count()
-            + self.variables.values().filter(|v| v.owner == owner).count()
-            + self.cursors.values().filter(|v| v.owner == owner).count()
-            + self.revisions.values().filter(|v| v.owner == owner).count()
-    }
-
-    fn token_owner(&self, key: &TokenKey) -> Option<&str> {
-        match key.kind {
-            TokenKind::Session => self
-                .sessions
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-            TokenKind::Breakpoint => self
-                .breakpoints
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-            TokenKind::Frame => self
-                .frames
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-            TokenKind::Variable => self
-                .variables
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-            TokenKind::Cursor => self
-                .cursors
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-            TokenKind::Revision => self
-                .revisions
-                .get(&key.token)
-                .map(|entry| entry.owner.as_str()),
-        }
-    }
-
-    fn remove_token(&mut self, key: &TokenKey) {
-        match key.kind {
-            TokenKind::Session => {
-                self.sessions.remove(&key.token);
-            }
-            TokenKind::Breakpoint => {
-                self.breakpoints.remove(&key.token);
-            }
-            TokenKind::Frame => {
-                self.frames.remove(&key.token);
-            }
-            TokenKind::Variable => {
-                self.variables.remove(&key.token);
-            }
-            TokenKind::Cursor => {
-                self.cursors.remove(&key.token);
-            }
-            TokenKind::Revision => {
-                self.revisions.remove(&key.token);
-            }
-        }
-    }
-
-    fn record(&mut self, kind: TokenKind, token: String) {
-        self.order.push_back(TokenKey { kind, token });
-    }
-
-    fn compact_order(&mut self) {
-        let sessions = &self.sessions;
-        let breakpoints = &self.breakpoints;
-        let frames = &self.frames;
-        let variables = &self.variables;
-        let cursors = &self.cursors;
-        let revisions = &self.revisions;
-        self.order.retain(|key| match key.kind {
-            TokenKind::Session => sessions.contains_key(&key.token),
-            TokenKind::Breakpoint => breakpoints.contains_key(&key.token),
-            TokenKind::Frame => frames.contains_key(&key.token),
-            TokenKind::Variable => variables.contains_key(&key.token),
-            TokenKind::Cursor => cursors.contains_key(&key.token),
-            TokenKind::Revision => revisions.contains_key(&key.token),
-        });
-    }
-
-    fn ensure_capacity(&mut self, owner: &str) {
-        self.compact_order();
-        while self.owner_count(owner) >= self.max_per_owner {
-            let Some(index) = self
-                .order
-                .iter()
-                .position(|key| self.token_owner(key) == Some(owner))
-            else {
-                break;
-            };
-            if let Some(key) = self.order.remove(index) {
-                self.remove_token(&key);
-            }
-        }
-    }
-    fn reserve_capacity(
-        &mut self,
-        owner: &str,
-        count: usize,
-        preserve_sessions: bool,
-    ) -> Result<()> {
-        if count > self.max_per_owner {
-            bail!(
-                "DAP response requires {count} opaque handles but the per-owner capacity is {}",
-                self.max_per_owner
-            );
-        }
-        self.compact_order();
-        while self.owner_count(owner).saturating_add(count) > self.max_per_owner {
-            let Some(index) = self
-                .order
-                .iter()
-                .position(|key| {
-                    self.token_owner(key) == Some(owner)
-                        && (!preserve_sessions || !matches!(key.kind, TokenKind::Session))
-                })
-            else {
-                bail!("unable to reserve DAP opaque-handle capacity");
-            };
-            if let Some(key) = self.order.remove(index) {
-                self.remove_token(&key);
-            }
-        }
-        Ok(())
-    }
-    fn put_session(&mut self, owner: &str, value: DebugSessionId) -> String {
-        if let Some((token, _)) = self
-            .sessions
-            .iter()
-            .find(|(_, entry)| entry.owner == owner && entry.value == value)
-        {
-            return token.clone();
-        }
-        self.ensure_capacity(owner);
-        let t = Self::token("ds");
-        self.sessions.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: None,
-                revision: None,
-                value,
-            },
-        );
-        self.record(TokenKind::Session, t.clone());
-        t
-    }
-    fn put_breakpoint(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        value: DebugBreakpointId,
-    ) -> String {
-        if let Some((token, _)) = self.breakpoints.iter().find(|(_, entry)| {
-            entry.owner == owner && entry.session == Some(session) && entry.value == value
-        }) {
-            return token.clone();
-        }
-        self.ensure_capacity(owner);
-        let t = Self::token("db");
-        self.breakpoints.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: Some(session),
-                revision: None,
-                value,
-            },
-        );
-        self.record(TokenKind::Breakpoint, t.clone());
-        t
-    }
-    fn put_frame(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        revision: DebugExecutionRevision,
-        value: DebugStackFrameHandle,
-    ) -> String {
-        self.ensure_capacity(owner);
-        let t = Self::token("df");
-        self.frames.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: Some(session),
-                revision: Some(revision),
-                value,
-            },
-        );
-        self.record(TokenKind::Frame, t.clone());
-        t
-    }
-    fn put_variable(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        revision: DebugExecutionRevision,
-        value: DebugVariableHandle,
-    ) -> String {
-        self.ensure_capacity(owner);
-        let t = Self::token("dv");
-        self.variables.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: Some(session),
-                revision: Some(revision),
-                value,
-            },
-        );
-        self.record(TokenKind::Variable, t.clone());
-        t
-    }
-    fn put_cursor(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        value: DebugOutputCursor,
-    ) -> String {
-        self.ensure_capacity(owner);
-        let t = Self::token("do");
-        self.cursors.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: Some(session),
-                revision: None,
-                value,
-            },
-        );
-        self.record(TokenKind::Cursor, t.clone());
-        t
-    }
-    fn put_revision(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        value: DebugExecutionRevision,
-    ) -> String {
-        self.advance_revision(owner, session, value);
-        self.ensure_capacity(owner);
-        let t = Self::token("dr");
-        self.revisions.insert(
-            t.clone(),
-            Owned {
-                owner: owner.into(),
-                session: Some(session),
-                revision: Some(value),
-                value,
-            },
-        );
-        self.record(TokenKind::Revision, t.clone());
-        t
-    }
-
-    fn advance_revision(
-        &mut self,
-        owner: &str,
-        session: DebugSessionId,
-        revision: DebugExecutionRevision,
-    ) {
-        let previous = self
-            .current_revisions
-            .entry(owner.to_owned())
-            .or_default()
-            .insert(session, revision);
-        if previous.is_some_and(|previous| previous != revision) {
-            self.frames.retain(|_, entry| {
-                entry.owner != owner
-                    || entry.session != Some(session)
-                    || entry.revision == Some(revision)
-            });
-            self.variables.retain(|_, entry| {
-                entry.owner != owner
-                    || entry.session != Some(session)
-                    || entry.revision == Some(revision)
-            });
-            self.revisions.retain(|_, entry| {
-                entry.owner != owner
-                    || entry.session != Some(session)
-                    || entry.revision == Some(revision)
-            });
-            self.compact_order();
-        }
-    }
-    fn get<T: Clone>(
-        map: &HashMap<String, Owned<T>>,
-        owner: &str,
-        session: Option<DebugSessionId>,
-        token: &str,
-        kind: &str,
-    ) -> Result<T> {
-        let entry = map
-            .get(token)
-            .ok_or_else(|| anyhow!("unknown or expired {kind} token"))?;
-        if entry.owner != owner {
-            bail!("{kind} token is not owned by this session");
-        }
-        if session.is_some() && entry.session != session {
-            bail!("{kind} token belongs to a different debug session");
-        }
-        Ok(entry.value.clone())
-    }
-    fn session(&self, o: &str, t: &str) -> Result<DebugSessionId> {
-        Self::get(&self.sessions, o, None, t, "session")
-    }
-    fn breakpoint(&self, o: &str, s: DebugSessionId, t: &str) -> Result<DebugBreakpointId> {
-        Self::get(&self.breakpoints, o, Some(s), t, "breakpoint")
-    }
-    fn frame(&self, o: &str, s: DebugSessionId, t: &str) -> Result<DebugStackFrameHandle> {
-        self.get_revision_scoped(&self.frames, o, s, t, "frame")
-    }
-    fn variable(&self, o: &str, s: DebugSessionId, t: &str) -> Result<DebugVariableHandle> {
-        self.get_revision_scoped(&self.variables, o, s, t, "variables")
-    }
-    fn revision(&self, o: &str, s: DebugSessionId, t: &str) -> Result<DebugExecutionRevision> {
-        Self::get(&self.revisions, o, Some(s), t, "execution revision")
-    }
-    fn cursor(&self, o: &str, s: DebugSessionId, t: &str) -> Result<DebugOutputCursor> {
-        Self::get(&self.cursors, o, Some(s), t, "output cursor")
-    }
-    fn get_revision_scoped<T: Clone>(
-        &self,
-        map: &HashMap<String, Owned<T>>,
-        owner: &str,
-        session: DebugSessionId,
-        token: &str,
-        kind: &str,
-    ) -> Result<T> {
-        let entry = map
-            .get(token)
-            .ok_or_else(|| anyhow!("unknown or expired {kind} token"))?;
-        if entry.owner != owner {
-            bail!("{kind} token is not owned by this session");
-        }
-        if entry.session != Some(session) {
-            bail!("{kind} token belongs to a different debug session");
-        }
-        let current = self
-            .current_revisions
-            .get(owner)
-            .and_then(|revisions| revisions.get(&session));
-        if entry.revision.as_ref() != current {
-            bail!("stale {kind} token; refresh debugger state");
-        }
-        Ok(entry.value.clone())
-    }
-    fn remove_breakpoint_token(&mut self, token: &str) {
-        self.breakpoints.remove(token);
-    }
-    fn cleanup_owner(&mut self, owner: &str) {
-        self.sessions.retain(|_, v| v.owner != owner);
-        self.breakpoints.retain(|_, v| v.owner != owner);
-        self.frames.retain(|_, v| v.owner != owner);
-        self.variables.retain(|_, v| v.owner != owner);
-        self.cursors.retain(|_, v| v.owner != owner);
-        self.revisions.retain(|_, v| v.owner != owner);
-        self.current_revisions.remove(owner);
-    }
-    fn clear(&mut self) {
-        self.sessions.clear();
-        self.breakpoints.clear();
-        self.frames.clear();
-        self.variables.clear();
-        self.cursors.clear();
-        self.revisions.clear();
-        self.order.clear();
-        self.current_revisions.clear();
-    }
-    fn cleanup_session(&mut self, owner: &str, session: DebugSessionId) {
-        self.sessions
-            .retain(|_, value| value.owner != owner || value.value != session);
-        self.breakpoints
-            .retain(|_, v| v.owner != owner || v.session != Some(session));
-        self.frames
-            .retain(|_, v| v.owner != owner || v.session != Some(session));
-        self.variables
-            .retain(|_, v| v.owner != owner || v.session != Some(session));
-        self.cursors
-            .retain(|_, v| v.owner != owner || v.session != Some(session));
-        self.revisions
-            .retain(|_, v| v.owner != owner || v.session != Some(session));
-        if let Some(revisions) = self.current_revisions.get_mut(owner) {
-            revisions.remove(&session);
-            if revisions.is_empty() {
-                self.current_revisions.remove(owner);
-            }
-        }
-    }
-}
-
 fn adapter_path(
     adapters: &BTreeMap<String, jcode_dap::DapAdapterConfig>,
     adapter_id: &str,
@@ -559,9 +135,6 @@ fn adapter_path(
     let configured = adapters
         .get(adapter_id)
         .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
-    match configured.kind {
-        jcode_dap::DapAdapterKind::LldbDap => {}
-    }
     let command = configured.command.trim();
     let path = PathBuf::from(command);
     if path.is_absolute() {
@@ -574,6 +147,56 @@ fn adapter_path(
                 .find(|candidate| candidate.is_file())
         })
         .ok_or_else(|| anyhow!("DAP adapter command not found on PATH: {command}"))
+}
+
+fn configured_adapter(
+    adapters: &BTreeMap<String, jcode_dap::DapAdapterConfig>,
+    adapter_id: &str,
+) -> Result<DebugAdapterConfig> {
+    let configured = adapters
+        .get(adapter_id)
+        .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
+    let path = adapter_path(adapters, adapter_id)?;
+    match configured.kind {
+        jcode_dap::DapAdapterKind::LldbDap => DebugAdapterConfig::lldb_dap(path),
+        jcode_dap::DapAdapterKind::GdbDap => DebugAdapterConfig::gdb_dap(path),
+    }
+    .map_err(Into::into)
+}
+
+fn select_adapter(
+    adapters: &BTreeMap<String, jcode_dap::DapAdapterConfig>,
+    requested: Option<&str>,
+) -> Result<DebugAdapterConfig> {
+    if let Some(adapter_id) = requested {
+        return configured_adapter(adapters, adapter_id).with_context(|| {
+            format!(
+                "configured DAP adapter '{adapter_id}' is unavailable; install it or correct dap.adapters.{adapter_id}.command"
+            )
+        });
+    }
+
+    let mut first_failure = None;
+    if adapters.contains_key("lldb-dap") {
+        match configured_adapter(adapters, "lldb-dap") {
+            Ok(adapter) => return Ok(adapter),
+            Err(error) => first_failure = Some(error),
+        }
+    }
+    for adapter_id in adapters.keys().filter(|id| id.as_str() != "lldb-dap") {
+        match configured_adapter(adapters, adapter_id) {
+            Ok(adapter) => return Ok(adapter),
+            Err(error) => {
+                first_failure.get_or_insert(error);
+            }
+        }
+    }
+    let detail = first_failure
+        .map(|error| format!(": {error}"))
+        .unwrap_or_else(String::new);
+    bail!(
+        "no configured DAP adapter is available{detail}; install one or correct its dap.adapters.<id>.command"
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -597,6 +220,7 @@ struct Input {
     breakpoint: Option<String>,
     thread_id: Option<i32>,
     frame: Option<String>,
+    target: Option<String>,
     variables: Option<String>,
     cursor: Option<String>,
     start: Option<u32>,
@@ -627,10 +251,10 @@ impl Tool for DapTool {
         json!({
             "type":"object", "additionalProperties":false,
             "properties":{
-                "action":{"type":"string","enum":["launch","attach","set_breakpoint","remove_breakpoint","continue","pause","step_over","step_in","step_out","threads","stack_trace","scopes","variables","evaluate","output","sessions","terminate"]},
+                "action":{"type":"string","enum":["launch","attach","set_breakpoint","remove_breakpoint","continue","pause","step_over","step_in","step_out","threads","stack_trace","step_in_targets","scopes","variables","evaluate","output","sessions","terminate"]},
                 "session":{"type":"string"}, "adapter":{"type":"string"}, "program":{"type":"string"}, "args":{"type":"array","items":{"type":"string"}}, "cwd":{"type":"string"}, "stop_on_entry":{"type":"boolean"},
                 "source":{"type":"string"}, "line":{"type":"integer","minimum":1}, "column":{"type":"integer","minimum":1}, "condition":{"type":"string"}, "hit_condition":{"type":"string"}, "log_message":{"type":"string"}, "breakpoint":{"type":"string"},
-                "thread_id":{"type":"integer"}, "frame":{"type":"string"}, "variables":{"type":"string"}, "cursor":{"type":"string"}, "start":{"type":"integer","minimum":0}, "count":{"type":"integer","minimum":1,"maximum":200}, "filter":{"type":"string","enum":["named","indexed"]}, "granularity":{"type":"string","enum":["statement","line","instruction"]}, "context":{"type":"string","enum":["unspecified","watch","repl","hover","clipboard","variables"]},
+                "thread_id":{"type":"integer"}, "frame":{"type":"string"}, "target":{"type":"string"}, "variables":{"type":"string"}, "cursor":{"type":"string"}, "start":{"type":"integer","minimum":0}, "count":{"type":"integer","minimum":1,"maximum":200}, "filter":{"type":"string","enum":["named","indexed"]}, "granularity":{"type":"string","enum":["statement","line","instruction"]}, "context":{"type":"string","enum":["unspecified","watch","repl","hover","clipboard","variables"]},
                 "expression":{"type":"string"}, "execution_revision":{"type":"string"}, "allow_side_effects":{"type":"boolean"}, "intent":super::intent_schema_property()
             }, "required":["action","intent"]
         })
@@ -660,6 +284,38 @@ impl DapTool {
         Ok(count)
     }
 
+    async fn frame_or_current(
+        &self,
+        owner: &str,
+        id: DebugSessionId,
+        frame_token: Option<&str>,
+        thread_id: Option<DebugThreadId>,
+    ) -> Result<DebugStackFrameHandle> {
+        resolve_frame_or_current(
+            frame_token,
+            thread_id,
+            |frame_token| {
+                self.service
+                    .tokens
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .frame(owner, id, frame_token)
+            },
+            |request| async move {
+                Ok(self
+                    .service
+                    .manager
+                    .stack_trace(owner, id, request)
+                    .await?
+                    .frames
+                    .into_iter()
+                    .next()
+                    .map(|frame| frame.handle))
+            },
+        )
+        .await
+    }
+
     async fn execute_action(
         &self,
         p: &Input,
@@ -673,11 +329,7 @@ impl DapTool {
                     .program
                     .as_deref()
                     .ok_or_else(|| anyhow!("program is required"))?;
-                let adapter_id = p.adapter.as_deref().unwrap_or("lldb-dap");
-                let adapter = DebugAdapterConfig::lldb_dap(adapter_path(
-                    self.service.adapters.as_ref(),
-                    adapter_id,
-                )?)?;
+                let adapter = select_adapter(self.service.adapters.as_ref(), p.adapter.as_deref())?;
                 let snapshot = if p.action == "launch" {
                     let mut r = DebugLaunchRequest::new(program)
                         .with_args(p.args.clone())
@@ -774,6 +426,22 @@ impl DapTool {
                             .revision(owner, id, token)
                     })
                     .transpose()?;
+                let step_in_target = match (a, p.target.as_deref()) {
+                    ("step_in", Some(target_token)) => {
+                        if p.thread_id.is_some() {
+                            bail!("thread_id cannot be combined with a step-in target");
+                        }
+                        Some(
+                            self.service
+                                .tokens
+                                .lock()
+                                .unwrap_or_else(|x| x.into_inner())
+                                .step_in_target(owner, id, target_token)?,
+                        )
+                    }
+                    (_, Some(_)) => bail!("target is supported only by step_in"),
+                    (_, None) => None,
+                };
                 self.service
                     .tokens
                     .lock()
@@ -793,19 +461,33 @@ impl DapTool {
                         m.pause(owner, id, q).await?
                     }
                     _ => {
-                        let mut q = DebugStepRequest::default();
-                        q.thread_id = thread();
-                        q.expected_execution_revision = rev;
-                        q.granularity = match p.granularity.as_deref() {
+                        let granularity = match p.granularity.as_deref() {
                             None | Some("statement") => DebugSteppingGranularity::Statement,
                             Some("line") => DebugSteppingGranularity::Line,
                             Some("instruction") => DebugSteppingGranularity::Instruction,
                             Some(other) => bail!("unsupported step granularity: {other}"),
                         };
-                        match a {
-                            "step_over" => m.step_over(owner, id, q).await?,
-                            "step_in" => m.step_in(owner, id, q).await?,
-                            _ => m.step_out(owner, id, q).await?,
+                        if let Some(target) = step_in_target {
+                            m.step_in_target(
+                                owner,
+                                id,
+                                DebugTargetedStepInRequest {
+                                    target,
+                                    expected_execution_revision: rev,
+                                    granularity,
+                                },
+                            )
+                            .await?
+                        } else {
+                            let mut q = DebugStepRequest::default();
+                            q.thread_id = thread();
+                            q.expected_execution_revision = rev;
+                            q.granularity = granularity;
+                            match a {
+                                "step_over" => m.step_over(owner, id, q).await?,
+                                "step_in" => m.step_in(owner, id, q).await?,
+                                _ => m.step_out(owner, id, q).await?,
+                            }
                         }
                     }
                 };
@@ -914,26 +596,65 @@ impl DapTool {
                     "frames": frames
                 }))
             }
+            "step_in_targets" => {
+                let frame = self
+                    .frame_or_current(owner, id, p.frame.as_deref(), thread())
+                    .await?;
+                let expected_execution_revision = p
+                    .execution_revision
+                    .as_deref()
+                    .map(|token| {
+                        self.service
+                            .tokens
+                            .lock()
+                            .unwrap_or_else(|x| x.into_inner())
+                            .revision(owner, id, token)
+                    })
+                    .transpose()?;
+                let result = m
+                    .step_in_targets(
+                        owner,
+                        id,
+                        DebugStepInTargetsRequest {
+                            frame,
+                            expected_execution_revision,
+                        },
+                    )
+                    .await?;
+                let mut broker = self
+                    .service
+                    .tokens
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner());
+                let execution_revision = result.execution_revision;
+                broker.reserve_capacity(owner, result.targets.len().saturating_add(1), true)?;
+                let revision = broker.put_revision(owner, id, execution_revision);
+                let targets = result
+                    .targets
+                    .into_iter()
+                    .map(|target| {
+                        json!({
+                            "target": broker.put_step_in_target(
+                                owner,
+                                id,
+                                execution_revision,
+                                target.handle,
+                            ),
+                            "label": target.label,
+                            "line": target.line,
+                            "column": target.column,
+                            "end_line": target.end_line,
+                            "end_column": target.end_column,
+                            "instruction_pointer_reference": target.instruction_pointer_reference,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({"execution_revision": revision, "targets": targets}))
+            }
             "scopes" => {
-                let frame = if let Some(frame_token) = p.frame.as_deref() {
-                    self.service
-                        .tokens
-                        .lock()
-                        .unwrap_or_else(|x| x.into_inner())
-                        .frame(owner, id, frame_token)?
-                } else {
-                    let mut request = DebugStackTraceRequest::new(1);
-                    request.thread_id = thread();
-                    let stack = m.stack_trace(owner, id, request).await?;
-                    stack
-                        .frames
-                        .into_iter()
-                        .next()
-                        .map(|frame| frame.handle)
-                        .ok_or_else(|| {
-                            anyhow!("no current stack frame is available; supply a frame token")
-                        })?
-                };
+                let frame = self
+                    .frame_or_current(owner, id, p.frame.as_deref(), thread())
+                    .await?;
                 let expected_execution_revision = p
                     .execution_revision
                     .as_deref()
@@ -1119,7 +840,8 @@ impl DapTool {
                             .lock()
                             .unwrap_or_else(|x| x.into_inner());
                         let execution_revision = v.execution_revision;
-                        let handle_count = usize::from(v.variables.is_expandable()).saturating_add(1);
+                        let handle_count =
+                            usize::from(v.variables.is_expandable()).saturating_add(1);
                         b.reserve_capacity(owner, handle_count, true)?;
                         let revision = b.put_revision(owner, id, execution_revision);
                         let variables = v
