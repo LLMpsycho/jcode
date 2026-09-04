@@ -37,15 +37,16 @@ jobs:
           git status --short --branch
           git log -1 --oneline
           echo '=== advisor manager lifecycle callsites ==='
-          rg -n 'advisor_manager\(\).*\.(remove|set_enabled|resolve_note|snapshot|notes|is_enabled|blocks_tool_call)|advisor_manager\(\)' crates/jcode-app-core/src | head -200 || true
+          grep -R -n -E 'advisor_manager\(\)' crates/jcode-app-core/src | head -200 || true
           echo '=== compaction/rewind/reset callsites ==='
-          rg -n 'Compacted|compaction|rewind_to_message|undo_rewind|reset_runtime_state_for_session_change' crates/jcode-app-core/src/agent crates/jcode-app-core/src/server | head -250 || true
+          grep -R -n -E 'Compacted|compaction|rewind_to_message|undo_rewind|reset_runtime_state_for_session_change' crates/jcode-app-core/src/agent crates/jcode-app-core/src/server | head -250 || true
           echo '=== AdvisorConfig ==='
-          rg -n -B8 -A90 'struct AdvisorConfig|enum AdvisorMode|enum AdvisorSeverity' crates/jcode-config-types crates/jcode-base | head -260 || true
+          grep -R -n -B8 -A90 -E 'struct AdvisorConfig|enum AdvisorMode|enum AdvisorSeverity' crates/jcode-config-types crates/jcode-base | head -320 || true
           echo '=== provider routing surface ==='
-          rg -n 'model_routes|set_route_selection|active_credential|credential_mode|RouteSelection|RuntimeKey' crates/jcode-provider-core crates/jcode-app-core/src/provider crates/jcode-app-core/src/agent | head -300 || true
+          grep -R -n -E 'model_routes|set_route_selection|active_credential|credential_mode|RouteSelection|RuntimeKey' crates/jcode-provider-core crates/jcode-app-core/src/provider crates/jcode-app-core/src/agent | head -320 || true
           echo '=== tool registry direct map uses ==='
-          rg -n 'tools\.(insert|get|remove)|tools\.iter|tools\.values|tools\.keys|register\(' crates/jcode-app-core/src/tool/mod.rs crates/jcode-app-core/src/mcp | head -300 || true
+          grep -n -E 'tools\.(insert|get|remove)|tools\.iter|tools\.values|tools\.keys|register\(' crates/jcode-app-core/src/tool/mod.rs | head -320 || true
+          grep -R -n -E '\.register\(' crates/jcode-app-core/src/mcp | head -120 || true
           echo '=== phase acceptance/selfdev/socket tests ==='
           find crates -type f \( -path '*test*' -o -name '*tests.rs' \) | grep -E 'selfdev|socket|advisor|reload|resume' | sort | head -250 || true
           echo '=== plan audit docs ==='
