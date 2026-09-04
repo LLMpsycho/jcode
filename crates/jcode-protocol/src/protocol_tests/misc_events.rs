@@ -129,6 +129,41 @@ fn test_input_shell_result_event_roundtrip() -> Result<()> {
 }
 
 #[test]
+fn test_advisor_control_roundtrips() -> Result<()> {
+    let requests = [
+        AdvisorRequest::Status,
+        AdvisorRequest::Inspect,
+        AdvisorRequest::Dismiss("adv-0000000000000001".to_string()),
+        AdvisorRequest::Acknowledge("adv-0000000000000002".to_string()),
+        AdvisorRequest::Enable,
+        AdvisorRequest::Disable,
+    ];
+    for (index, request) in requests.into_iter().enumerate() {
+        let request = Request::Advisor {
+            id: index as u64 + 1,
+            request,
+        };
+        let json = serde_json::to_string(&request)?;
+        assert!(json.contains("\"type\":\"advisor\""));
+        assert!(matches!(parse_request_json(&json)?, Request::Advisor { .. }));
+    }
+
+    let event = ServerEvent::AdvisorResult {
+        id: 7,
+        result: AdvisorControlResult {
+            message: "Advisor: on (Ready)".to_string(),
+        },
+    };
+    let json = encode_event(&event);
+    let ServerEvent::AdvisorResult { id, result } = parse_event_json(json.trim())? else {
+        return Err(anyhow!("expected AdvisorResult"));
+    };
+    assert_eq!(id, 7);
+    assert_eq!(result.message, "Advisor: on (Ready)");
+    Ok(())
+}
+
+#[test]
 fn test_protocol_enum_roundtrips_cover_wire_names() -> Result<()> {
     let transcript_modes = [
         (TranscriptMode::Insert, "insert"),

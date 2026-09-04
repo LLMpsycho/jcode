@@ -65,13 +65,23 @@ foundation from the full advisor product.
 
 - The protocol supports advisor status, inspect, dismiss, acknowledge, enable,
   and disable requests against the connection's active session.
+- The reusable server client exposes the same advisor request surface, so remote
+  clients do not need to construct wire JSON directly.
 - Remote TUI clients expose those controls as `/advisor status|inspect|dismiss
   <id>|ack <id>|on|off` and render the server result in chat.
 - Unresolved severity-derived blocking notes gate only future risky write, exec,
   publication, scheduling, desktop-control, and MCP tool starts. Read-only tools
   remain available. Acknowledge, dismiss, or session disable releases the gate.
-- The check occurs immediately before registry execution. It does not cancel or
-  otherwise affect a tool that was already running when a note arrived.
+- The check occurs centrally immediately before registry execution, including
+  subcalls made through `batch`. It does not cancel or otherwise affect a tool
+  that was already running when a note arrived.
+- Read-versus-risky classification uses each tool's action and apply fields when
+  available. Unknown actions on stateful tools fail closed. DAP evaluation is
+  treated as risky because expressions may mutate the debug target.
+- A per-session enable overrides the disabled-by-default configuration without
+  allocating runtime state while both the configured default and override are
+  disabled. Disabling fences active and queued reviews so a late completion
+  cannot publish a note or re-establish a blocker.
 
 ### Mode contracts
 
@@ -105,7 +115,19 @@ Focused tests exercise:
 - severity-derived urgency and safe-boundary soft-interrupt delivery;
 - distinct tool-less contracts for all three configured advisor modes;
 - opaque bounded note metadata and blocker release after acknowledge or disable;
+- explicit enable override, effective status reporting, and in-flight disable
+  publication fencing;
+- action-aware risky-tool classification and central enforcement for a mutating
+  subcall nested inside `batch`, including proof that the target file is not
+  created;
+- advisor request/result protocol round trips for every control variant;
 - compilation of streaming and non-streaming turn lifecycle integration.
+
+An isolated installed-binary acceptance run also exercised one live server
+session through the public socket protocol. It observed one primary provider
+turn with the normal tool surface, one tool-less advisor request, retained and
+inspected an opaque blocker note, reported effective on/off/on status across
+disable and enable, and acknowledged the inspected note successfully.
 
 The focused test and compile commands are recorded in the implementing commit.
 This evidence validates the foundation contracts, not the remaining Phase 4

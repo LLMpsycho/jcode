@@ -802,6 +802,14 @@ impl Registry {
         // Drop the lock before executing
         drop(tools);
 
+        if let Some(message) = crate::advisor::advisor_manager().blocks_tool_call(
+            &ctx.session_id,
+            resolved_name,
+            &input,
+        ) {
+            return Err(anyhow::anyhow!(message));
+        }
+
         // User-configured pre_tool gate: external policy hook that can block
         // this call (exit 2). Skipped entirely when not configured.
         if crate::hooks::hook_configured("pre_tool") {

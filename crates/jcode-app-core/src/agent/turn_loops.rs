@@ -1042,13 +1042,7 @@ impl Agent {
                     model: Some(self.provider.model()),
                 }));
 
-                let result = if let Some(message) =
-                    crate::advisor::advisor_manager().blocks_tool(&self.session.id, &tc.name)
-                {
-                    Err(anyhow::anyhow!(message))
-                } else {
-                    self.registry.execute(&tc.name, tc.input.clone(), ctx).await
-                };
+                let result = self.registry.execute(&tc.name, tc.input.clone(), ctx).await;
                 crate::telemetry::record_tool_call();
                 self.unlock_tools_if_needed(&tc.name);
                 let tool_elapsed = tool_start.elapsed();
