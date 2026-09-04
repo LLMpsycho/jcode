@@ -6,6 +6,8 @@ pub(super) fn handle_tool_done(
     id: String,
     name: String,
     output: String,
+    title: Option<String>,
+    _metadata: Option<serde_json::Value>,
     error: Option<String>,
 ) -> bool {
     let display_output = remote.handle_tool_done(&id, &name, &output);
@@ -40,7 +42,7 @@ pub(super) fn handle_tool_done(
         content: display_output,
         tool_calls: vec![],
         duration_secs: None,
-        title: None,
+        title,
         tool_data: Some(tool_call.clone()),
     });
     app.note_todo_gate_result(&tool_call, &output, error.is_some());

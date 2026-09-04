@@ -160,6 +160,8 @@ fn test_tool_events() {
             kind: TimelineEventKind::ToolDone {
                 name: "file_read".to_string(),
                 output: "fn main() {}".to_string(),
+                title: Some("Read test.rs".to_string()),
+                metadata: Some(serde_json::json!({"version": 1})),
                 is_error: false,
             },
         },
@@ -182,6 +184,19 @@ fn test_tool_events() {
     assert!(types.contains(&"start"));
     assert!(types.contains(&"exec"));
     assert!(types.contains(&"done"));
+    let done = replay_events.iter().find_map(|(_, event)| match event {
+        ReplayEvent::Server(ServerEvent::ToolDone {
+            title, metadata, ..
+        }) => Some((title, metadata)),
+        _ => None,
+    });
+    assert_eq!(
+        done,
+        Some((
+            &Some("Read test.rs".to_string()),
+            &Some(serde_json::json!({"version": 1})),
+        ))
+    );
 }
 
 #[test]
@@ -482,6 +497,8 @@ fn test_tool_ids_match_between_start_and_done() {
             kind: TimelineEventKind::ToolDone {
                 name: "file_read".to_string(),
                 output: "fn main() {}".to_string(),
+                title: None,
+                metadata: None,
                 is_error: false,
             },
         },
@@ -530,6 +547,8 @@ fn test_batch_tool_input_preserved() {
                 kind: TimelineEventKind::ToolDone {
                     name: "batch".to_string(),
                     output: "--- [1] file_read ---\nok\n--- [2] file_read ---\nok\n--- [3] file_grep ---\nok".to_string(),
+                    title: None,
+                    metadata: None,
                     is_error: false,
                 },
             },
@@ -599,6 +618,8 @@ fn test_auto_edit_compresses_tool_spans() {
             kind: TimelineEventKind::ToolDone {
                 name: "file_read".into(),
                 output: "ok".into(),
+                title: None,
+                metadata: None,
                 is_error: false,
             },
         },
@@ -662,6 +683,8 @@ fn test_auto_edit_compresses_post_tool_idle_gap() {
             kind: TimelineEventKind::ToolDone {
                 name: "selfdev".into(),
                 output: "Reload initiated. Process restarting...".into(),
+                title: None,
+                metadata: None,
                 is_error: false,
             },
         },

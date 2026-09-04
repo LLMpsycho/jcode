@@ -32,6 +32,88 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+pub const MAX_TOOL_DONE_TITLE_CHARS: usize = 512;
+pub const MAX_TOOL_DONE_METADATA_BYTES: usize = 16 * 1024;
+
+/// Bound optional presentation fields before placing them on the event bus.
+/// Tool output text is intentionally not modified here.
+pub fn bounded_tool_done_fields(
+    title: Option<String>,
+    metadata: Option<serde_json::Value>,
+) -> (Option<String>, Option<serde_json::Value>) {
+    let title = title.map(|title| title.chars().take(MAX_TOOL_DONE_TITLE_CHARS).collect());
+    let metadata = metadata.filter(|metadata| {
+        serde_json::to_vec(metadata)
+            .map(|bytes| bytes.len() <= MAX_TOOL_DONE_METADATA_BYTES)
+            .unwrap_or(false)
+    });
+    (title, metadata)
+}
+
+#[cfg(test)]
+mod tool_done_field_tests {
+    use super::{
+        MAX_TOOL_DONE_METADATA_BYTES, MAX_TOOL_DONE_TITLE_CHARS, ServerEvent,
+        bounded_tool_done_fields,
+    };
+
+    #[test]
+    fn bounds_title_by_unicode_characters() {
+        let title = "🦀".repeat(MAX_TOOL_DONE_TITLE_CHARS + 1);
+        let (title, metadata) = bounded_tool_done_fields(Some(title), None);
+        assert_eq!(
+            title.expect("title").chars().count(),
+            MAX_TOOL_DONE_TITLE_CHARS
+        );
+        assert_eq!(metadata, None);
+    }
+
+    #[test]
+    fn drops_metadata_over_serialized_byte_limit() {
+        let metadata = serde_json::json!({"payload": "x".repeat(MAX_TOOL_DONE_METADATA_BYTES)});
+        let (_, metadata) = bounded_tool_done_fields(None, Some(metadata));
+        assert_eq!(metadata, None);
+    }
+
+    #[test]
+    fn preserves_fields_within_limits() {
+        let metadata = serde_json::json!({"protocol": "jcode.dap.v1", "version": 1});
+        let fields = bounded_tool_done_fields(Some("Debug result".into()), Some(metadata.clone()));
+        assert_eq!(fields, (Some("Debug result".into()), Some(metadata)));
+    }
+
+    #[test]
+    fn metadata_limit_is_measured_after_json_serialization() {
+        let payload_len = MAX_TOOL_DONE_METADATA_BYTES - r#"{"payload":""}"#.len();
+        let metadata = serde_json::json!({"payload": "x".repeat(payload_len)});
+        assert_eq!(
+            serde_json::to_vec(&metadata).unwrap().len(),
+            MAX_TOOL_DONE_METADATA_BYTES
+        );
+        assert!(bounded_tool_done_fields(None, Some(metadata)).1.is_some());
+    }
+
+    #[test]
+    fn tool_done_additive_fields_are_backward_compatible() {
+        let old: ServerEvent = serde_json::from_value(serde_json::json!({
+            "type": "tool_done",
+            "id": "c1",
+            "name": "bash",
+            "output": "ok",
+            "error": null
+        }))
+        .expect("old ToolDone payload should decode");
+        let ServerEvent::ToolDone {
+            title, metadata, ..
+        } = old
+        else {
+            panic!("expected ToolDone");
+        };
+        assert_eq!(title, None);
+        assert_eq!(metadata, None);
+    }
+}
+
 /// Client request to server
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -793,6 +875,10 @@ pub enum ServerEvent {
         id: String,
         name: String,
         output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },

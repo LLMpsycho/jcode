@@ -1059,6 +1059,8 @@ export class JcodeClient extends EventEmitter {
             callId: event.call_id,
             name: event.name,
             output: event.output,
+            title: event.title,
+            metadata: event.metadata,
             error: event.error,
           });
           break;
@@ -1137,7 +1139,14 @@ export class JcodeClient extends EventEmitter {
 export interface TurnResult {
   text: string;
   reasoning: string;
-  toolCalls: Array<{ callId: string; name: string; output: string; error?: string }>;
+  toolCalls: Array<{
+    callId: string;
+    name: string;
+    output: string;
+    title?: string;
+    metadata?: unknown;
+    error?: string;
+  }>;
   usage?: { input: number; output: number; cacheReadInput?: number };
 }
 

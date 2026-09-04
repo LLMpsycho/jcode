@@ -79,6 +79,10 @@ pub enum ApiEvent {
         name: String,
         output: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
 

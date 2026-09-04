@@ -992,6 +992,11 @@ impl BridgeState {
                 call_id: event["id"].as_str().unwrap_or("").to_string(),
                 name: event["name"].as_str().unwrap_or("").to_string(),
                 output: event["output"].as_str().unwrap_or("").to_string(),
+                title: event["title"].as_str().map(str::to_string),
+                metadata: event
+                    .get("metadata")
+                    .cloned()
+                    .filter(|value| !value.is_null()),
                 error: event["error"].as_str().map(str::to_string),
             })],
             "side_pane_images" => vec![ServerFrame::event(ApiEvent::SidePaneImages {

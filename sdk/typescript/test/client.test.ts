@@ -108,6 +108,8 @@ test("run() collects a full turn and auto-approves permissions", async () => {
           call_id: "c1",
           name: "bash",
           output: "ok",
+          title: "Shell command",
+          metadata: { version: 1, exitCode: 0 },
         });
         send({ v: 1, ev: "token_usage", session_id: s, input: 10, output: 4 });
         // A different session must not leak into this turn.
@@ -124,7 +126,14 @@ test("run() collects a full turn and auto-approves permissions", async () => {
   assert.equal(turn.text, "hello world");
   assert.equal(turn.reasoning, "think");
   assert.deepEqual(turn.toolCalls, [
-    { callId: "c1", name: "bash", output: "ok", error: undefined },
+    {
+      callId: "c1",
+      name: "bash",
+      output: "ok",
+      title: "Shell command",
+      metadata: { version: 1, exitCode: 0 },
+      error: undefined,
+    },
   ]);
   assert.deepEqual(turn.usage, { input: 10, output: 4, cacheReadInput: undefined });
   client.close();

@@ -142,6 +142,8 @@ export type ApiEvent =
       call_id: string;
       name: string;
       output: string;
+      title?: string;
+      metadata?: unknown;
       error?: string;
     }
   | { ev: "side_pane_images"; session_id: string; images: RenderedImage[] }

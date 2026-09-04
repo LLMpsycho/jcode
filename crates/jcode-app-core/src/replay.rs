@@ -56,6 +56,10 @@ pub enum TimelineEventKind {
     ToolDone {
         name: String,
         output: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<serde_json::Value>,
         #[serde(default)]
         is_error: bool,
     },
@@ -206,6 +210,8 @@ pub fn export_timeline(session: &Session) -> Vec<TimelineEvent> {
                             kind: TimelineEventKind::ToolDone {
                                 name: tool_name,
                                 output: truncate_for_timeline(content),
+                                title: None,
+                                metadata: None,
                                 is_error: is_error.unwrap_or(false),
                             },
                         });
@@ -473,6 +479,8 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
             TimelineEventKind::ToolDone {
                 name,
                 output,
+                title,
+                metadata,
                 is_error,
             } => {
                 let id = pending_tool_ids.pop().unwrap_or_else(|| {
@@ -485,6 +493,8 @@ pub fn timeline_to_replay_events(timeline: &[TimelineEvent]) -> Vec<(u64, Replay
                         id,
                         name: name.clone(),
                         output: output.clone(),
+                        title: title.clone(),
+                        metadata: metadata.clone(),
                         error: if *is_error {
                             Some(output.clone())
                         } else {

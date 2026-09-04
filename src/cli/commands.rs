@@ -3168,6 +3168,8 @@ fn emit_ndjson_event(
             id,
             name,
             output,
+            title,
+            metadata,
             error,
         } => write_json_line(
             stdout,
@@ -3176,6 +3178,8 @@ fn emit_ndjson_event(
                 "id": id,
                 "name": name,
                 "output": output,
+                "title": title,
+                "metadata": metadata,
                 "error": error,
             }),
         ),

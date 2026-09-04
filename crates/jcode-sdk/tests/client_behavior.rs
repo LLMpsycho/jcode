@@ -477,6 +477,8 @@ fn run_collects_one_turn() {
                     call_id: "c1".to_string(),
                     name: "bash".to_string(),
                     output: "ok".to_string(),
+                    title: Some("Shell command".to_string()),
+                    metadata: Some(serde_json::json!({"version": 1, "exitCode": 0})),
                     error: None,
                 },
                 writer,
@@ -508,6 +510,14 @@ fn run_collects_one_turn() {
     assert_eq!(turn.reasoning, "thinking");
     assert_eq!(turn.tool_calls.len(), 1);
     assert_eq!(turn.tool_calls[0].name, "bash");
+    assert_eq!(turn.tool_calls[0].title.as_deref(), Some("Shell command"));
+    assert_eq!(
+        turn.tool_calls[0]
+            .metadata
+            .as_ref()
+            .and_then(|v| v["exitCode"].as_i64()),
+        Some(0)
+    );
     assert_eq!(turn.usage.expect("usage").input, 10);
 }
 
