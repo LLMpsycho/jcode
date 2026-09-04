@@ -2,7 +2,7 @@ use crate::agent::Agent;
 use crate::protocol::ServerEvent;
 use crate::provider::Provider;
 use crate::server::{
-    SessionInterruptQueues, SwarmMember, VersionedPlan, broadcast_swarm_status,
+    FileSnapshotLedger, SessionInterruptQueues, SwarmMember, VersionedPlan, broadcast_swarm_status,
     register_background_tool_signal, register_session_interrupt_queue, swarm_id_for_session,
 };
 use crate::tool::Registry;
@@ -44,6 +44,7 @@ pub(super) async fn create_headless_session(
     swarm_coordinators: &Arc<RwLock<HashMap<String, String>>>,
     _swarm_plans: &Arc<RwLock<HashMap<String, VersionedPlan>>>,
     soft_interrupt_queues: &SessionInterruptQueues,
+    file_snapshots: &FileSnapshotLedger,
     selfdev_requested: bool,
     model_override: Option<String>,
     provider_key_override: Option<String>,
@@ -68,7 +69,8 @@ pub(super) async fn create_headless_session(
     };
 
     let provider = provider_template.fork();
-    let registry = Registry::new(provider.clone()).await;
+    let registry =
+        Registry::new_with_file_snapshots(provider.clone(), file_snapshots.clone()).await;
 
     if memory_scope == HeadlessMemoryScope::IsolatedTest {
         registry.enable_memory_test_mode().await;

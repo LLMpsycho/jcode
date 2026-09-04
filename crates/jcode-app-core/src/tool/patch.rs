@@ -1,22 +1,55 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::server::FileSnapshotLedger;
+use crate::tool::file_write_guard::{
+    FileWriteGuard, GuardedFile, RequiredCoverage, full_file_range, metadata_for_writes,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use jcode_edit_core::LineRange;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
-pub struct PatchTool;
+pub struct PatchTool {
+    write_guard: Option<FileWriteGuard>,
+}
 
 impl PatchTool {
     pub fn new() -> Self {
-        Self
+        Self { write_guard: None }
+    }
+
+    pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
+        Self {
+            write_guard: Some(FileWriteGuard::new(file_snapshots)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_guard(write_guard: FileWriteGuard) -> Self {
+        Self {
+            write_guard: Some(write_guard),
+        }
     }
 }
 
 #[derive(Deserialize)]
 struct PatchInput {
+    #[serde(default)]
+    intent: Option<String>,
     patch_text: String,
+}
+
+struct PreparedPatch {
+    path: String,
+    resolved_path: std::path::PathBuf,
+    old_content: String,
+    new_content: Option<String>,
+    message: String,
+    diff: String,
+    guarded: Option<GuardedFile>,
 }
 
 #[derive(Debug)]
@@ -70,27 +103,122 @@ impl Tool for PatchTool {
         // Watch config.toml across the whole invocation so an edit that lands
         // on it is reported regardless of which patch produced it.
         let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
-        let mut results = Vec::new();
-
-        for patch in patches {
+        let transaction = match &self.write_guard {
+            Some(guard) => Some(guard.begin(&ctx).await?),
+            None => None,
+        };
+        let mut prepared = Vec::with_capacity(patches.len());
+        for patch in &patches {
             let resolved_path = ctx.resolve_path(Path::new(&patch.path));
-            let result = apply_patch_with_diff(&patch, &resolved_path).await;
-            match result {
-                Ok((msg, diff)) => {
-                    if diff.is_empty() {
-                        results.push(format!("✓ {}: {}", patch.path, msg));
-                    } else {
-                        results.push(format!("✓ {}: {}\n{}", patch.path, msg, diff));
+            let (old_content, new_content, message, diff) =
+                prepare_patch_with_diff(patch, &resolved_path).await?;
+            let guarded = match &transaction {
+                Some(transaction) if !old_content.is_empty() || resolved_path.exists() => Some(
+                    transaction
+                        .preflight_existing(
+                            &resolved_path,
+                            old_content.as_bytes(),
+                            RequiredCoverage::Ranges(if patch.is_delete {
+                                full_file_range(&old_content)
+                            } else {
+                                patch_ranges(patch, &old_content)
+                            }),
+                        )
+                        .await?,
+                ),
+                Some(transaction) => Some(transaction.prepare_new(&resolved_path)?),
+                None => None,
+            };
+            prepared.push(PreparedPatch {
+                path: patch.path.clone(),
+                resolved_path,
+                old_content,
+                new_content,
+                message,
+                diff,
+                guarded,
+            });
+        }
+
+        let mut results = Vec::new();
+        let mut recorded_writes = Vec::new();
+
+        for prepared in prepared {
+            match &prepared.new_content {
+                Some(content) => {
+                    if let Some(parent) = prepared.resolved_path.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
                     }
+                    tokio::fs::write(&prepared.resolved_path, content).await?;
                 }
-                Err(e) => results.push(format!("✗ {}: {}", patch.path, e)),
+                None => tokio::fs::remove_file(&prepared.resolved_path).await?,
             }
+            if let (Some(transaction), Some(guarded)) = (&transaction, prepared.guarded.clone()) {
+                recorded_writes.push(
+                    transaction
+                        .record_success(
+                            guarded,
+                            &prepared.resolved_path,
+                            prepared.new_content.as_deref().unwrap_or("").as_bytes(),
+                        )
+                        .await?,
+                );
+            }
+            Bus::global().publish(BusEvent::FileTouch(FileTouch {
+                session_id: ctx.session_id.clone(),
+                path: prepared.resolved_path.clone(),
+                op: FileOp::Edit,
+                intent: params
+                    .intent
+                    .clone()
+                    .filter(|value| !value.trim().is_empty()),
+                summary: Some(format!("{} via patch", prepared.message)),
+                detail: Some(prepared.diff.clone()).filter(|value| !value.is_empty()),
+            }));
+            let mut result = if prepared.diff.is_empty() {
+                format!("✓ {}: {}", prepared.path, prepared.message)
+            } else {
+                format!(
+                    "✓ {}: {}\n{}",
+                    prepared.path, prepared.message, prepared.diff
+                )
+            };
+            if let Some(guarded) = &prepared.guarded {
+                guarded.append_warnings(&mut result);
+            }
+            results.push(result);
+            let _ = prepared.old_content;
         }
 
         let mut body = results.join("\n\n");
         config_watch.finish(&mut body);
-        Ok(ToolOutput::new(body))
+        let output = ToolOutput::new(body);
+        Ok(if recorded_writes.is_empty() {
+            output
+        } else {
+            output.with_metadata(metadata_for_writes(&recorded_writes))
+        })
     }
+}
+
+fn patch_ranges(patch: &FilePatch, contents: &str) -> Vec<LineRange> {
+    let line_count = contents.lines().count() as u64;
+    patch
+        .hunks
+        .iter()
+        .filter_map(|hunk| {
+            if line_count == 0 {
+                return None;
+            }
+            let start = (hunk.old_start as u64).clamp(1, line_count);
+            let end = if hunk.old_lines.is_empty() {
+                start
+            } else {
+                (start + hunk.old_lines.len() as u64 - 1).min(line_count)
+            };
+            Some(LineRange { start, end })
+        })
+        .collect()
 }
 
 fn parse_patch(text: &str) -> Result<Vec<FilePatch>> {
@@ -210,15 +338,17 @@ fn parse_hunk(lines: &[&str], i: &mut usize) -> Option<Hunk> {
     })
 }
 
-/// Apply a patch and return (status_message, diff_output)
-async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String, String)> {
+/// Compute a patch result without mutating disk.
+async fn prepare_patch_with_diff(
+    patch: &FilePatch,
+    path: &Path,
+) -> Result<(String, Option<String>, String, String)> {
     // Handle deletion
     if patch.is_delete {
         if path.exists() {
             let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
-            tokio::fs::remove_file(path).await?;
             let diff = generate_diff(&old_content, "", 1);
-            return Ok(("deleted".to_string(), diff));
+            return Ok((old_content, None, "deleted".to_string(), diff));
         } else {
             return Err(anyhow::anyhow!("file does not exist"));
         }
@@ -230,11 +360,6 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
             return Err(anyhow::anyhow!("file already exists"));
         }
 
-        // Create parent directories
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
         // Collect all new lines from hunks
         let content: String = patch
             .hunks
@@ -243,9 +368,8 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
             .map(|l| format!("{}\n", l))
             .collect();
 
-        tokio::fs::write(path, &content).await?;
         let diff = generate_diff("", &content, 1);
-        return Ok(("created".to_string(), diff));
+        return Ok((String::new(), Some(content), "created".to_string(), diff));
     }
 
     // Handle modification
@@ -269,10 +393,13 @@ async fn apply_patch_with_diff(patch: &FilePatch, path: &Path) -> Result<(String
     }
 
     let new_content = lines.join("\n") + "\n";
-    tokio::fs::write(path, &new_content).await?;
-
     let diff = generate_diff(&old_content, &new_content, first_line);
-    Ok((format!("modified ({} hunks)", patch.hunks.len()), diff))
+    Ok((
+        old_content,
+        Some(new_content),
+        format!("modified ({} hunks)", patch.hunks.len()),
+        diff,
+    ))
 }
 
 /// Generate a compact diff with line numbers (max 30 lines)

@@ -1,0 +1,1 @@
+{"id":"mock-unsupported","category":"deterministic","description":"Mock agent lacks a required capability.","fixture":{"source":"."},"prompt_file":"prompt.md","verifier":{"command":"python3 verify.py","timeout_seconds":2},"agent":{"timeout_seconds":2,"required_capabilities":["debugger"]},"expected":{"exit_code":0,"forbidden_side_effects":[]},"tags":["mock:unsupported"]}

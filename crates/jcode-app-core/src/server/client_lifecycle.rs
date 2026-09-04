@@ -46,9 +46,9 @@ use super::provider_control::{
     try_available_models_updated_event,
 };
 use super::{
-    AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileTouchService,
-    SessionControlHandle, SessionInterruptQueues, SharedContext, SwarmEvent, SwarmMember,
-    SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
+    AwaitMembersRuntime, ClientConnectionInfo, ClientDebugState, FileSnapshotLedger,
+    FileTouchService, SessionControlHandle, SessionInterruptQueues, SharedContext, SwarmEvent,
+    SwarmMember, SwarmMutationRuntime, VersionedPlan, format_structured_completion_report,
     register_session_interrupt_queue, send_swarm_plan_to_session, truncate_detail,
     update_member_status, update_member_status_with_report, update_member_status_with_report_tldr,
 };
@@ -375,6 +375,8 @@ pub(super) async fn handle_client(
     swarm_plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touch: FileTouchService,
+    file_snapshots: FileSnapshotLedger,
+    lsp_pool: Arc<jcode_lsp::LspServicePool>,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -430,6 +432,7 @@ pub(super) async fn handle_client(
                             swarm_plans: &swarm_plans,
                             swarm_coordinators: &swarm_coordinators,
                             file_touch: &file_touch,
+                            file_snapshots: &file_snapshots,
                             channel_subscriptions: &channel_subscriptions,
                             channel_subscriptions_by_session: &channel_subscriptions_by_session,
                             client_connections: &client_connections,
@@ -494,7 +497,8 @@ pub(super) async fn handle_client(
 
     let provider = provider_template.fork_for_new_session();
     let t0 = std::time::Instant::now();
-    let registry = Registry::new(provider.clone()).await;
+    let registry =
+        Registry::new_with_services(provider.clone(), file_snapshots.clone(), lsp_pool).await;
     let registry_ms = t0.elapsed().as_millis();
 
     let mut swarm_enabled = crate::config::config().features.swarm;
@@ -2396,6 +2400,7 @@ pub(super) async fn handle_client(
                     &swarm_event_tx,
                     &mcp_pool,
                     &soft_interrupt_queues,
+                    &file_snapshots,
                     &swarm_mutation_runtime,
                     &client_connections,
                 )
@@ -2648,6 +2653,7 @@ pub(super) async fn handle_client(
                     &global_session_id,
                     &provider_template,
                     &soft_interrupt_queues,
+                    &file_snapshots,
                     &client_connections,
                     &swarm_members,
                     &swarms_by_id,

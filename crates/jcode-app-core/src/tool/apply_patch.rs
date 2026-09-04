@@ -1,7 +1,12 @@
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::server::FileSnapshotLedger;
+use crate::tool::file_write_guard::{
+    FileWriteGuard, GuardedFile, RequiredCoverage, full_file_range, metadata_for_writes,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use jcode_edit_core::LineRange;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
@@ -10,11 +15,26 @@ use std::path::Path;
 const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
 const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
 
-pub struct ApplyPatchTool;
+pub struct ApplyPatchTool {
+    write_guard: Option<FileWriteGuard>,
+}
 
 impl ApplyPatchTool {
     pub fn new() -> Self {
-        Self
+        Self { write_guard: None }
+    }
+
+    pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
+        Self {
+            write_guard: Some(FileWriteGuard::new(file_snapshots)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_guard(write_guard: FileWriteGuard) -> Self {
+        Self {
+            write_guard: Some(write_guard),
+        }
     }
 }
 
@@ -53,6 +73,36 @@ enum PatchHunk {
     },
 }
 
+enum PreparedHunk {
+    Write {
+        display_path: String,
+        resolved: std::path::PathBuf,
+        old_contents: String,
+        new_contents: String,
+        verb: &'static str,
+        hunk_count: usize,
+        guarded: Option<GuardedFile>,
+    },
+    Delete {
+        display_path: String,
+        resolved: std::path::PathBuf,
+        old_contents: String,
+        guarded: Option<GuardedFile>,
+    },
+    Move {
+        source_path: String,
+        source: std::path::PathBuf,
+        destination_path: String,
+        destination: std::path::PathBuf,
+        old_contents: String,
+        new_contents: String,
+        source_guarded: Option<GuardedFile>,
+        destination_guarded: Option<GuardedFile>,
+        hunk_count: usize,
+    },
+    Skipped(String),
+}
+
 #[async_trait]
 impl Tool for ApplyPatchTool {
     fn name(&self) -> &str {
@@ -80,160 +130,161 @@ impl Tool for ApplyPatchTool {
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: ApplyPatchInput = serde_json::from_value(input)?;
         let hunks = parse_apply_patch(&params.patch_text)?;
-
-        // A patch can reach config.toml through any hunk kind (add, update,
-        // move), so watch the file across the whole invocation rather than
-        // threading before/after content through each branch.
         let config_watch = super::config_edit_notice::ConfigEditWatch::begin();
+        let transaction = match &self.write_guard {
+            Some(guard) => Some(guard.begin(&ctx).await?),
+            None => None,
+        };
+
+        // Compute and guard every hunk before the first file mutation. Publication
+        // remains sequential and its residual I/O atomicity gap is documented.
+        let mut prepared = Vec::with_capacity(hunks.len());
+        for hunk in &hunks {
+            prepared.push(prepare_hunk(hunk, &ctx, transaction.as_ref()).await?);
+        }
 
         let mut results = Vec::new();
         let mut touched_paths = Vec::new();
-
-        for hunk in &hunks {
+        let mut recorded_writes = Vec::new();
+        for hunk in prepared {
             match hunk {
-                PatchHunk::AddFile { path, contents } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
+                PreparedHunk::Skipped(message) => results.push(message),
+                PreparedHunk::Write {
+                    display_path,
+                    resolved,
+                    old_contents,
+                    new_contents,
+                    verb,
+                    hunk_count,
+                    guarded,
+                } => {
                     if let Some(parent) = resolved.parent() {
                         tokio::fs::create_dir_all(parent).await?;
                     }
-                    tokio::fs::write(&resolved, contents).await?;
-                    let diff = generate_diff_summary("", contents);
+                    tokio::fs::write(&resolved, &new_contents).await?;
+                    if let (Some(transaction), Some(file)) = (&transaction, guarded.clone()) {
+                        recorded_writes.push(
+                            transaction
+                                .record_success(file, &resolved, new_contents.as_bytes())
+                                .await?,
+                        );
+                    }
+                    let diff = generate_diff_summary(&old_contents, &new_contents);
                     publish_file_touch(
                         &ctx,
                         &resolved,
-                        path,
-                        "created",
+                        &display_path,
+                        verb,
                         &diff,
                         params.intent.as_deref(),
                     );
-                    touched_paths.push(path.clone());
-                    if diff.is_empty() {
-                        results.push(format!("✓ {}: created", path));
-                    } else {
-                        results.push(format!("✓ {}: created\n{}", path, diff));
-                    }
-                }
-                PatchHunk::DeleteFile { path } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
-                    // `resolve_path` passes absolute paths through unchanged, so
-                    // a patch can name any file on disk. The bash gate does not
-                    // cover this path, so apply the same absolute deny here
-                    // (#604). Only the catastrophic tier: ordinary file deletes
-                    // are this tool's normal job.
-                    let risk_ctx =
-                        jcode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
-                    if jcode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
-                        results.push(format!(
-                            "✗ {}: refused, this path is protected and must never \
-                             be deleted by an agent",
-                            path
-                        ));
-                        continue;
-                    }
-                    let old_contents = tokio::fs::read_to_string(&resolved)
-                        .await
+                    touched_paths.push(display_path.clone());
+                    let suffix = (hunk_count > 0)
+                        .then(|| format!(" ({hunk_count} hunks)"))
                         .unwrap_or_default();
-                    if tokio::fs::remove_file(&resolved).await.is_ok() {
-                        let diff = generate_diff_summary(&old_contents, "");
-                        publish_file_touch(
-                            &ctx,
-                            &resolved,
-                            path,
-                            "deleted",
-                            &diff,
-                            params.intent.as_deref(),
-                        );
-                        touched_paths.push(path.clone());
-                        if diff.is_empty() {
-                            results.push(format!("✓ {}: deleted", path));
-                        } else {
-                            results.push(format!("✓ {}: deleted\n{}", path, diff));
-                        }
-                    } else {
-                        results.push(format!("✗ {}: failed to delete", path));
+                    let mut result = format!("✓ {display_path}: {verb}{suffix}");
+                    if !diff.is_empty() {
+                        result.push('\n');
+                        result.push_str(&diff);
                     }
+                    if let Some(file) = &guarded {
+                        file.append_warnings(&mut result);
+                    }
+                    results.push(result);
                 }
-                PatchHunk::UpdateFile {
-                    path,
-                    move_to,
-                    chunks,
+                PreparedHunk::Delete {
+                    display_path,
+                    resolved,
+                    old_contents,
+                    guarded,
                 } => {
-                    let resolved = ctx.resolve_path(Path::new(path));
-                    match apply_update_chunks(&resolved, chunks).await {
-                        Ok((old_contents, new_contents)) => {
-                            let diff = generate_diff_summary(&old_contents, &new_contents);
-                            if let Some(dest) = move_to {
-                                let dest_resolved = ctx.resolve_path(Path::new(dest));
-                                if let Some(parent) = dest_resolved.parent() {
-                                    tokio::fs::create_dir_all(parent).await?;
-                                }
-                                tokio::fs::write(&dest_resolved, &new_contents).await?;
-                                let _ = tokio::fs::remove_file(&resolved).await;
-                                publish_file_touch(
-                                    &ctx,
-                                    &resolved,
-                                    path,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                publish_file_touch(
-                                    &ctx,
-                                    &dest_resolved,
-                                    dest,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                touched_paths.push(path.clone());
-                                touched_paths.push(dest.clone());
-                                if diff.is_empty() {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks), moved to {}",
-                                        path,
-                                        chunks.len(),
-                                        dest
-                                    ));
-                                } else {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks), moved to {}\n{}",
-                                        path,
-                                        chunks.len(),
-                                        dest,
-                                        diff
-                                    ));
-                                }
-                            } else {
-                                tokio::fs::write(&resolved, &new_contents).await?;
-                                publish_file_touch(
-                                    &ctx,
-                                    &resolved,
-                                    path,
-                                    "modified",
-                                    &diff,
-                                    params.intent.as_deref(),
-                                );
-                                touched_paths.push(path.clone());
-                                if diff.is_empty() {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks)",
-                                        path,
-                                        chunks.len()
-                                    ));
-                                } else {
-                                    results.push(format!(
-                                        "✓ {}: modified ({} hunks)\n{}",
-                                        path,
-                                        chunks.len(),
-                                        diff
-                                    ));
-                                }
-                            }
+                    tokio::fs::remove_file(&resolved).await?;
+                    if let (Some(transaction), Some(file)) = (&transaction, guarded.clone()) {
+                        recorded_writes
+                            .push(transaction.record_success(file, &resolved, b"").await?);
+                    }
+                    let diff = generate_diff_summary(&old_contents, "");
+                    publish_file_touch(
+                        &ctx,
+                        &resolved,
+                        &display_path,
+                        "deleted",
+                        &diff,
+                        params.intent.as_deref(),
+                    );
+                    touched_paths.push(display_path.clone());
+                    let mut result = format!("✓ {display_path}: deleted");
+                    if !diff.is_empty() {
+                        result.push('\n');
+                        result.push_str(&diff);
+                    }
+                    if let Some(file) = &guarded {
+                        file.append_warnings(&mut result);
+                    }
+                    results.push(result);
+                }
+                PreparedHunk::Move {
+                    source_path,
+                    source,
+                    destination_path,
+                    destination,
+                    old_contents,
+                    new_contents,
+                    source_guarded,
+                    destination_guarded,
+                    hunk_count,
+                } => {
+                    if let Some(parent) = destination.parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    tokio::fs::write(&destination, &new_contents).await?;
+                    tokio::fs::remove_file(&source).await?;
+                    if let Some(transaction) = &transaction {
+                        if let Some(file) = source_guarded.clone() {
+                            recorded_writes
+                                .push(transaction.record_success(file, &source, b"").await?);
                         }
-                        Err(e) => {
-                            results.push(format!("✗ {}: {}", path, e));
+                        if let Some(file) = destination_guarded.clone() {
+                            recorded_writes.push(
+                                transaction
+                                    .record_success(file, &destination, new_contents.as_bytes())
+                                    .await?,
+                            );
                         }
                     }
+                    let diff = generate_diff_summary(&old_contents, &new_contents);
+                    publish_file_touch(
+                        &ctx,
+                        &source,
+                        &source_path,
+                        "moved",
+                        &diff,
+                        params.intent.as_deref(),
+                    );
+                    publish_file_touch(
+                        &ctx,
+                        &destination,
+                        &destination_path,
+                        "modified",
+                        &diff,
+                        params.intent.as_deref(),
+                    );
+                    touched_paths.push(source_path.clone());
+                    touched_paths.push(destination_path.clone());
+                    let mut result = format!(
+                        "✓ {source_path}: modified ({hunk_count} hunks), moved to {destination_path}"
+                    );
+                    if !diff.is_empty() {
+                        result.push('\n');
+                        result.push_str(&diff);
+                    }
+                    if let Some(file) = &source_guarded {
+                        file.append_warnings(&mut result);
+                    }
+                    if let Some(file) = &destination_guarded {
+                        file.append_warnings(&mut result);
+                    }
+                    results.push(result);
                 }
             }
         }
@@ -243,11 +294,141 @@ impl Tool for ApplyPatchTool {
         } else {
             let mut body = results.join("\n");
             config_watch.finish(&mut body);
-            let output = ToolOutput::new(body);
+            let output = if recorded_writes.is_empty() {
+                ToolOutput::new(body)
+            } else {
+                ToolOutput::new(body).with_metadata(metadata_for_writes(&recorded_writes))
+            };
             if touched_paths.len() == 1 {
                 Ok(output.with_title(touched_paths[0].clone()))
             } else {
                 Ok(output.with_title(format!("{} files", touched_paths.len())))
+            }
+        }
+    }
+}
+
+async fn prepare_hunk(
+    hunk: &PatchHunk,
+    ctx: &ToolContext,
+    transaction: Option<&crate::tool::file_write_guard::FileWriteTransaction>,
+) -> Result<PreparedHunk> {
+    match hunk {
+        PatchHunk::AddFile { path, contents } => {
+            let resolved = ctx.resolve_path(Path::new(path));
+            let old_contents = tokio::fs::read_to_string(&resolved)
+                .await
+                .unwrap_or_default();
+            let guarded = match transaction {
+                Some(transaction) if resolved.exists() => Some(
+                    transaction
+                        .preflight_existing(
+                            &resolved,
+                            old_contents.as_bytes(),
+                            RequiredCoverage::FullFile,
+                        )
+                        .await?,
+                ),
+                Some(transaction) => Some(transaction.prepare_new(&resolved)?),
+                None => None,
+            };
+            Ok(PreparedHunk::Write {
+                display_path: path.clone(),
+                resolved,
+                old_contents,
+                new_contents: contents.clone(),
+                verb: "created",
+                hunk_count: 0,
+                guarded,
+            })
+        }
+        PatchHunk::DeleteFile { path } => {
+            let resolved = ctx.resolve_path(Path::new(path));
+            let risk_ctx = jcode_command_risk::RiskContext::from_env(ctx.working_dir.clone());
+            if jcode_command_risk::is_catastrophic_target(&resolved, &risk_ctx) {
+                return Ok(PreparedHunk::Skipped(format!(
+                    "✗ {path}: refused, this path is protected and must never be deleted by an agent"
+                )));
+            }
+            let old_contents = tokio::fs::read_to_string(&resolved).await?;
+            let guarded = match transaction {
+                Some(transaction) => Some(
+                    transaction
+                        .preflight_existing(
+                            &resolved,
+                            old_contents.as_bytes(),
+                            RequiredCoverage::Ranges(full_file_range(&old_contents)),
+                        )
+                        .await?,
+                ),
+                None => None,
+            };
+            Ok(PreparedHunk::Delete {
+                display_path: path.clone(),
+                resolved,
+                old_contents,
+                guarded,
+            })
+        }
+        PatchHunk::UpdateFile {
+            path,
+            move_to,
+            chunks,
+        } => {
+            let resolved = ctx.resolve_path(Path::new(path));
+            let (old_contents, new_contents, ranges) =
+                apply_update_chunks(&resolved, chunks).await?;
+            let source_guarded = match transaction {
+                Some(transaction) => Some(
+                    transaction
+                        .preflight_existing(
+                            &resolved,
+                            old_contents.as_bytes(),
+                            RequiredCoverage::Ranges(ranges),
+                        )
+                        .await?,
+                ),
+                None => None,
+            };
+            if let Some(destination_path) = move_to {
+                let destination = ctx.resolve_path(Path::new(destination_path));
+                let destination_guarded = match transaction {
+                    Some(transaction) if destination.exists() => {
+                        let destination_contents = tokio::fs::read_to_string(&destination).await?;
+                        Some(
+                            transaction
+                                .preflight_existing(
+                                    &destination,
+                                    destination_contents.as_bytes(),
+                                    RequiredCoverage::FullFile,
+                                )
+                                .await?,
+                        )
+                    }
+                    Some(transaction) => Some(transaction.prepare_new(&destination)?),
+                    None => None,
+                };
+                Ok(PreparedHunk::Move {
+                    source_path: path.clone(),
+                    source: resolved,
+                    destination_path: destination_path.clone(),
+                    destination,
+                    old_contents,
+                    new_contents,
+                    source_guarded,
+                    destination_guarded,
+                    hunk_count: chunks.len(),
+                })
+            } else {
+                Ok(PreparedHunk::Write {
+                    display_path: path.clone(),
+                    resolved,
+                    old_contents,
+                    new_contents,
+                    verb: "modified",
+                    hunk_count: chunks.len(),
+                    guarded: source_guarded,
+                })
             }
         }
     }
@@ -304,7 +485,10 @@ fn build_file_touch_preview(diff: &str) -> Option<String> {
     Some(preview)
 }
 
-async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<(String, String)> {
+async fn apply_update_chunks(
+    path: &Path,
+    chunks: &[UpdateFileChunk],
+) -> Result<(String, String, Vec<LineRange>)> {
     let original_contents = tokio::fs::read_to_string(path).await?;
     let mut original_lines: Vec<String> = original_contents.split('\n').map(String::from).collect();
 
@@ -313,12 +497,28 @@ async fn apply_update_chunks(path: &Path, chunks: &[UpdateFileChunk]) -> Result<
     }
 
     let replacements = compute_replacements(&original_lines, path, chunks)?;
+    let line_count = original_lines.len() as u64;
+    let ranges = replacements
+        .iter()
+        .filter_map(|(start, old_len, _)| {
+            if line_count == 0 {
+                return None;
+            }
+            let start = (*start as u64 + 1).min(line_count);
+            let end = if *old_len == 0 {
+                start
+            } else {
+                (start + *old_len as u64 - 1).min(line_count)
+            };
+            Some(LineRange { start, end })
+        })
+        .collect();
     let mut new_lines = apply_replacements(original_lines, &replacements);
 
     if !new_lines.last().is_some_and(String::is_empty) {
         new_lines.push(String::new());
     }
-    Ok((original_contents, new_lines.join("\n")))
+    Ok((original_contents, new_lines.join("\n"), ranges))
 }
 
 /// Generate a compact diff with line numbers (max 30 lines).

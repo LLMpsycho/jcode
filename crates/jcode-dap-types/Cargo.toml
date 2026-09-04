@@ -1,0 +1,14 @@
+[package]
+name = "jcode-dap-types"
+version = "0.1.0"
+edition = "2024"
+description = "Stable Debug Adapter Protocol serialization contracts for Jcode"
+publish = false
+
+[lib]
+name = "jcode_dap_types"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

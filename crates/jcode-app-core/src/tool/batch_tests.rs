@@ -135,6 +135,7 @@ fn test_schema_only_requires_tool() {
         compaction: std::sync::Arc::new(tokio::sync::RwLock::new(
             crate::compaction::CompactionManager::new(),
         )),
+        lsp_pool: None,
     })
     .parameters_schema();
 

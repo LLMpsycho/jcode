@@ -1,7 +1,7 @@
 use super::{
     AmbientConfig, Config, DiffDisplayMode, DisplayConfig, HookCommands, LatexRenderingMode,
-    McpToolsMode, ProviderConfig, SessionPickerResumeAction, SwarmSpawnMode, ToolConfig,
-    config_env_fingerprint, populate_context_limits_from_config_ref,
+    McpToolsMode, ProviderConfig, ReadGuardMode, SessionPickerResumeAction, SwarmSpawnMode,
+    ToolConfig, config_env_fingerprint, populate_context_limits_from_config_ref,
 };
 use std::ffi::OsString;
 use std::path::Path;
@@ -33,6 +33,51 @@ fn test_openai_fast_mode_defaults_to_priority() {
 #[test]
 fn preserve_reasoning_context_defaults_to_enabled() {
     assert!(ProviderConfig::default().preserve_reasoning_context);
+}
+
+#[test]
+fn lsp_defaults_and_project_configuration_parse_deterministically() {
+    let defaults = Config::default();
+    assert!(defaults.lsp.enabled);
+    assert_eq!(
+        defaults.lsp.servers["rust-analyzer"].command,
+        "rust-analyzer"
+    );
+
+    let config: Config = toml::from_str(
+        r#"
+[lsp]
+enabled = false
+request_timeout_seconds = 9
+post_edit_diagnostics = "file"
+
+[lsp.servers.custom-rust]
+command = "/opt/tools/rust-analyzer"
+args = ["--log-file", "ra.log"]
+root_markers = ["Cargo.toml"]
+file_extensions = ["rs"]
+"#,
+    )
+    .expect("documented LSP configuration should parse");
+    assert!(!config.lsp.enabled);
+    assert_eq!(config.lsp.request_timeout_seconds, 9);
+    assert_eq!(
+        config.lsp.servers["custom-rust"].args,
+        ["--log-file", "ra.log"]
+    );
+}
+
+#[test]
+fn lsp_unknown_keys_and_invalid_types_fail_with_field_context() {
+    let unknown = toml::from_str::<Config>("[lsp]\nsurprise = true\n")
+        .expect_err("unknown LSP keys must not be ignored")
+        .to_string();
+    assert!(unknown.contains("surprise"));
+
+    let invalid = toml::from_str::<Config>("[lsp]\nrequest_timeout_seconds = \"fast\"\n")
+        .expect_err("invalid LSP field types must fail")
+        .to_string();
+    assert!(invalid.contains("request_timeout_seconds") || invalid.contains("integer"));
 }
 
 #[test]
@@ -463,6 +508,25 @@ fn tool_config_defaults_to_full_toolset() {
     assert!(selection.disabled_tools.is_empty());
     assert_eq!(config.mcp_tools, McpToolsMode::Auto);
     assert_eq!(config.mcp_tools_token_threshold, 8_000);
+}
+
+#[test]
+fn editing_read_guard_defaults_to_warn_and_deserializes_all_modes() {
+    let default = Config::default();
+    assert_eq!(default.editing.read_guard.mode, ReadGuardMode::Warn);
+    assert!(default.editing.read_guard.require_same_revision);
+    assert!(default.editing.read_guard.require_covered_ranges);
+    assert!(!default.editing.read_guard.allow_full_file_write);
+
+    for (raw, expected) in [
+        ("off", ReadGuardMode::Off),
+        ("warn", ReadGuardMode::Warn),
+        ("block", ReadGuardMode::Block),
+    ] {
+        let config: Config = toml::from_str(&format!("[editing.read_guard]\nmode = \"{raw}\"\n"))
+            .expect("valid read guard mode");
+        assert_eq!(config.editing.read_guard.mode, expected);
+    }
 }
 
 #[test]

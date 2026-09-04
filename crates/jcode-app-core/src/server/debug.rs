@@ -18,8 +18,8 @@ use super::debug_swarm_read::maybe_handle_swarm_read_command;
 use super::debug_swarm_write::{DebugSwarmWriteContext, maybe_handle_swarm_write_command};
 use super::debug_testers::execute_tester_command;
 use super::{
-    FileTouchService, ServerIdentity, SharedContext, SwarmEvent, SwarmMember, VersionedPlan,
-    debug_control_allowed, fanout_session_event,
+    FileSnapshotLedger, FileTouchService, ServerIdentity, SharedContext, SwarmEvent, SwarmMember,
+    VersionedPlan, debug_control_allowed, fanout_session_event,
 };
 use crate::agent::Agent;
 use crate::ambient_runner::AmbientRunnerHandle;
@@ -260,6 +260,7 @@ pub(super) async fn handle_debug_client(
     swarm_plans: Arc<RwLock<HashMap<String, VersionedPlan>>>,
     swarm_coordinators: Arc<RwLock<HashMap<String, String>>>,
     file_touch: FileTouchService,
+    file_snapshots: FileSnapshotLedger,
     channel_subscriptions: ChannelSubscriptions,
     channel_subscriptions_by_session: ChannelSubscriptions,
     client_debug_state: Arc<RwLock<ClientDebugState>>,
@@ -442,6 +443,7 @@ pub(super) async fn handle_debug_client(
                             &event_counter,
                             &swarm_event_tx,
                             &soft_interrupt_queues,
+                            &file_snapshots,
                             mcp_pool.clone(),
                         )
                         .await?

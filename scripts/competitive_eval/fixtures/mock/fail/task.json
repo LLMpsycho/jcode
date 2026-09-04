@@ -1,0 +1,1 @@
+{"id":"mock-fail","category":"deterministic","description":"Mock agent fails verifier.","fixture":{"source":"."},"prompt_file":"prompt.md","verifier":{"command":"python3 verify.py","timeout_seconds":2},"agent":{"timeout_seconds":2,"required_capabilities":["edit"]},"expected":{"exit_code":0,"forbidden_side_effects":[]},"tags":["mock:fail"]}

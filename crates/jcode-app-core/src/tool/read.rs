@@ -2,21 +2,35 @@
 
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::server::{FileSnapshotLedger, ReadCoverage};
 use anyhow::Result;
 use async_trait::async_trait;
+use jcode_edit_core::display_tag_hex;
+use jcode_edit_types::LineRange;
 use jcode_terminal_image::{ImageDisplayParams, ImageProtocol, display_image};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 const DEFAULT_LIMIT: usize = 5000;
 const MAX_LINE_LEN: usize = 2000;
 
-pub struct ReadTool;
+pub struct ReadTool {
+    file_snapshots: Option<FileSnapshotLedger>,
+}
 
 impl ReadTool {
     pub fn new() -> Self {
-        Self
+        Self {
+            file_snapshots: None,
+        }
+    }
+
+    pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
+        Self {
+            file_snapshots: Some(file_snapshots),
+        }
     }
 }
 
@@ -194,6 +208,8 @@ impl Tool for ReadTool {
         let mut output = String::with_capacity(range.limit.min(2000) * 80);
         let mut total_lines = 0usize;
         let mut truncated_line_count = 0usize;
+        let mut covered_ranges = Vec::new();
+        let mut covered_range_start = None;
         let end_exclusive = range.offset + range.limit;
         {
             use std::fmt::Write;
@@ -209,6 +225,12 @@ impl Tool for ReadTool {
                 let line_num = i + 1;
                 if line.len() > MAX_LINE_LEN {
                     truncated_line_count += 1;
+                    if let Some(start) = covered_range_start.take() {
+                        covered_ranges.push(LineRange {
+                            start,
+                            end: line_num as u64 - 1,
+                        });
+                    }
                     let _ = writeln!(
                         output,
                         "{:>5}\t{}...",
@@ -216,12 +238,23 @@ impl Tool for ReadTool {
                         crate::util::truncate_str(line, MAX_LINE_LEN)
                     );
                 } else {
+                    covered_range_start.get_or_insert(line_num as u64);
                     let _ = writeln!(output, "{:>5}\t{}", line_num, line);
                 }
             }
         }
 
         let end = end_exclusive.min(total_lines);
+        if let Some(start) = covered_range_start {
+            covered_ranges.push(LineRange {
+                start,
+                end: end as u64,
+            });
+        }
+        let full_file = range.offset == 0 && end == total_lines && truncated_line_count == 0;
+        if full_file {
+            covered_ranges.clear();
+        }
 
         // Publish file touch event for swarm coordination
         Bus::global().publish(BusEvent::FileTouch(FileTouch {
@@ -265,10 +298,80 @@ impl Tool for ReadTool {
         }
 
         if output.is_empty() {
-            Ok(ToolOutput::new("(empty file)"))
-        } else {
-            Ok(ToolOutput::new(output))
+            output.push_str("(empty file)");
         }
+
+        if let Some(header) = self
+            .snapshot_header(&ctx, &path, &content, covered_ranges, full_file)
+            .await
+        {
+            output.insert_str(0, &header);
+        }
+
+        Ok(ToolOutput::new(output))
+    }
+}
+
+impl ReadTool {
+    async fn snapshot_header(
+        &self,
+        ctx: &ToolContext,
+        path: &Path,
+        content: &str,
+        covered_ranges: Vec<LineRange>,
+        full_file: bool,
+    ) -> Option<String> {
+        let ledger = self.file_snapshots.as_ref()?;
+        let workspace_root = ctx.working_dir.as_deref()?;
+        let canonical_root = std::fs::canonicalize(workspace_root).ok()?;
+        let canonical_path = std::fs::canonicalize(path).ok()?;
+        let relative_path = canonical_path.strip_prefix(&canonical_root).ok()?;
+        let relative_path = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        if relative_path.is_empty() {
+            return None;
+        }
+
+        let mtime_ns = std::fs::metadata(&canonical_path)
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos());
+        let snapshot = match ledger
+            .record_read(
+                &ctx.session_id,
+                &canonical_root,
+                &relative_path,
+                content.as_bytes(),
+                mtime_ns,
+                ReadCoverage {
+                    ranges: covered_ranges,
+                    full_file,
+                },
+            )
+            .await
+        {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                crate::logging::warn(&format!(
+                    "[tool:read] failed to record snapshot for {} in session {}: {}",
+                    path.display(),
+                    ctx.session_id,
+                    error
+                ));
+                return None;
+            }
+        };
+
+        Some(format!(
+            "[{}#{} rev={}]\n",
+            snapshot.path,
+            display_tag_hex(snapshot.revision.display_tag),
+            snapshot.revision.revision
+        ))
     }
 }
 

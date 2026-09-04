@@ -1,0 +1,1 @@
+Exercise deterministic crash recording.

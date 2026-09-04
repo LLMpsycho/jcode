@@ -166,7 +166,7 @@ async fn the_write_tool_reports_config_changes_end_to_end() {
         execution_mode: crate::tool::ToolExecutionMode::Direct,
     };
 
-    let output = crate::tool::write::WriteTool
+    let output = crate::tool::write::WriteTool::new()
         .execute(
             serde_json::json!({
                 "file_path": path.to_string_lossy(),
@@ -220,7 +220,7 @@ async fn apply_patch_reports_config_changes() {
         "*** Begin Patch\n*** Update File: {}\n@@\n-centered = false\n+centered = true\n*** End Patch\n",
         path.display()
     );
-    let output = crate::tool::apply_patch::ApplyPatchTool
+    let output = crate::tool::apply_patch::ApplyPatchTool::new()
         .execute(serde_json::json!({ "patch_text": patch_text }), ctx)
         .await
         .expect("patch should apply");

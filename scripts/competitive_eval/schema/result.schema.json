@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Competitive evaluation result",
+  "type": "object",
+  "required": [
+    "campaign_id",
+    "task_id",
+    "agent",
+    "attempt",
+    "start_time",
+    "duration_ms",
+    "status",
+    "tool_calls",
+    "tool_failures",
+    "edit_calls",
+    "edit_retries",
+    "human_interventions",
+    "files_changed"
+  ],
+  "properties": {
+    "campaign_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "agent": {
+      "enum": [
+        "jcode",
+        "omp",
+        "mock"
+      ]
+    },
+    "agent_git_sha": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "provider": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "start_time": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "timeout",
+        "crash",
+        "unsupported",
+        "error"
+      ]
+    },
+    "verifier_exit_code": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "tool_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "tool_failures": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "edit_calls": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "edit_retries": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "input_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cache_read_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "peak_rss_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "human_interventions": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stdout_artifact": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "stderr_artifact": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "transcript_artifact": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "failure_class": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "output_truncated": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

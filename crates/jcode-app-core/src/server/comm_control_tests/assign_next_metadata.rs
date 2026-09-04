@@ -80,6 +80,7 @@ async fn assign_next_prefers_worker_with_matching_subsystem_metadata() {
         &global_session_id,
         &provider,
         &soft_interrupt_queues,
+        &crate::server::FileSnapshotLedger::new(),
         &client_connections,
         &swarm_members,
         &swarms_by_id,

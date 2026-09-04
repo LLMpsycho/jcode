@@ -1,5 +1,9 @@
 use super::{Tool, ToolContext, ToolOutput};
 use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::server::FileSnapshotLedger;
+use crate::tool::file_write_guard::{
+    FileWriteGuard, RequiredCoverage, matched_ranges, metadata_for_writes,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -10,11 +14,26 @@ use std::path::Path;
 const FILE_TOUCH_PREVIEW_MAX_LINES: usize = 6;
 const FILE_TOUCH_PREVIEW_MAX_BYTES: usize = 240;
 
-pub struct EditTool;
+pub struct EditTool {
+    write_guard: Option<FileWriteGuard>,
+}
 
 impl EditTool {
     pub fn new() -> Self {
-        Self
+        Self { write_guard: None }
+    }
+
+    pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
+        Self {
+            write_guard: Some(FileWriteGuard::new(file_snapshots)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_guard(write_guard: FileWriteGuard) -> Self {
+        Self {
+            write_guard: Some(write_guard),
+        }
     }
 }
 
@@ -80,6 +99,10 @@ impl Tool for EditTool {
             return Err(anyhow::anyhow!("File not found: {}", params.file_path));
         }
 
+        let transaction = match &self.write_guard {
+            Some(guard) => Some(guard.begin(&ctx).await?),
+            None => None,
+        };
         let content = tokio::fs::read_to_string(&path).await?;
 
         // Count occurrences
@@ -105,12 +128,36 @@ impl Tool for EditTool {
         } else {
             content.replacen(&params.old_string, &params.new_string, 1)
         };
+        let guarded = match &transaction {
+            Some(transaction) => Some(
+                transaction
+                    .preflight_existing(
+                        &path,
+                        content.as_bytes(),
+                        RequiredCoverage::Ranges(matched_ranges(
+                            &content,
+                            &params.old_string,
+                            params.replace_all,
+                        )),
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
 
         // Find line number where edit starts
         let start_line = find_line_number(&content, &params.old_string);
 
         // Write back
         tokio::fs::write(&path, &new_content).await?;
+        let recorded = match (transaction.as_ref(), guarded.clone()) {
+            (Some(transaction), Some(guarded)) => Some(
+                transaction
+                    .record_success(guarded, &path, new_content.as_bytes())
+                    .await?,
+            ),
+            _ => None,
+        };
 
         // Generate a diff with line numbers
         let diff = generate_diff(&params.old_string, &params.new_string, start_line);
@@ -151,7 +198,15 @@ impl Tool for EditTool {
             &new_content,
         );
 
-        Ok(ToolOutput::new(body).with_title(params.file_path.clone()))
+        if let Some(guarded) = &guarded {
+            guarded.append_warnings(&mut body);
+        }
+
+        let output = ToolOutput::new(body).with_title(params.file_path.clone());
+        Ok(match recorded {
+            Some(recorded) => output.with_metadata(metadata_for_writes(&[recorded])),
+            None => output,
+        })
     }
 }
 

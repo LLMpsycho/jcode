@@ -5,10 +5,10 @@ use super::swarm_mutation_state::{
     request_key,
 };
 use super::{
-    SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
-    append_swarm_completion_report_instructions, broadcast_swarm_plan, broadcast_swarm_status,
-    create_headless_session, fanout_session_event, persist_swarm_state_for, record_swarm_event,
-    record_swarm_event_for_session, remove_background_tool_signal,
+    FileSnapshotLedger, SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember,
+    SwarmState, VersionedPlan, append_swarm_completion_report_instructions, broadcast_swarm_plan,
+    broadcast_swarm_status, create_headless_session, fanout_session_event, persist_swarm_state_for,
+    record_swarm_event, record_swarm_event_for_session, remove_background_tool_signal,
     remove_session_channel_subscriptions, remove_session_from_swarm,
     remove_session_interrupt_queue, set_member_task_label, truncate_detail, update_member_status,
     update_member_status_with_report,
@@ -535,10 +535,6 @@ async fn register_visible_spawned_member(
     broadcast_swarm_status(swarm_id, swarm_members, swarms_by_id).await;
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "server-side swarm spawning needs session, swarm state, provider, and event sinks together"
-)]
 /// Resolve the reasoning effort for a spawned swarm worker (#1165).
 ///
 /// Precedence mirrors the model path: an explicit `effort` on the spawn call
@@ -557,6 +553,10 @@ pub(super) fn resolve_swarm_spawn_effort(
     clean(requested_effort).or_else(|| clean(configured_swarm_effort))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "server-side swarm spawning needs session, swarm state, provider, and event sinks together"
+)]
 pub(super) async fn spawn_swarm_agent(
     req_session_id: &str,
     swarm_id: &str,
@@ -577,6 +577,7 @@ pub(super) async fn spawn_swarm_agent(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
+    file_snapshots: &FileSnapshotLedger,
     client_connections: &ClientConnections,
 ) -> anyhow::Result<String> {
     let resolved_working_dir =
@@ -666,6 +667,7 @@ pub(super) async fn spawn_swarm_agent(
                 swarm_coordinators,
                 swarm_plans,
                 soft_interrupt_queues,
+                file_snapshots,
                 coordinator_is_canary,
                 spawn_model.clone(),
                 spawn_provider_key.clone(),
@@ -848,6 +850,7 @@ pub(super) async fn handle_comm_spawn(
     swarm_event_tx: &broadcast::Sender<SwarmEvent>,
     mcp_pool: &Arc<crate::mcp::SharedMcpPool>,
     soft_interrupt_queues: &SessionInterruptQueues,
+    file_snapshots: &FileSnapshotLedger,
     swarm_mutation_runtime: &SwarmMutationRuntime,
     client_connections: &ClientConnections,
 ) {
@@ -926,6 +929,7 @@ pub(super) async fn handle_comm_spawn(
         swarm_event_tx,
         mcp_pool,
         soft_interrupt_queues,
+        file_snapshots,
         client_connections,
     )
     .await

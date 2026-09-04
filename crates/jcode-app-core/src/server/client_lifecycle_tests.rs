@@ -1340,6 +1340,8 @@ async fn lightweight_comm_request_skips_full_session_initialization() {
         swarm_plans,
         swarm_coordinators,
         file_touch,
+        FileSnapshotLedger::new(),
+        Arc::new(jcode_lsp::LspServicePool::new()),
         channel_subscriptions,
         channel_subscriptions_by_session,
         client_debug_state,

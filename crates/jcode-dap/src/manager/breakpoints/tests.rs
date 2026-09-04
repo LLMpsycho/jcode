@@ -1,0 +1,599 @@
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde_json::json;
+use tokio::time::{sleep, timeout};
+
+use super::*;
+use crate::testing::FakeAdapter;
+use crate::{DebugSessionManagerConfig, DebugSourceBreakpoint, Message, StoppedState};
+
+mod deadline_contract;
+mod event_contract;
+mod limits_contract;
+mod preflight_contract;
+mod reconciliation_contract;
+mod transaction_contract;
+mod wire_contract;
+
+struct Fixture {
+    manager: DebugSessionManager,
+    id: DebugSessionId,
+    adapter: FakeAdapter,
+    root: PathBuf,
+    source: PathBuf,
+}
+
+fn fixture(owner: &str) -> Fixture {
+    fixture_with_operations(
+        owner,
+        DebugOperationConfig {
+            operation_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+}
+
+fn fixture_with_operations(owner: &str, operations: DebugOperationConfig) -> Fixture {
+    let root = std::env::temp_dir().join(format!(
+        "jcode-dap-30e-{}-{}",
+        std::process::id(),
+        crate::session::next_manager_id().unwrap()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let source = root.join("hello world.rs");
+    std::fs::write(&source, b"fn main() {\r\n println!(\"hi\");\r\n}\r\n").unwrap();
+    let manager = DebugSessionManager::new_with_operation_config(
+        DebugSessionManagerConfig::default(),
+        operations,
+    )
+    .unwrap();
+    let (client, adapter) = FakeAdapter::pair(1024 * 1024);
+    let mut reservation = manager
+        .reserve(NewDebugSession {
+            owner_session_id: owner.to_owned(),
+            workspace: DebugWorkspaceKey::new(&root, owner).unwrap(),
+            adapter_id: "fake".to_owned(),
+            start: Some(DebugSessionStart::Launch {
+                program: source.clone(),
+                cwd: root.clone(),
+            }),
+        })
+        .unwrap();
+    reservation.attach_client(client).unwrap();
+    reservation.mark_configuring().unwrap();
+    reservation.mark_running().unwrap();
+    let id = reservation.commit().unwrap();
+    Fixture {
+        manager,
+        id,
+        adapter,
+        root,
+        source,
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+async fn request(adapter: &mut FakeAdapter) -> crate::Request {
+    match timeout(Duration::from_secs(2), adapter.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        Message::Request(request) => request,
+        other => panic!("expected request, got {other:?}"),
+    }
+}
+
+#[test]
+fn exact_30d_public_struct_literals_remain_source_compatible() {
+    let _ = DebugSessionManager::new(DebugSessionManagerConfig {
+        max_active_sessions: 64,
+        max_retained_ended_sessions: 64,
+        output_max_events: 1024,
+        output_max_bytes: 1024 * 1024,
+        output_page_limit: 256,
+        termination_grace: Duration::from_secs(2),
+        process_poll_interval: Duration::from_millis(250),
+        startup_timeout: Duration::from_secs(30),
+        disconnect_timeout: Duration::from_secs(2),
+    })
+    .unwrap();
+    let _ = StoppedState {
+        reason: "breakpoint".into(),
+        description: None,
+        thread_id: Some(1),
+        all_threads_stopped: true,
+    };
+}
+
+#[tokio::test]
+async fn full_source_set_idempotence_remove_and_exact_revision() {
+    let mut f = fixture("owner");
+    let first_task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let first = request(&mut f.adapter).await;
+    assert_eq!(first.command, "setBreakpoints");
+    assert_eq!(
+        first.arguments.as_ref().unwrap()["breakpoints"],
+        json!([{"line":1}])
+    );
+    f.adapter
+        .respond_ok(
+            &first,
+            Some(json!({"breakpoints":[{"id":7,"verified":true,"line":1}]})),
+        )
+        .await
+        .unwrap();
+    let first_result = first_task.await.unwrap().unwrap();
+    let first_id = match first_result.mutation {
+        DebugBreakpointMutation::Created { breakpoint_id } => breakpoint_id,
+        _ => panic!(),
+    };
+    assert_eq!(
+        first_result.source.source_revision.byte_len,
+        std::fs::metadata(&f.source).unwrap().len()
+    );
+
+    let duplicate = f
+        .manager
+        .set_breakpoint(
+            "owner",
+            f.id,
+            DebugSetBreakpointRequest::new(&f.source, DebugSourceBreakpoint::new(1)),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(duplicate.mutation,DebugBreakpointMutation::Existing{breakpoint_id} if breakpoint_id==first_id)
+    );
+
+    let second_task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(2)),
+                )
+                .await
+        })
+    };
+    let second = request(&mut f.adapter).await;
+    assert_eq!(
+        second.arguments.as_ref().unwrap()["breakpoints"],
+        json!([{"line":1},{"line":2}])
+    );
+    f.adapter.respond_ok(&second,Some(json!({"breakpoints":[{"id":7,"verified":true},{"id":8,"verified":false,"reason":"pending"}]}))).await.unwrap();
+    second_task.await.unwrap().unwrap();
+
+    let remove_task = {
+        let manager = f.manager.clone();
+        tokio::spawn(async move {
+            manager
+                .remove_breakpoint("owner", f.id, DebugRemoveBreakpointRequest::new(first_id))
+                .await
+        })
+    };
+    let remove = request(&mut f.adapter).await;
+    assert_eq!(
+        remove.arguments.as_ref().unwrap()["breakpoints"],
+        json!([{"line":2}])
+    );
+    f.adapter
+        .respond_ok(
+            &remove,
+            Some(json!({"breakpoints":[{"id":8,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    remove_task.await.unwrap().unwrap();
+    assert_eq!(
+        f.manager
+            .breakpoints("owner", f.id)
+            .unwrap()
+            .total_breakpoints,
+        1
+    );
+}
+
+#[tokio::test]
+async fn id_only_higher_sequence_event_is_applied_after_response() {
+    let mut f = fixture("owner");
+    let task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let set = request(&mut f.adapter).await;
+    f.adapter
+        .respond_ok(
+            &set,
+            Some(json!({"breakpoints":[{"id":42,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    f.adapter.event("breakpoint",Some(json!({"reason":"changed","breakpoint":{"id":42,"verified":false,"reason":"pending"}}))).await.unwrap();
+    let result = task.await.unwrap().unwrap();
+    assert!(!result.source.breakpoints[0].verified);
+    assert_eq!(
+        result.source.breakpoints[0].reason,
+        Some(DebugBreakpointReason::Pending)
+    );
+
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let mut data = lock(&entry.data);
+    let bounded = DebugOperationConfig {
+        max_breakpoint_message_bytes: 4,
+        ..DebugOperationConfig::default()
+    };
+    apply_breakpoint_event(
+        &mut data.breakpoints,
+        100,
+        json!({"reason":"changed","breakpoint":{"id":42,"message":"éabcdef","reason":"adapter-specific"}}),
+        &bounded,
+    );
+    let snapshot = data.breakpoints.snapshot();
+    assert_eq!(
+        snapshot.sources[0].breakpoints[0].message.as_deref(),
+        Some("cdef")
+    );
+    assert_eq!(
+        snapshot.sources[0].breakpoints[0].message_truncated_prefix_bytes,
+        4
+    );
+    let unmatched = snapshot.unmatched_adapter_events;
+    apply_breakpoint_event(
+        &mut data.breakpoints,
+        101,
+        json!({"reason":"changed","breakpoint":{"id":42,"line":0,"verified":true}}),
+        &bounded,
+    );
+    assert_eq!(
+        data.breakpoints.snapshot().unmatched_adapter_events,
+        unmatched + 1
+    );
+}
+
+#[tokio::test]
+async fn wrong_owner_all_breakpoint_apis_emit_zero_traffic() {
+    let mut f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let before = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.breakpoints.snapshot(),
+            data.output.page(None, usize::MAX),
+        )
+    };
+    assert!(matches!(
+        f.manager.breakpoints("wrong", f.id),
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(matches!(
+        f.manager
+            .set_breakpoint(
+                "wrong",
+                f.id,
+                DebugSetBreakpointRequest::new(
+                    f.root.join("missing"),
+                    DebugSourceBreakpoint::new(0)
+                )
+            )
+            .await,
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(matches!(
+        f.manager
+            .remove_breakpoint(
+                "wrong",
+                f.id,
+                DebugRemoveBreakpointRequest::new(DebugBreakpointId(1))
+            )
+            .await,
+        Err(DapError::SessionAccessDenied { .. })
+    ));
+    assert!(
+        timeout(Duration::from_millis(20), f.adapter.recv())
+            .await
+            .is_err()
+    );
+    let after = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.breakpoints.snapshot(),
+            data.output.page(None, usize::MAX),
+        )
+    };
+    assert_eq!(after, before);
+}
+
+#[tokio::test]
+async fn source_change_triggers_compensating_empty_clear() {
+    let mut f = fixture("owner");
+    let task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let set = request(&mut f.adapter).await;
+    std::fs::write(&f.source, b"changed").unwrap();
+    f.adapter
+        .respond_ok(
+            &set,
+            Some(json!({"breakpoints":[{"id":1,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    let clear = request(&mut f.adapter).await;
+    assert_eq!(clear.arguments.as_ref().unwrap()["breakpoints"], json!([]));
+    f.adapter
+        .respond_ok(&clear, Some(json!({"breakpoints":[]})))
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::DebugSourceChangedDuringOperation { .. })
+    ));
+    assert!(
+        f.manager
+            .breakpoints("owner", f.id)
+            .unwrap()
+            .sources
+            .is_empty()
+    );
+    sleep(Duration::from_millis(1)).await;
+}
+
+#[tokio::test]
+async fn serialized_operation_gate_obeys_the_single_operation_deadline() {
+    let f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let _held = entry.operation.lock().await;
+    let deadline = Instant::now() + Duration::from_millis(20);
+    assert!(matches!(
+        control::deadline_gate(&entry, deadline, "set breakpoint").await,
+        Err(DapError::RequestTimeout { command }) if command == "set breakpoint"
+    ));
+}
+
+#[tokio::test]
+async fn ambiguous_timeout_with_unknown_queued_events_is_indeterminate() {
+    let mut f = fixture("owner");
+    let task = {
+        let manager = f.manager.clone();
+        let source = f.source.clone();
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let _set = request(&mut f.adapter).await;
+    f.adapter
+        .event(
+            "breakpoint",
+            Some(json!({"reason":"changed","breakpoint":{"id":999,"verified":false}})),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::RequestTimeout { .. })
+    ));
+    let snapshot = f.manager.breakpoints("owner", f.id).unwrap();
+    assert_eq!(snapshot.sources.len(), 1);
+    assert_eq!(
+        snapshot.sources[0].synchronization,
+        DebugBreakpointSynchronization::Indeterminate
+    );
+}
+
+#[tokio::test]
+async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
+    let f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let mut data = lock(&entry.data);
+    let other = f.root.join("other.rs");
+    data.breakpoints.sources.insert(
+        other.clone(),
+        SourceRecord {
+            original: other.clone(),
+            relative: PathBuf::from("other.rs"),
+            revision: DebugSourceRevision {
+                sha256: [0; 32],
+                byte_len: 0,
+            },
+            generation: 1,
+            synchronization: DebugBreakpointSynchronization::Synchronized,
+            breakpoints: BTreeMap::new(),
+        },
+    );
+    data.breakpoints.in_flight = Some(BreakpointTransactionInFlight {
+        source: f.source.clone(),
+        bounded_events: VecDeque::new(),
+        overflowed: false,
+    });
+    let operations = DebugOperationConfig {
+        max_queued_breakpoint_events: 1,
+        ..DebugOperationConfig::default()
+    };
+    queue_breakpoint_event(&mut data, 1, json!({"unknown":"source"}), &operations);
+    queue_breakpoint_event(&mut data, 2, json!({"breakpoint":{"id":9}}), &operations);
+    let transaction = data.breakpoints.in_flight.as_ref().unwrap();
+    assert_eq!(transaction.bounded_events.len(), 1);
+    assert!(transaction.overflowed);
+    assert_eq!(
+        data.breakpoints.sources[&other].synchronization,
+        DebugBreakpointSynchronization::Indeterminate
+    );
+}
+
+#[tokio::test]
+async fn source_hash_gate_uses_the_operation_deadline_without_overlap() {
+    let f = fixture("owner");
+    let entry = f.manager.core.entry(f.id).unwrap();
+    let held = Arc::clone(&entry.source_hash)
+        .acquire_owned()
+        .await
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let started = Instant::now();
+    let error = match resolve_source(
+        &entry.workspace,
+        &entry,
+        &f.source,
+        &f.manager.core.operations,
+        deadline,
+    )
+    .await
+    {
+        Ok(_) => panic!("hash gate unexpectedly acquired"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, DapError::RequestTimeout { ref command } if command == "source revision")
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert_eq!(entry.source_hash.available_permits(), 0);
+    drop(held);
+    resolve_source(
+        &entry.workspace,
+        &entry,
+        &f.source,
+        &f.manager.core.operations,
+        Instant::now() + Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn response_breakpoint_source_must_be_the_same_workspace_path_only_file() {
+    let f = fixture("owner");
+    let expected = f.source.canonicalize().unwrap();
+    let response = |source: Value| {
+        Response::success(
+            2,
+            1,
+            "setBreakpoints",
+            Some(json!({"breakpoints":[{"verified":true,"source":source}]})),
+        )
+    };
+    let config = DebugOperationConfig::default();
+    assert!(
+        parse_breakpoints_response(
+            &response(json!({"path":expected})),
+            1,
+            &config,
+            &DebugWorkspaceKey::new(&f.root, "owner").unwrap(),
+            &f.source.canonicalize().unwrap(),
+        )
+        .is_ok()
+    );
+    for invalid in [
+        json!({"sourceReference":7}),
+        json!({"path":f.root.join("missing.rs")}),
+        json!({"path":f.root.join("other.rs"),"sourceReference":7}),
+        json!({"path":std::env::temp_dir()}),
+    ] {
+        assert!(matches!(
+            parse_breakpoints_response(
+                &response(invalid),
+                1,
+                &config,
+                &DebugWorkspaceKey::new(&f.root, "owner").unwrap(),
+                &f.source.canonicalize().unwrap(),
+            ),
+            Err(DapError::InvalidSetBreakpointsResponse { .. })
+        ));
+    }
+}
+
+#[tokio::test]
+async fn removed_event_deletes_the_last_synchronized_source_record() {
+    let f = fixture("owner");
+    let canonical = f.source.canonicalize().unwrap();
+    let local_id = DebugBreakpointId(1);
+    let mut registry = BreakpointRegistry::default();
+    registry.sources.insert(
+        canonical,
+        SourceRecord {
+            original: f.source.clone(),
+            relative: PathBuf::from("hello world.rs"),
+            revision: DebugSourceRevision {
+                sha256: [0; 32],
+                byte_len: 1,
+            },
+            generation: 1,
+            synchronization: DebugBreakpointSynchronization::Synchronized,
+            breakpoints: BTreeMap::from([(
+                local_id,
+                DebugBreakpoint {
+                    id: local_id,
+                    source: PathBuf::from("hello world.rs"),
+                    source_revision: DebugSourceRevision {
+                        sha256: [0; 32],
+                        byte_len: 1,
+                    },
+                    requested: DebugSourceBreakpoint::new(1),
+                    adapter_id: Some(9),
+                    verified: true,
+                    reason: None,
+                    message: None,
+                    message_truncated_prefix_bytes: 0,
+                    resolved: DebugBreakpointLocation::default(),
+                },
+            )]),
+        },
+    );
+    apply_breakpoint_event(
+        &mut registry,
+        2,
+        json!({"reason":"removed","breakpoint":{"id":9}}),
+        &DebugOperationConfig::default(),
+    );
+    assert!(registry.sources.is_empty());
+}

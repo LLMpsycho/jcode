@@ -635,6 +635,12 @@ use self::file_activity::file_activity_scope_label;
 mod file_touch_service;
 pub(crate) use self::file_touch_service::FileTouchService;
 
+mod file_snapshot_ledger;
+pub(crate) use self::file_snapshot_ledger::{
+    FileSnapshotLedger, ReadCoverage, SessionReadFreshness, SnapshotMove, SnapshotRecord,
+    SnapshotWrite,
+};
+
 #[cfg(test)]
 mod socket_tests;
 
@@ -704,6 +710,10 @@ pub struct Server {
     client_connections: Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     /// File-touch tracking service (forward path index + reverse session index)
     file_touch: FileTouchService,
+    /// Shared file revisions and exact per-session read coverage.
+    file_snapshots: FileSnapshotLedger,
+    /// Shared, worktree-isolated language server processes.
+    lsp_pool: Arc<jcode_lsp::LspServicePool>,
     /// Shared ownership of core swarm coordination state.
     swarm_state: SwarmState,
     /// Shared context by swarm (swarm_id -> key -> SharedContext)
@@ -774,11 +784,15 @@ impl Server {
         };
         crate::process_title::set_server_title(&identity.name);
 
+        let file_snapshots = FileSnapshotLedger::new();
+        let lsp_pool = Arc::new(jcode_lsp::LspServicePool::new());
+
         // Initialize the background runner even when ambient mode is disabled so
         // session-targeted scheduled tasks still have a live delivery loop.
         let ambient_runner = {
             let safety = Arc::new(crate::safety::SafetySystem::new());
-            let handle = AmbientRunnerHandle::new(safety);
+            let handle =
+                AmbientRunnerHandle::new_with_file_snapshots(safety, file_snapshots.clone());
             crate::tool::ambient::init_schedule_runner(handle.clone());
             Some(handle)
         };
@@ -803,6 +817,8 @@ impl Server {
             client_count: Arc::new(RwLock::new(0)),
             client_connections: Arc::new(RwLock::new(HashMap::new())),
             file_touch: FileTouchService::new(),
+            file_snapshots,
+            lsp_pool,
             swarm_state: SwarmState::new(
                 restored_swarm_members,
                 restored_swarms_by_id,
@@ -948,7 +964,12 @@ impl Server {
 
             let previous_status = session.status.clone();
             let provider = self.provider.fork();
-            let registry = crate::tool::Registry::new(provider.clone()).await;
+            let registry = crate::tool::Registry::new_with_services(
+                provider.clone(),
+                self.file_snapshots.clone(),
+                Arc::clone(&self.lsp_pool),
+            )
+            .await;
             if session.is_canary {
                 registry.register_selfdev_tools().await;
             }
@@ -1289,6 +1310,25 @@ impl Server {
         // keeps the first agent `session_search` call from paying the cold
         // indexing cost while leaving exhaustive searches available on demand.
         crate::tool::spawn_recent_index_warmup();
+
+        let lsp_config = crate::config::config().lsp.clone();
+        if lsp_config.enabled {
+            let lsp_pool = Arc::clone(&self.lsp_pool);
+            tokio::spawn(async move {
+                let idle_timeout = Duration::from_secs(lsp_config.idle_timeout_seconds.max(1));
+                let check_interval =
+                    Duration::from_secs((lsp_config.idle_timeout_seconds / 2).clamp(1, 60));
+                loop {
+                    tokio::time::sleep(check_interval).await;
+                    let evicted = lsp_pool.evict_idle(idle_timeout).await;
+                    if evicted > 0 {
+                        crate::logging::info(&format!(
+                            "Evicted {evicted} idle language server workspace(s)"
+                        ));
+                    }
+                }
+            });
+        }
 
         // Reconcile background-task status files orphaned by a previous
         // process image (crash or exec-based reload). Non-detached tasks die

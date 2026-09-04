@@ -1,0 +1,17 @@
+[package]
+name = "jcode-lsp-types"
+version = "0.1.0"
+edition = "2024"
+description = "Stable serialization contracts for Jcode LSP integration"
+publish = false
+
+[lib]
+name = "jcode_lsp_types"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde_json = "1"

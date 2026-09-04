@@ -1,4 +1,9 @@
 use super::{Tool, ToolContext, ToolOutput};
+use crate::bus::{Bus, BusEvent, FileOp, FileTouch};
+use crate::server::FileSnapshotLedger;
+use crate::tool::file_write_guard::{
+    FileWriteGuard, RequiredCoverage, full_file_range, metadata_for_writes,
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -6,16 +11,33 @@ use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 
-pub struct MultiEditTool;
+pub struct MultiEditTool {
+    write_guard: Option<FileWriteGuard>,
+}
 
 impl MultiEditTool {
     pub fn new() -> Self {
-        Self
+        Self { write_guard: None }
+    }
+
+    pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
+        Self {
+            write_guard: Some(FileWriteGuard::new(file_snapshots)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_guard(write_guard: FileWriteGuard) -> Self {
+        Self {
+            write_guard: Some(write_guard),
+        }
     }
 }
 
 #[derive(Deserialize)]
 struct MultiEditInput {
+    #[serde(default)]
+    intent: Option<String>,
     file_path: String,
     edits: Vec<EditOperation>,
 }
@@ -84,6 +106,10 @@ impl Tool for MultiEditTool {
             return Err(anyhow::anyhow!("File not found: {}", params.file_path));
         }
 
+        let transaction = match &self.write_guard {
+            Some(guard) => Some(guard.begin(&ctx).await?),
+            None => None,
+        };
         let original_content = tokio::fs::read_to_string(&path).await?;
         let mut content = original_content.clone();
         let mut applied = Vec::new();
@@ -125,8 +151,29 @@ impl Tool for MultiEditTool {
             }
         }
 
+        let guarded = match &transaction {
+            Some(transaction) => Some(
+                transaction
+                    .preflight_existing(
+                        &path,
+                        original_content.as_bytes(),
+                        RequiredCoverage::Ranges(full_file_range(&original_content)),
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
+
         // Write the result
         tokio::fs::write(&path, &content).await?;
+        let recorded = match (transaction.as_ref(), guarded.clone()) {
+            (Some(transaction), Some(guarded)) => Some(
+                transaction
+                    .record_success(guarded, &path, content.as_bytes())
+                    .await?,
+            ),
+            _ => None,
+        };
 
         // Format output
         let mut output = format!("Edited {}\n\n", params.file_path);
@@ -164,7 +211,29 @@ impl Tool for MultiEditTool {
             &content,
         );
 
-        Ok(ToolOutput::new(output).with_title(params.file_path.clone()))
+        if let Some(guarded) = &guarded {
+            guarded.append_warnings(&mut output);
+        }
+
+        let diff = generate_diff_summary(&original_content, &content);
+        Bus::global().publish(BusEvent::FileTouch(FileTouch {
+            session_id: ctx.session_id.clone(),
+            path: path.clone(),
+            op: FileOp::Edit,
+            intent: params.intent.filter(|value| !value.trim().is_empty()),
+            summary: Some(format!(
+                "multiedit: {} applied, {} failed",
+                applied.len(),
+                failed.len()
+            )),
+            detail: Some(diff).filter(|value| !value.is_empty()),
+        }));
+
+        let output = ToolOutput::new(output).with_title(params.file_path.clone());
+        Ok(match recorded {
+            Some(recorded) => output.with_metadata(metadata_for_writes(&[recorded])),
+            None => output,
+        })
     }
 }
 

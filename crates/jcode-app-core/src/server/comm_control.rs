@@ -10,8 +10,8 @@ use super::swarm_mutation_state::{
     finish_request as finish_swarm_mutation_request, request_key as swarm_mutation_request_key,
 };
 use super::{
-    ClientConnectionInfo, SwarmEvent, SwarmEventType, SwarmMember, SwarmMutationRuntime,
-    SwarmState, SwarmTaskProgress, VersionedPlan, broadcast_swarm_plan,
+    ClientConnectionInfo, FileSnapshotLedger, SwarmEvent, SwarmEventType, SwarmMember,
+    SwarmMutationRuntime, SwarmState, SwarmTaskProgress, VersionedPlan, broadcast_swarm_plan,
     broadcast_swarm_plan_with_previous, broadcast_swarm_status, fanout_session_event,
     persist_swarm_state_for, queue_soft_interrupt_for_session, record_swarm_event,
     set_member_task_label, truncate_detail, update_member_status, update_member_status_with_report,
@@ -1860,6 +1860,7 @@ pub(super) async fn handle_comm_assign_next(
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn crate::provider::Provider>,
     soft_interrupt_queues: &super::SessionInterruptQueues,
+    file_snapshots: &FileSnapshotLedger,
     client_connections: &Arc<RwLock<HashMap<String, ClientConnectionInfo>>>,
     swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
     swarms_by_id: &Arc<RwLock<HashMap<String, HashSet<String>>>>,
@@ -1937,6 +1938,7 @@ pub(super) async fn handle_comm_assign_next(
                 swarm_event_tx,
                 mcp_pool,
                 soft_interrupt_queues,
+                file_snapshots,
                 client_connections,
             )
             .await

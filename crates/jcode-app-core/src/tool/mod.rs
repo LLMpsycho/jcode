@@ -1,5 +1,6 @@
 mod agentgrep;
 pub mod ambient;
+mod anchored_edit;
 mod apply_patch;
 mod bash;
 mod batch;
@@ -15,12 +16,19 @@ mod discover;
 mod discover_secrets;
 mod edit;
 mod feedback;
+mod file_write_guard;
+#[cfg(test)]
+mod file_write_guard_tests;
 mod gmail;
 mod goal;
 pub mod inflight;
 mod invalid;
 mod jcode_docs;
 mod ls;
+mod lsp;
+mod lsp_action;
+mod lsp_rename;
+mod lsp_support;
 pub mod mcp;
 mod memory;
 mod multiedit;
@@ -164,6 +172,7 @@ pub struct Registry {
     tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
     skills: Arc<RwLock<SkillRegistry>>,
     compaction: Arc<RwLock<CompactionManager>>,
+    lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
 }
 
 impl Clone for Registry {
@@ -174,6 +183,7 @@ impl Clone for Registry {
             // Each clone gets a fresh CompactionManager to prevent parallel
             // subagents from corrupting each other's message history
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            lsp_pool: self.lsp_pool.clone(),
         }
     }
 }
@@ -210,6 +220,7 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: Arc::new(RwLock::new(SkillRegistry::default())),
             compaction: Arc::new(RwLock::new(CompactionManager::new())),
+            lsp_pool: None,
         }
     }
 
@@ -334,6 +345,28 @@ impl Registry {
     }
 
     pub async fn new(_provider: Arc<dyn Provider>) -> Self {
+        Self::new_inner(None, None).await
+    }
+
+    pub(crate) async fn new_with_file_snapshots(
+        _provider: Arc<dyn Provider>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+    ) -> Self {
+        Self::new_inner(Some(file_snapshots), None).await
+    }
+
+    pub(crate) async fn new_with_services(
+        _provider: Arc<dyn Provider>,
+        file_snapshots: crate::server::FileSnapshotLedger,
+        lsp_pool: Arc<jcode_lsp::LspServicePool>,
+    ) -> Self {
+        Self::new_inner(Some(file_snapshots), Some(lsp_pool)).await
+    }
+
+    async fn new_inner(
+        file_snapshots: Option<crate::server::FileSnapshotLedger>,
+        lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
+    ) -> Self {
         let start = std::time::Instant::now();
         let skills_start = std::time::Instant::now();
         let skills = Self::shared_skills_registry();
@@ -346,11 +379,57 @@ impl Registry {
             tools: Arc::new(RwLock::new(HashMap::new())),
             skills: skills.clone(),
             compaction: compaction.clone(),
+            lsp_pool: lsp_pool.clone(),
         };
         let registry_struct_ms = registry_struct_start.elapsed().as_millis();
 
         let base_start = std::time::Instant::now();
         let mut tools_map = Self::base_tools(&skills);
+        let lsp_file_snapshots = file_snapshots.clone();
+        if let Some(file_snapshots) = file_snapshots {
+            Self::insert_tool(
+                &mut tools_map,
+                "read",
+                read::ReadTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "anchored_edit",
+                anchored_edit::AnchoredEditTool::new(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "write",
+                write::WriteTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "edit",
+                edit::EditTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "multiedit",
+                multiedit::MultiEditTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "patch",
+                patch::PatchTool::with_file_snapshots(file_snapshots.clone()),
+            );
+            Self::insert_tool(
+                &mut tools_map,
+                "apply_patch",
+                apply_patch::ApplyPatchTool::with_file_snapshots(file_snapshots),
+            );
+        }
+        if let (Some(lsp_pool), Some(file_snapshots)) = (lsp_pool, lsp_file_snapshots) {
+            Self::insert_tool(
+                &mut tools_map,
+                "lsp",
+                lsp::LspTool::new(lsp_pool, file_snapshots),
+            );
+        }
         let base_ms = base_start.elapsed().as_millis();
 
         // Per-session tools that need provider/registry references
@@ -739,7 +818,10 @@ impl Registry {
         );
 
         let started_at = std::time::Instant::now();
-        let result = tool.execute(input.clone(), ctx.clone()).await;
+        let mut result = tool.execute(input.clone(), ctx.clone()).await;
+        if let (Some(lsp_pool), Ok(output)) = (&self.lsp_pool, &mut result) {
+            lsp::attach_post_edit_feedback(resolved_name, output, &ctx, Arc::clone(lsp_pool)).await;
+        }
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
         crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);

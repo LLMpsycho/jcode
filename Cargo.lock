@@ -3122,7 +3122,10 @@ dependencies = [
  "jcode-build-support",
  "jcode-command-risk",
  "jcode-core",
+ "jcode-edit-core",
+ "jcode-edit-types",
  "jcode-import-core",
+ "jcode-lsp",
  "jcode-message-types",
  "jcode-notify-email",
  "jcode-overnight-core",
@@ -3211,6 +3214,7 @@ dependencies = [
  "jcode-gateway-types",
  "jcode-import-core",
  "jcode-logging",
+ "jcode-lsp-types",
  "jcode-memory-types",
  "jcode-message-types",
  "jcode-plan",
@@ -3323,6 +3327,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-dap"
+version = "0.1.0"
+dependencies = [
+ "jcode-dap-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "jcode-dap-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "jcode-edit-core"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "jcode-edit-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jcode-edit-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jcode-embedding"
 version = "0.1.0"
 dependencies = [
@@ -3389,6 +3434,29 @@ dependencies = [
  "jcode-storage",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "jcode-lsp"
+version = "0.1.0"
+dependencies = [
+ "jcode-lsp-types",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "jcode-lsp-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

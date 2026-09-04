@@ -1,0 +1,15 @@
+[package]
+name = "jcode-edit-types"
+version = "0.1.0"
+edition = "2024"
+description = "Stable serialization contracts for Jcode anchored edits"
+
+[lib]
+name = "jcode_edit_types"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
