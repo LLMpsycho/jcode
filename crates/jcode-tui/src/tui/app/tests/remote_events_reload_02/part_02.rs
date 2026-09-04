@@ -71,7 +71,9 @@ fn test_replace_latest_tool_display_message_updates_latest_match_and_bumps_versi
         id: "tool-1".to_string(),
         name: "read".to_string(),
         input: serde_json::json!({"file_path": "src/main.rs"}),
-        intent: None, thought_signature: None, };
+        intent: None,
+        thought_signature: None,
+    };
 
     app.push_display_message(DisplayMessage {
         role: "tool".to_string(),
@@ -421,6 +423,8 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
             id: "tool_a".to_string(),
             name: "webfetch".to_string(),
             output: "page A body".to_string(),
+            title: None,
+            metadata: None,
             error: None,
         },
         &mut remote,
@@ -441,6 +445,11 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
             id: "tool_b".to_string(),
             name: "webfetch".to_string(),
             output: "page B body".to_string(),
+            title: Some("Fetched page B".to_string()),
+            metadata: Some(serde_json::json!({
+                "protocol": "jcode.dap.v1",
+                "action": "threads"
+            })),
             error: None,
         },
         &mut remote,
@@ -451,13 +460,10 @@ fn test_tool_done_preserves_sibling_streaming_tool_inputs_and_intents() {
         .display_messages()
         .iter()
         .rev()
-        .find(|dm| {
-            dm.tool_data
-                .as_ref()
-                .is_some_and(|td| td.id == "tool_b")
-        })
+        .find(|dm| dm.tool_data.as_ref().is_some_and(|td| td.id == "tool_b"))
         .expect("missing tool_b display message");
     let tool_b = tool_b_msg.tool_data.as_ref().unwrap();
+    assert_eq!(tool_b_msg.title.as_deref(), Some("Fetched page B"));
     assert_eq!(tool_b.intent.as_deref(), Some("Fetch page B"));
     assert_eq!(
         tool_b.input.get("url").and_then(|v| v.as_str()),
