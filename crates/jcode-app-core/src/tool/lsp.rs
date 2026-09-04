@@ -1,3 +1,7 @@
+#[path = "lsp/diagnostic_output.rs"]
+mod diagnostic_output;
+use diagnostic_output::{diagnostic_evidence, prioritized_diagnostics};
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -756,26 +760,6 @@ fn render_diagnostics(items: &[Diagnostic], root: &Path, file: &Path) -> String 
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn prioritized_diagnostics(items: &[Diagnostic]) -> Vec<&Diagnostic> {
-    let mut ordered: Vec<_> = items.iter().collect();
-    ordered.sort_by_key(|item| item.severity.map_or(1, |severity| severity.0));
-    ordered
-}
-
-fn diagnostic_evidence(items: &[Diagnostic]) -> Vec<Value> {
-    prioritized_diagnostics(items)
-        .into_iter()
-        .take(32)
-        .map(|item| {
-            json!({
-                "range": item.range,
-                "severity": item.severity,
-                "message": crate::message::redact_secrets(&item.message).chars().take(512).collect::<String>()
-            })
-        })
-        .collect()
 }
 
 fn render_locations(value: &Value, root: &Path) -> (String, usize) {
