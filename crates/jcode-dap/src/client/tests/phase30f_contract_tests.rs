@@ -53,6 +53,35 @@ fn public_protocol_encode_decode_preserve_positive_i64_compatibility() {
 }
 
 #[test]
+fn adapter_protocol_decode_accepts_zero_sequence_for_lldb_compatibility() {
+    for payload in [
+        br#"{"seq":0,"type":"response","request_seq":1,"success":true,"command":"initialize"}"#
+            .as_slice(),
+        br#"{"seq":0,"type":"event","event":"initialized"}"#.as_slice(),
+    ] {
+        assert!(decode_message(payload).is_ok());
+    }
+    assert!(matches!(
+        decode_message(br#"{"seq":0,"type":"request","command":"runInTerminal"}"#),
+        Err(DapError::InvalidMessage(message))
+            if message == "request seq must be positive; response and event seq must be non-negative"
+    ));
+}
+
+#[test]
+fn outbound_protocol_encode_rejects_nonpositive_sequence() {
+    for encoded in [
+        encode_message(&Request::new(0, "threads", None)),
+        encode_message(&Response::success(0, 1, "threads", None)),
+        encode_message(&Event::new(0, "stopped", None)),
+    ] {
+        assert!(
+            matches!(encoded, Err(DapError::InvalidMessage(message)) if message == "seq must be positive")
+        );
+    }
+}
+
+#[test]
 fn positive_int32_numeric_representations_are_exact() {
     let counter = std::sync::atomic::AtomicI64::new(1);
     assert_eq!(next_sequence(&counter).unwrap(), 1);

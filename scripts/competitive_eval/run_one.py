@@ -33,6 +33,9 @@ else:
     from scripts.competitive_eval.redact import redact_mapping, redact_text, sensitive_values
 
 
+UNSUPPORTED_SETUP_EXIT = 78
+
+
 @dataclass(frozen=True)
 class TrialConfig:
     campaign_id: str
@@ -283,8 +286,19 @@ def run_trial(
             _write_artifact(run_dir / "setup_stdout.log", setup_outcome.stdout, secrets, config.output_limit_bytes)
             _write_artifact(run_dir / "setup_stderr.log", setup_outcome.stderr, secrets, config.output_limit_bytes)
             if setup_outcome.timed_out or setup_outcome.returncode != 0:
-                result["status"] = "error"
-                result["failure_class"] = "setup_timeout" if setup_outcome.timed_out else "setup_exit"
+                unsupported = setup_outcome.returncode == UNSUPPORTED_SETUP_EXIT
+                result["status"] = "unsupported" if unsupported else "error"
+                result["failure_class"] = (
+                    "unsupported_capability"
+                    if unsupported
+                    else "setup_timeout"
+                    if setup_outcome.timed_out
+                    else "setup_exit"
+                )
+                if unsupported:
+                    result["unsupported_reason"] = (
+                        "setup reported an unavailable runtime capability"
+                    )
                 result["duration_ms"] = int((time.monotonic() - started) * 1000)
                 validate_manifest(result, "result")
                 atomic_write_json(result_path, result)

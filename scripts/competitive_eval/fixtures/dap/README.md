@@ -11,7 +11,9 @@ throughput:
 Each task's `setup.py` builds a debuggable binary and writes a DAP-only config
 under the isolated trial `JCODE_HOME`. It discovers `lldb-dap` from
 `JCODE_EVAL_LLDB_DAP`, `PATH`, or `xcrun`, in that order. It does not download
-an adapter or alter user configuration.
+an adapter or alter user configuration. The targeted-step task probes the
+selected adapter first and records the trial as unsupported unless
+`supportsStepInTargetsRequest` is explicitly advertised.
 
 Validate manifests without invoking a model:
 

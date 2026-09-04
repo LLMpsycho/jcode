@@ -114,6 +114,49 @@ async fn correlates_out_of_order_responses_and_monotonic_sequences() {
 }
 
 #[tokio::test]
+async fn zero_sequence_adapter_messages_receive_monotonic_local_ordering() {
+    let (client, mut adapter) = FakeAdapter::pair(4096);
+    let mut events = client.subscribe_events();
+    let pending = tokio::spawn({
+        let client = client.clone();
+        async move {
+            client
+                .request("threads", None, Duration::from_secs(1))
+                .await
+        }
+    });
+    let sent = match adapter.recv().await.unwrap() {
+        Message::Request(request) => request,
+        other => panic!("expected request, got {other:?}"),
+    };
+    let response = serde_json::to_vec(&json!({
+        "seq": 0,
+        "type": "response",
+        "request_seq": sent.seq,
+        "success": true,
+        "command": "threads"
+    }))
+    .unwrap();
+    adapter
+        .send_raw(&crate::encode_frame(&response))
+        .await
+        .unwrap();
+    assert_eq!(pending.await.unwrap().unwrap().seq, 1);
+
+    let event = serde_json::to_vec(&json!({
+        "seq": 0,
+        "type": "event",
+        "event": "initialized"
+    }))
+    .unwrap();
+    adapter
+        .send_raw(&crate::encode_frame(&event))
+        .await
+        .unwrap();
+    assert_eq!(events.recv().await.unwrap().seq, 2);
+}
+
+#[tokio::test]
 async fn concurrent_request_sequences_are_monotonic_in_wire_order() {
     let (client, mut adapter) = FakeAdapter::pair(4096);
     let requests = (0..32)

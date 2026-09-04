@@ -13,6 +13,13 @@ pub enum Message {
 }
 
 pub fn decode_message(payload: &[u8]) -> Result<Message> {
+    decode_message_with_sequence_policy(payload, true)
+}
+
+fn decode_message_with_sequence_policy(
+    payload: &[u8],
+    allow_zero_sequence: bool,
+) -> Result<Message> {
     let value: Value = serde_json::from_slice(payload)
         .map_err(|error| DapError::InvalidJson(error.to_string()))?;
     let object = value
@@ -22,13 +29,18 @@ pub fn decode_message(payload: &[u8]) -> Result<Message> {
         .get("seq")
         .and_then(Value::as_i64)
         .ok_or_else(|| DapError::InvalidMessage("missing integer seq".to_owned()))?;
-    if seq <= 0 {
-        return Err(DapError::InvalidMessage("seq must be positive".to_owned()));
-    }
     let kind = object
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| DapError::InvalidMessage("missing string type".to_owned()))?;
+    if seq < 0 || (seq == 0 && (!allow_zero_sequence || kind == "request")) {
+        let requirement = if allow_zero_sequence {
+            "request seq must be positive; response and event seq must be non-negative"
+        } else {
+            "seq must be positive"
+        };
+        return Err(DapError::InvalidMessage(requirement.to_owned()));
+    }
     let message = match kind {
         "request" => Message::Request(serde_json::from_value(value).map_err(invalid_message)?),
         "response" => Message::Response(serde_json::from_value(value).map_err(invalid_message)?),
@@ -55,7 +67,7 @@ pub fn encode_message(message: &impl Serialize) -> Result<Vec<u8>> {
         return Err(DapError::InvalidJson(error.to_string()));
     }
     let payload = payload.bytes;
-    decode_message(&payload)?;
+    decode_message_with_sequence_policy(&payload, false)?;
     Ok(encode_frame(&payload))
 }
 

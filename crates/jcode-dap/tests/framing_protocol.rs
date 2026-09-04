@@ -114,8 +114,12 @@ fn protocol_dispatches_by_type_and_validates_identifiers() {
         decode_message(br#"{"seq":3,"type":"event","event":"stopped"}"#).unwrap(),
         Message::Event(_)
     ));
+    assert!(matches!(
+        decode_message(br#"{"seq":0,"type":"event","event":"initialized"}"#).unwrap(),
+        Message::Event(_)
+    ));
     for payload in [
-        br#"{"seq":0,"type":"event","event":"x"}"#.as_slice(),
+        br#"{"seq":0,"type":"request","command":"runInTerminal"}"#.as_slice(),
         br#"{"seq":1,"type":"request","command":""}"#.as_slice(),
         br#"{"seq":1,"type":"response","request_seq":0,"success":true,"command":"x"}"#.as_slice(),
         br#"{"seq":1,"type":"event","event":""}"#.as_slice(),
