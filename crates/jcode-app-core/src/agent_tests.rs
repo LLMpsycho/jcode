@@ -2103,19 +2103,19 @@ async fn rewind_and_undo_reset_advisor_context() {
 
     seed_reviewing_advisor(&agent);
     assert_eq!(agent.rewind_to_message(1), Ok(1));
-    assert!(
-        crate::advisor::advisor_manager()
-            .snapshot(&agent.session.id)
-            .is_none()
-    );
+    let snapshot = crate::advisor::advisor_manager()
+        .snapshot(&agent.session.id)
+        .expect("retained restart-safe controls");
+    assert_eq!(snapshot.status, crate::advisor::AdvisorStatus::Idle);
+    assert_eq!(snapshot.private_context_len, 0);
 
     seed_reviewing_advisor(&agent);
     assert_eq!(agent.undo_rewind(), Ok(1));
-    assert!(
-        crate::advisor::advisor_manager()
-            .snapshot(&agent.session.id)
-            .is_none()
-    );
+    let snapshot = crate::advisor::advisor_manager()
+        .snapshot(&agent.session.id)
+        .expect("retained restart-safe controls");
+    assert_eq!(snapshot.status, crate::advisor::AdvisorStatus::Idle);
+    assert_eq!(snapshot.private_context_len, 0);
 }
 
 #[tokio::test]
@@ -2130,9 +2130,9 @@ async fn compaction_application_resets_advisor_context() {
 
     seed_reviewing_advisor(&agent);
     agent.note_compaction_applied();
-    assert!(
-        crate::advisor::advisor_manager()
-            .snapshot(&agent.session.id)
-            .is_none()
-    );
+    let snapshot = crate::advisor::advisor_manager()
+        .snapshot(&agent.session.id)
+        .expect("retained restart-safe controls");
+    assert_eq!(snapshot.status, crate::advisor::AdvisorStatus::Idle);
+    assert_eq!(snapshot.private_context_len, 0);
 }
