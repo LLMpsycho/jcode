@@ -183,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn denied_unavailable_or_ambiguous_roles_fail_before_selection() {
+    fn denied_unavailable_or_unknown_roles_fail_before_selection() {
         let mut primary = provider();
         let config = AdvisorConfig {
             model: Some("reviewer".into()),
@@ -208,5 +208,40 @@ mod tests {
             ..AdvisorConfig::default()
         };
         assert!(apply(&primary, &config).is_err());
+    }
+
+    #[test]
+    fn advisor_permission_keys_accept_only_the_exact_canonical_runtime() {
+        let primary = provider();
+        let config = AdvisorConfig {
+            model: Some("openai-api:reviewer".into()),
+            allowed_runtime_keys: Some(vec!["openai-api-key".into()]),
+            ..AdvisorConfig::default()
+        };
+        apply(&primary, &config).expect("explicit permitted API-key route");
+        assert_eq!(
+            primary.selected.lock().expect("selection").as_ref().expect("route").runtime_key,
+            RuntimeKey::OpenAIApiKey
+        );
+        let denied = AdvisorConfig {
+            allowed_runtime_keys: Some(vec!["openai-oauth".into()]),
+            ..config
+        };
+        assert!(apply(&primary, &denied).is_err());
+    }
+
+    #[test]
+    fn advisor_ambiguous_bare_model_requires_a_canonical_route() {
+        let mut primary = provider();
+        primary.routes[0].provider = "Anthropic".into();
+        primary.routes[0].api_method = "anthropic-api".into();
+        primary.routes[1] = primary.routes[0].clone();
+        primary.routes[1].api_method = "claude".into();
+        let config = AdvisorConfig {
+            reviewer_model: Some("reviewer".into()),
+            ..AdvisorConfig::default()
+        };
+        assert!(apply(&primary, &config).is_err());
+        assert!(primary.selected.lock().expect("selection").is_none());
     }
 }
