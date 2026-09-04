@@ -36,7 +36,6 @@ impl AdapterCommand {
             stderr_limit: DEFAULT_STDERR_LIMIT,
         }
     }
-    #[cfg(test)]
     pub(crate) fn with_arg(mut self, arg: impl Into<OsString>) -> Self {
         self.args.push(arg.into());
         self

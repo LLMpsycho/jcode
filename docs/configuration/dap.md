@@ -12,11 +12,15 @@ allow_evaluate = false
 [dap.adapters.lldb-dap]
 kind = "lldb-dap"
 command = "/absolute/path/to/lldb-dap"
+
+[dap.adapters.gdb]
+kind = "gdb-dap"
+command = "/absolute/path/to/gdb"
 ```
 
-The adapter command must already exist and be executable. Use an absolute command path when deterministic resolution is required. Jcode does not search for, install, update, or download debug adapters.
+The adapter command must already exist and be executable. Relative commands are resolved against the server's `PATH`; use an absolute command path when deterministic resolution is required. Jcode does not auto-discover candidates, install, update, or download debug adapters.
 
-The only initial adapter kind is `lldb-dap`. Program and working-directory values are resolved under the `ToolContext` workspace, and user-provided launch arguments are passed literally without a shell. Adapter environment overrides are not exposed.
+The supported explicit adapter kinds are `lldb-dap` and GDB's native `gdb-dap` mode. Jcode starts GDB with the fixed `--interpreter=dap` argument. Program and working-directory values are resolved under the `ToolContext` workspace, and user-provided launch arguments are passed literally without a shell. Adapter environment overrides and adapter command arguments are not exposed.
 
 ## Evaluation requires two opt-ins
 

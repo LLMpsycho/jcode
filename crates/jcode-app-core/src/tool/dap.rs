@@ -113,9 +113,6 @@ fn adapter_path(
     let configured = adapters
         .get(adapter_id)
         .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
-    match configured.kind {
-        jcode_dap::DapAdapterKind::LldbDap => {}
-    }
     let command = configured.command.trim();
     let path = PathBuf::from(command);
     if path.is_absolute() {
@@ -229,10 +226,16 @@ impl DapTool {
                     .as_deref()
                     .ok_or_else(|| anyhow!("program is required"))?;
                 let adapter_id = p.adapter.as_deref().unwrap_or("lldb-dap");
-                let adapter = DebugAdapterConfig::lldb_dap(adapter_path(
-                    self.service.adapters.as_ref(),
-                    adapter_id,
-                )?)?;
+                let configured = self
+                    .service
+                    .adapters
+                    .get(adapter_id)
+                    .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
+                let path = adapter_path(self.service.adapters.as_ref(), adapter_id)?;
+                let adapter = match configured.kind {
+                    jcode_dap::DapAdapterKind::LldbDap => DebugAdapterConfig::lldb_dap(path),
+                    jcode_dap::DapAdapterKind::GdbDap => DebugAdapterConfig::gdb_dap(path),
+                }?;
                 let snapshot = if p.action == "launch" {
                     let mut r = DebugLaunchRequest::new(program)
                         .with_args(p.args.clone())

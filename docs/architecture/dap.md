@@ -16,7 +16,7 @@ A manager permits one active root debug tree per owner and applies a global sess
 
 ## Process boundary
 
-The initial adapter profile is `kind = "lldb-dap"`. Jcode starts a configured absolute adapter executable with no shell. Programs, working directories, and breakpoint sources must resolve to canonical regular files inside the current workspace.
+The explicit adapter profiles are `kind = "lldb-dap"` and native `kind = "gdb-dap"`. Jcode starts a configured adapter executable with no shell, and the GDB profile adds only the fixed `--interpreter=dap` argument. Programs, working directories, and breakpoint sources must resolve to canonical regular files inside the current workspace.
 
 `attach` is owned attach, not arbitrary process attachment. Jcode starts the target itself, retains its process identity, and passes only that owned PID to the adapter. The tool schema has no PID input.
 

@@ -12,7 +12,7 @@ The tool exposes 18 actions:
 
 | Action | Purpose |
 |---|---|
-| `launch` | Launch a workspace-contained executable under `lldb-dap`. |
+| `launch` | Launch a workspace-contained executable under a configured `lldb-dap` or native `gdb-dap` profile. |
 | `attach` | Spawn a target owned by Jcode and attach to that target. No PID is accepted. |
 | `sessions` | List the caller's bounded session summaries. |
 | `output` | Read a cursor-based page of retained debugger output. |

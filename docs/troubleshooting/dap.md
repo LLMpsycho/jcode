@@ -4,9 +4,9 @@
 
 DAP is opt-in. Confirm that `[dap] enabled = true` is present and restart or reload Jcode. If configuration was changed while a session was active, start a new session because debug sessions are not persisted or reconnected.
 
-## `lldb-dap` cannot be started
+## The configured adapter cannot be started
 
-Configure `kind = "lldb-dap"` and a `command` that resolves to an existing executable. Use an absolute command path for deterministic resolution. Jcode does not discover, install, or download adapters.
+Configure `kind = "lldb-dap"` for LLDB or `kind = "gdb-dap"` for a GDB build with native DAP support, and set `command` to an existing executable. Relative commands use the server's `PATH`; use an absolute command path for deterministic resolution. Jcode does not auto-discover, install, or download adapters.
 
 ## A program, CWD, or source path is rejected
 

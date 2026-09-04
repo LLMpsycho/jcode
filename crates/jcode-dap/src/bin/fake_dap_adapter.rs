@@ -53,6 +53,12 @@ fn main() -> std::io::Result<()> {
     let cwd = std::env::current_dir()?;
     let log_path = cwd.join("fake-dap.log");
     append_log(&log_path, &format!("adapter_pid\t{}", std::process::id()))?;
+    if let Some(mode) = mode {
+        append_log(
+            &log_path,
+            &format!("adapter_arg\t{}", mode.to_string_lossy()),
+        )?;
+    }
     let mut input = std::io::stdin().lock();
     let mut output = std::io::stdout().lock();
     let mut seq = 1_i64;
