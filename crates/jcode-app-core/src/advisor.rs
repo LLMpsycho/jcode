@@ -506,9 +506,8 @@ impl AdvisorManager {
     }
 
     fn fail(&self, owner_session_id: &str, review_id: u64, error: String) {
-        let error = error
+        let error = redact_secrets(&error)
             .split_whitespace()
-            .map(redact_secrets)
             .collect::<Vec<_>>()
             .join(" ");
         crate::logging::warn(&format!(
@@ -646,7 +645,9 @@ mod tests {
             _system: &str,
             _resume_session_id: Option<&str>,
         ) -> Result<crate::provider::EventStream> {
-            anyhow::bail!("request rejected for OPENAI_API_KEY=sk-test-openai-example")
+            anyhow::bail!(
+                "request rejected\nAuthorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789\nOPENAI_API_KEY=sk-test-openai-example"
+            )
         }
 
         fn name(&self) -> &str {
@@ -869,7 +870,9 @@ mod tests {
             .and_then(|snapshot| snapshot.last_error)
             .expect("failure should be stored");
         assert!(error.contains("[REDACTED_SECRET]"));
+        assert!(!error.contains("abcdefghijklmnopqrstuvwxyz0123456789"));
         assert!(!error.contains("sk-test-openai-example"));
+        assert!(!error.contains('\n'));
     }
 
     #[tokio::test]
