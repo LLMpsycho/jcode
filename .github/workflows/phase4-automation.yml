@@ -1,0 +1,52 @@
+name: Phase 4 automation
+
+on:
+  push:
+    branches:
+      - automation/phase4-advisor-completion
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: phase4-automation
+  cancel-in-progress: true
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out automation branch
+        uses: actions/checkout@v4
+        with:
+          path: automation
+      - name: Check out owned implementation branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/phase4-advisor-completion
+          path: worktree
+          fetch-depth: 0
+      - name: Inspect advisor integration surfaces
+        shell: bash
+        working-directory: worktree
+        run: |
+          set -euo pipefail
+          echo '=== branch/base ==='
+          git status --short --branch
+          git log -1 --oneline
+          echo '=== advisor manager lifecycle callsites ==='
+          rg -n 'advisor_manager\(\).*\.(remove|set_enabled|resolve_note|snapshot|notes|is_enabled|blocks_tool_call)|advisor_manager\(\)' crates/jcode-app-core/src | head -200 || true
+          echo '=== compaction/rewind/reset callsites ==='
+          rg -n 'Compacted|compaction|rewind_to_message|undo_rewind|reset_runtime_state_for_session_change' crates/jcode-app-core/src/agent crates/jcode-app-core/src/server | head -250 || true
+          echo '=== AdvisorConfig ==='
+          rg -n -B8 -A90 'struct AdvisorConfig|enum AdvisorMode|enum AdvisorSeverity' crates/jcode-config-types crates/jcode-base | head -260 || true
+          echo '=== provider routing surface ==='
+          rg -n 'model_routes|set_route_selection|active_credential|credential_mode|RouteSelection|RuntimeKey' crates/jcode-provider-core crates/jcode-app-core/src/provider crates/jcode-app-core/src/agent | head -300 || true
+          echo '=== tool registry direct map uses ==='
+          rg -n 'tools\.(insert|get|remove)|tools\.iter|tools\.values|tools\.keys|register\(' crates/jcode-app-core/src/tool/mod.rs crates/jcode-app-core/src/mcp | head -300 || true
+          echo '=== phase acceptance/selfdev/socket tests ==='
+          find crates -type f \( -path '*test*' -o -name '*tests.rs' \) | grep -E 'selfdev|socket|advisor|reload|resume' | sort | head -250 || true
+          echo '=== plan audit docs ==='
+          ls -1 docs/plans/omp-overtake
