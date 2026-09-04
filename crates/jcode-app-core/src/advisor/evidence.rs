@@ -351,6 +351,30 @@ async fn bounded_diff(root: Option<&Path>) -> String {
         return "Working-tree diff unavailable: no session directory.".into();
     };
     let future = async {
+        // --no-ext-diff/--no-textconv do not stop Git clean/process filters.
+        // Inspect configuration without running a worktree command, and refuse
+        // that evidence source rather than executing a configured filter.
+        let filters = tokio::process::Command::new("git")
+            .args([
+                "--no-pager",
+                "config",
+                "--get-regexp",
+                r"^filter\..*\.(clean|process)$",
+            ])
+            .current_dir(root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .status()
+            .await
+            .ok()?;
+        match filters.code() {
+            Some(1) => {}
+            Some(0) => {
+                return Some("Working-tree diff unavailable: configured Git clean/process filters require execution.".into());
+            }
+            _ => return None,
+        }
         let mut child = tokio::process::Command::new("git")
             .args([
                 "--no-pager",
@@ -495,5 +519,14 @@ mod tests {
         );
         std::fs::write(dir.path().join("file"), "after\n").expect("change");
         assert!(bounded_diff(Some(dir.path())).await.contains("1\t1\tfile"));
+        std::fs::write(dir.path().join(".gitattributes"), "file filter=advisor\n")
+            .expect("attributes");
+        for key in ["filter.advisor.clean", "filter.advisor.process"] {
+            assert!(git(&["config", key, "echo executed > filter-marker; cat"]).status.success());
+            let summary = bounded_diff(Some(dir.path())).await;
+            assert!(summary.contains("unavailable") && summary.contains("filters"));
+            assert!(!dir.path().join("filter-marker").exists());
+            assert!(git(&["config", "--unset", key]).status.success());
+        }
     }
 }
