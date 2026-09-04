@@ -318,6 +318,17 @@ fn redact_secrets_leaves_normal_output_unchanged() {
 }
 
 #[test]
+fn advisor_evidence_redacts_inline_assignments_and_openai_tokens() {
+    let input = "check OPENAI_API_KEY=sk-test-openai-example; then run tests\nnote APP_SECRET='two private words', done\nkey sk-proj-abcdefghijklmnopqrstuvwxyz0123456789";
+    let out = redact_secrets(input);
+    assert!(!out.contains("sk-test-openai-example"));
+    assert!(!out.contains("two private words"));
+    assert!(!out.contains("sk-proj-"));
+    assert!(out.contains("then run tests"));
+    assert!(out.contains(", done"));
+}
+
+#[test]
 fn redact_secrets_redacts_bearer_jwt_aws_and_private_keys() {
     let input = concat!(
         "Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123456789\n",
