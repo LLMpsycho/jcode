@@ -455,7 +455,7 @@ async fn concurrent_transport_failure_and_terminate_finalize_once() {
 async fn cancelling_cleanup_callers_does_not_strand_sessions() {
     async fn attach_stubborn_process(manager: &DebugSessionManager, owner: &str) -> DebugSessionId {
         let process = AdapterProcess::spawn(
-            &AdapterCommand::new("/bin/sh", "/")
+            &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
                 .with_arg("-c")
                 .with_arg("trap '' TERM; printf ready >&2; while :; do sleep 1; done"),
         )
@@ -585,7 +585,7 @@ async fn reservation_drop_waits_for_finalization_lock_before_cleanup_and_slot_re
     })
     .unwrap();
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("trap '' TERM; while :; do sleep 1; done"),
     )

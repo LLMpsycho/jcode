@@ -55,7 +55,7 @@ async fn rejects_non_absolute_working_directories() {
 #[tokio::test]
 async fn captures_only_the_bounded_stderr_tail_and_reports_status() {
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("printf 123456789 >&2")
             .with_stderr_limit(4),
@@ -82,7 +82,7 @@ async fn captures_only_the_bounded_stderr_tail_and_reports_status() {
 #[tokio::test]
 async fn reaping_an_exited_group_leader_cleans_live_descendants() {
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("/bin/sh -c 'trap \"\" HUP TERM; sleep 30' & echo $! >&2; exit 0"),
     )
@@ -131,7 +131,7 @@ async fn reaping_an_exited_group_leader_cleans_live_descendants() {
 #[tokio::test]
 async fn graceful_termination_stops_an_owned_process() {
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("sleep 30"),
     )
@@ -148,7 +148,7 @@ async fn graceful_termination_stops_an_owned_process() {
 async fn termination_tolerates_transport_close_racing_natural_exit() {
     for _ in 0..32 {
         let process = AdapterProcess::spawn(
-            &AdapterCommand::new("/bin/sh", "/")
+            &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
                 .with_arg("-c")
                 .with_arg("cat >/dev/null"),
         )
@@ -165,7 +165,7 @@ async fn termination_tolerates_transport_close_racing_natural_exit() {
 #[tokio::test]
 async fn forced_group_cleanup_removes_descendants() {
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("trap '' TERM; sleep 30 & echo $! >&2; wait"),
     )
@@ -197,7 +197,7 @@ async fn forced_group_cleanup_removes_descendants() {
 #[tokio::test]
 async fn drop_backstop_removes_owned_descendants() {
     let process = AdapterProcess::spawn(
-        &AdapterCommand::new("/bin/sh", "/")
+        &AdapterCommand::new(std::fs::canonicalize("/bin/sh").unwrap(), "/")
             .with_arg("-c")
             .with_arg("sleep 30 & echo $! >&2; wait"),
     )
