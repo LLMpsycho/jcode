@@ -108,6 +108,11 @@ pub(super) async fn cleanup_client_connection(
     // reclaim the same session without tripping duplicate-attach guards.
     tokio::task::yield_now().await;
 
+    let _dap_lifecycle_guard = match dap_service {
+        Some(service) => Some(service.lock_lifecycle_transition().await),
+        None => None,
+    };
+
     let successor_connected =
         session_has_live_successor(client_connections, client_session_id).await;
     if successor_connected {
@@ -120,7 +125,9 @@ pub(super) async fn cleanup_client_connection(
     }
 
     if let Some(service) = dap_service {
-        service.cleanup_owner(client_session_id).await;
+        service
+            .cleanup_owner_while_lifecycle_locked(client_session_id)
+            .await;
     }
 
     {

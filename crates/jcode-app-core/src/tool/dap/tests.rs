@@ -48,3 +48,24 @@ fn output_is_bounded() {
     assert_eq!(parsed["protocol"], "jcode.dap.v1");
     assert_eq!(parsed["result"]["truncated"], true);
 }
+
+#[tokio::test]
+async fn lifecycle_gate_serializes_cleanup_and_reconnect() {
+    let service = DapService::from_config(&jcode_dap::DapConfig::default()).unwrap();
+    let first = service.lock_lifecycle_transition().await;
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            service.cleanup_owner("owner"),
+        )
+        .await
+        .is_err()
+    );
+    drop(first);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        service.cleanup_owner("owner"),
+    )
+        .await
+        .unwrap();
+}

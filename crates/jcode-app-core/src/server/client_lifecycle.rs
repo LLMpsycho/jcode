@@ -1469,6 +1469,10 @@ pub(super) async fn handle_client(
                     if crate::session::session_exists(&target_session_id)
                         || sessions.read().await.contains_key(&target_session_id)
                     {
+                        let _dap_lifecycle_guard = match &dap_service {
+                            Some(service) => Some(service.lock_lifecycle_transition().await),
+                            None => None,
+                        };
                         let pre_resume_session_id = client_session_id.clone();
                         agent = crate::hooks::with_client_terminal_env(
                             active_terminal_env.clone(),
@@ -1711,6 +1715,10 @@ pub(super) async fn handle_client(
                         info.client_instance_id = client_instance_id.clone();
                     }
                 }
+                let _dap_lifecycle_guard = match &dap_service {
+                    Some(service) => Some(service.lock_lifecycle_transition().await),
+                    None => None,
+                };
                 agent = crate::hooks::with_client_terminal_env(
                     active_terminal_env.clone(),
                     handle_resume_session(

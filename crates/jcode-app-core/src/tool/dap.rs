@@ -27,6 +27,7 @@ const MAX_PAGE_SIZE: u32 = 200;
 pub(crate) struct DapService {
     manager: Arc<DebugSessionManager>,
     tokens: Arc<Mutex<TokenBroker>>,
+    lifecycle_gate: Arc<tokio::sync::Mutex<()>>,
     max_output_bytes: usize,
     allow_evaluate: bool,
     adapters: Arc<BTreeMap<String, jcode_dap::DapAdapterConfig>>,
@@ -46,6 +47,7 @@ impl DapService {
             tokens: Arc::new(Mutex::new(TokenBroker::new(
                 config.max_opaque_handles_per_owner,
             ))),
+            lifecycle_gate: Arc::new(tokio::sync::Mutex::new(())),
             max_output_bytes: config.max_output_bytes,
             allow_evaluate: config.allow_evaluate,
             adapters: Arc::new(config.adapters.clone()),
@@ -58,7 +60,17 @@ impl DapService {
         }
     }
 
+    pub(crate) async fn lock_lifecycle_transition(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.lifecycle_gate).lock_owned().await
+    }
+
     pub(crate) async fn cleanup_owner(&self, owner: &str) {
+        let _lifecycle_guard = self.lock_lifecycle_transition().await;
+        self.cleanup_owner_while_lifecycle_locked(owner).await;
+    }
+
+    /// The caller must hold `lifecycle_gate` across any predecessor ownership check.
+    pub(crate) async fn cleanup_owner_while_lifecycle_locked(&self, owner: &str) {
         self.tokens
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -76,6 +88,7 @@ impl DapService {
     }
 
     pub(crate) async fn shutdown_all(&self) {
+        let _lifecycle_guard = self.lock_lifecycle_transition().await;
         self.tokens
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -624,6 +637,7 @@ impl Tool for DapTool {
     }
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let p: Input = serde_json::from_value(input).context("invalid DAP tool input")?;
+        let _lifecycle_guard = self.service.lock_lifecycle_transition().await;
         let owner = ctx.session_id.as_str();
         let root = ctx
             .working_dir
@@ -760,6 +774,11 @@ impl DapTool {
                             .revision(owner, id, token)
                     })
                     .transpose()?;
+                self.service
+                    .tokens
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .reserve_capacity(owner, 1, true)?;
                 let r = match a {
                     "continue" => {
                         let mut q = DebugContinueRequest::default();
@@ -795,7 +814,6 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
-                b.reserve_capacity(owner, 1, true)?;
                 let revision = b.put_revision(owner, id, r.execution_revision);
                 Ok(
                     json!({"operation":output::control_operation(r.operation),"thread_id":r.thread_id.get(),"execution_revision":revision,"state":output::session_state(r.state.kind())}),
@@ -820,6 +838,11 @@ impl DapTool {
                 if let Some(v) = &p.log_message {
                     bp = bp.with_log_message(v)
                 }
+                self.service
+                    .tokens
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .reserve_capacity(owner, 1, true)?;
                 let r = m
                     .set_breakpoint(owner, id, DebugSetBreakpointRequest::new(source, bp))
                     .await?;
@@ -833,7 +856,6 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
-                broker.reserve_capacity(owner, 1, true)?;
                 let token = broker.put_breakpoint(owner, id, bid);
                 Ok(
                     json!({"breakpoint":token,"verified":r.source.breakpoints.iter().find(|b|b.id==bid).map(|b|b.verified)}),
