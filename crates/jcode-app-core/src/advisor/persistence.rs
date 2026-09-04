@@ -14,6 +14,10 @@ struct Checkpoint {
     enabled_override: Option<bool>,
     turns_observed: u64,
     cursor: u64,
+    #[serde(default)]
+    immunity_until_turn: u64,
+    #[serde(default)]
+    immunity_turns: u64,
     notes: VecDeque<AdvisorNoteMetadata>,
 }
 
@@ -36,6 +40,8 @@ impl AdvisorManager {
             enabled_override: runtime.enabled_override,
             turns_observed: runtime.turns_observed,
             cursor: runtime.cursor,
+            immunity_until_turn: runtime.immunity_until_turn,
+            immunity_turns: runtime.immunity_turns,
             notes: runtime.notes.iter().cloned().map(sanitize_note).collect(),
         };
         let result = save(&path, &checkpoint);
@@ -59,6 +65,8 @@ impl AdvisorManager {
                     enabled_override: checkpoint.enabled_override,
                     turns_observed: checkpoint.turns_observed,
                     cursor: checkpoint.cursor,
+                    immunity_until_turn: checkpoint.immunity_until_turn,
+                    immunity_turns: checkpoint.immunity_turns.min(100),
                     notes: checkpoint.notes,
                     ..AdvisorRuntime::default()
                 });
@@ -81,7 +89,10 @@ impl AdvisorManager {
     pub fn reset_history(&self, session: &str) {
         let Ok(mut sessions) = self.sessions.lock() else { return; };
         let Some(previous) = sessions.remove(session) else { return; };
+        clear_queued_notes(&previous);
         let mut runtime = AdvisorRuntime {
+            immunity_until_turn: previous.immunity_until_turn,
+            immunity_turns: previous.immunity_turns,
             enabled_override: previous.enabled_override,
             turns_observed: previous.turns_observed,
             cursor: previous.cursor,

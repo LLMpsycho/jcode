@@ -256,6 +256,9 @@ struct AdvisorRuntime {
     active_review_id: u64,
     pending: Option<PendingReview>,
     enabled_override: Option<bool>,
+    immunity_until_turn: u64,
+    immunity_turns: u64,
+    delivery_queue: Option<std::sync::Weak<Mutex<Vec<SoftInterruptMessage>>>>,
     notes: VecDeque<AdvisorNoteMetadata>,
 }
 
@@ -306,6 +309,7 @@ impl AdvisorManager {
             let runtime = sessions.entry(owner_session_id.to_string()).or_default();
             runtime.enabled_override = Some(enabled);
             if !enabled {
+                clear_queued_notes(runtime);
                 runtime.pending = None;
                 runtime.status = AdvisorStatus::Idle;
                 runtime.active_review_id = self
@@ -339,7 +343,15 @@ impl AdvisorManager {
         let mut sessions = self.sessions.lock().map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
         let Some(runtime) = sessions.get_mut(owner_session_id) else { return Ok(false); };
         let Some(note) = runtime.notes.iter_mut().find(|note| note.id == id) else { return Ok(false); };
+        let newly_handled = note.disposition == AdvisorNoteDisposition::Unresolved && disposition != AdvisorNoteDisposition::Unresolved;
         note.disposition = disposition;
+        if newly_handled {
+            runtime.immunity_until_turn = runtime.turns_observed.saturating_add(runtime.immunity_turns);
+            runtime.pending = None;
+            runtime.active_review_id = 0;
+            runtime.status = AdvisorStatus::Idle;
+            clear_queued_notes(runtime);
+        }
         self.persist(owner_session_id, runtime)?;
         Ok(true)
     }
@@ -373,7 +385,9 @@ impl AdvisorManager {
 
     pub fn remove(&self, owner_session_id: &str) {
         if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.remove(owner_session_id);
+            if let Some(runtime) = sessions.remove(owner_session_id) {
+                clear_queued_notes(&runtime);
+            }
         }
     }
 
@@ -389,6 +403,7 @@ impl AdvisorManager {
             return false;
         }
         let configured_enabled = config.enabled;
+        let immunity_turns = config.handled_note_immunity_turns.min(100) as u64;
         let cadence = config.review_every_n_turns.max(1) as u64;
         let max_reviews_per_session = config.max_reviews_per_session as u64;
 
@@ -416,7 +431,10 @@ impl AdvisorManager {
             }
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
             runtime.turns_observed = runtime.turns_observed.saturating_add(1);
-            if (runtime.turns_observed - 1) % cadence != 0
+            runtime.immunity_turns = immunity_turns;
+            runtime.delivery_queue = Some(Arc::downgrade(&pending.queue));
+            if runtime.turns_observed <= runtime.immunity_until_turn
+                || (runtime.turns_observed - 1) % cadence != 0
                 || runtime.cursor >= max_reviews_per_session
             {
                 let _ = self.persist(&owner_session_id, runtime);
@@ -712,6 +730,14 @@ impl AdvisorManager {
             runtime.status = AdvisorStatus::Failed;
             runtime.last_error = Some(truncate_utf8(error, 1000));
         }
+    }
+}
+
+fn clear_queued_notes(runtime: &AdvisorRuntime) {
+    if let Some(queue) = runtime.delivery_queue.as_ref().and_then(std::sync::Weak::upgrade)
+        && let Ok(mut pending) = queue.lock()
+    {
+        pending.retain(|message| !message.content.starts_with("[ADVISOR "));
     }
 }
 

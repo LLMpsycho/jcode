@@ -4,6 +4,36 @@ use async_trait::async_trait;
 use futures::stream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn handled_note_immunity_survives_restart_and_prevents_paraphrase_storms() {
+    let dir = tempfile::tempdir().expect("directory");
+    let manager = Arc::new(AdvisorManager::persistent(dir.path().to_path_buf()));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(AdvisorProvider {
+        calls: Arc::clone(&calls),
+        response: r#"{"severity":"concern","summary":"verify first","evidence":[],"recommended_action":"run checks","blocking":false}"#.into(),
+    });
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    assert!(manager.schedule_turn("immunity".into(), provider.clone(), queue.clone(), AdvisorTurnInput::default(), enabled_config()));
+    wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
+    let id = manager.notes("immunity")[0].id.clone();
+    manager.resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged).expect("ack");
+    assert!(queue.lock().expect("queue").is_empty(), "handled queued notes must not reappear");
+    drop(manager);
+    let manager = Arc::new(AdvisorManager::persistent(dir.path().to_path_buf()));
+    manager.resume("immunity");
+    // No provider call means paraphrased or alternating findings cannot defeat
+    // suppression. A duplicate ack does not extend the window indefinitely.
+    for _ in 0..2 {
+        assert!(!manager.schedule_turn("immunity".into(), provider.clone(), queue.clone(), AdvisorTurnInput::default(), enabled_config()));
+        manager.resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged).expect("duplicate ack");
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(manager.schedule_turn("immunity".into(), provider, queue, AdvisorTurnInput::default(), enabled_config()));
+    wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
 struct AdvisorProvider {
     calls: Arc<AtomicUsize>,
     response: String,

@@ -926,6 +926,8 @@ pub struct AdvisorConfig {
     pub review_every_n_turns: usize,
     /// Maximum provider reviews started during one advisor runtime.
     pub max_reviews_per_session: usize,
+    /// Completed primary turns to skip after a note is handled (default: 2).
+    pub handled_note_immunity_turns: usize,
     /// Minimum severity that may gate a future risky operation.
     pub block_on_severity: AdvisorSeverity,
     /// Redact recognized secrets before advisor context is retained or sent.
@@ -941,6 +943,7 @@ impl Default for AdvisorConfig {
             max_notes_per_turn: 1,
             review_every_n_turns: 1,
             max_reviews_per_session: 100,
+            handled_note_immunity_turns: 2,
             block_on_severity: AdvisorSeverity::Blocker,
             redact: true,
         }

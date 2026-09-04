@@ -681,10 +681,11 @@ mode = "interactive"
 max_notes_per_turn = 1
 # Review one out of every N completed primary turns. The first turn is reviewed.
 review_every_n_turns = 1
-# Maximum provider reviews started during one session runtime.
+# Lifetime provider review budget, preserved across restart and history resets.
 max_reviews_per_session = 100
+# Skip this many completed turns after ack/dismiss (0 disables, capped at 100).
+handled_note_immunity_turns = 2
 # Minimum severity allowed to mark a future risky operation as blocked.
-# Phase 4's first slice records this policy but does not enforce tool gating yet.
 block_on_severity = "blocker"
 # Redact recognized credentials and secret-like values before advisor context
 # is retained or sent.
