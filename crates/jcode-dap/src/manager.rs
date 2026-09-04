@@ -1,10 +1,10 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::{Mutex as AsyncMutex, Semaphore, broadcast, oneshot, watch};
+use tokio::sync::{Semaphore, broadcast, oneshot, watch};
 use tokio::task::JoinHandle;
 
 use crate::client::DapClientStatus;
@@ -12,6 +12,9 @@ use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program, revalidate_
 use crate::process::{OwnedChildObserver, OwnedTargetProcess};
 use crate::session::{OutputRing, SessionEvent, parse_event};
 mod initialization;
+mod inspection_runtime;
+#[cfg(test)]
+mod inspection_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 mod source_hash;
@@ -21,11 +24,12 @@ use supervision::{invalid_transition, lock, notify, supervise, transition};
 
 use crate::{
     AdapterCommand, AdapterProcess, Capabilities, DapClient, DapError, DebugAdapterConfig,
-    DebugCleanupFailure, DebugCleanupReport, DebugLaunchRequest, DebugOperationConfig,
-    DebugOutputCursor, DebugOutputPage, DebugOwnedAttachRequest, DebugSessionEnd,
-    DebugSessionEndReason, DebugSessionId, DebugSessionManagerConfig, DebugSessionSnapshot,
-    DebugSessionStart, DebugSessionState, DebugSessionStateKind, DebugStartOperation,
-    DebugStartupPhase, DebugWorkspaceKey, OwnerCleanupCause, ProcessStatus, Response, Result,
+    DebugCleanupFailure, DebugCleanupReport, DebugInspectionConfig, DebugLaunchRequest,
+    DebugOperationConfig, DebugOutputCursor, DebugOutputPage, DebugOwnedAttachRequest,
+    DebugSessionEnd, DebugSessionEndReason, DebugSessionId, DebugSessionManagerConfig,
+    DebugSessionSnapshot, DebugSessionStart, DebugSessionState, DebugSessionStateKind,
+    DebugStartOperation, DebugStartupPhase, DebugWorkspaceKey, OwnerCleanupCause, ProcessStatus,
+    Response, Result,
 };
 
 #[derive(Clone)]
@@ -37,6 +41,7 @@ trait ManagerInitialization: Sized {
     fn initialize(
         config: DebugSessionManagerConfig,
         operations: DebugOperationConfig,
+        inspection: DebugInspectionConfig,
     ) -> Result<Self>;
 }
 
@@ -49,7 +54,19 @@ impl DebugSessionManager {
         config: DebugSessionManagerConfig,
         operations: DebugOperationConfig,
     ) -> Result<Self> {
-        Self::initialize(config, operations)
+        Self::new_with_operation_and_inspection_config(
+            config,
+            operations,
+            DebugInspectionConfig::default(),
+        )
+    }
+
+    pub fn new_with_operation_and_inspection_config(
+        _manager: DebugSessionManagerConfig,
+        _operations: DebugOperationConfig,
+        _inspection: DebugInspectionConfig,
+    ) -> Result<Self> {
+        Self::initialize(_manager, _operations, _inspection)
     }
 
     pub fn sessions(&self, owner_session_id: &str) -> Vec<DebugSessionSnapshot> {
@@ -334,11 +351,17 @@ impl DebugSessionManager {
                 change_generation: 0,
                 breakpoints: breakpoints::BreakpointRegistry::default(),
                 execution_revision: 0,
+                frame_identities: HashMap::new(),
+                transport_revision: 0,
+                inspection_invalidation: None,
             }),
-            finalization: AsyncMutex::new(()),
-            operation: AsyncMutex::new(()),
+            finalization: tokio::sync::Mutex::new(()),
+            operation: tokio::sync::Mutex::new(()),
             source_hash: Arc::new(Semaphore::new(1)),
             breakpoint_validation: Arc::new(Semaphore::new(1)),
+            inspection_parse: Arc::new(Semaphore::new(1)),
+            publication: Mutex::new(()),
+            active_inspections: Mutex::new(Vec::new()),
             #[cfg(test)]
             breakpoint_test_gates: breakpoints::BreakpointTestGates::default(),
             closed: AtomicBool::new(false),
@@ -393,241 +416,13 @@ pub(crate) struct DebugSessionReservation {
     committed: bool,
 }
 
-#[allow(dead_code)]
-impl DebugSessionReservation {
-    pub(crate) fn id(&self) -> DebugSessionId {
-        self.id
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn attach_process(
-        &mut self,
-        process: AdapterProcess,
-        termination_policy: DebugTerminationPolicy,
-    ) -> Result<()> {
-        let client = process.client().clone();
-        self.attach_transport(client, Some(process), Some(termination_policy))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn attach_client(&mut self, client: DapClient) -> Result<()> {
-        self.attach_transport(client, None, None)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn attach_start_client(
-        &mut self,
-        client: DapClient,
-        policy: DebugTerminationPolicy,
-    ) -> Result<()> {
-        self.attach_transport(client, None, Some(policy))
-    }
-
-    fn attach_transport(
-        &mut self,
-        client: DapClient,
-        process: Option<AdapterProcess>,
-        termination_policy: Option<DebugTerminationPolicy>,
-    ) -> Result<()> {
-        let supervised_process = process.as_ref().map(AdapterProcess::observer);
-        let entry = self.core.entry(self.id)?;
-        let events = client.subscribe_events();
-        let status = client.subscribe_status();
-        let observed_status = *status.borrow();
-        {
-            let mut data = lock(&entry.data);
-            transition(
-                &entry,
-                &mut data,
-                DebugSessionState::Initializing,
-                "attach adapter",
-            )?;
-            data.transport = Some(SessionTransport {
-                client: client.clone(),
-                adapter: process,
-                target: None,
-                termination_policy,
-            });
-        }
-        let core = Arc::downgrade(&self.core);
-        let supervised = entry.clone();
-        let (start, ready) = oneshot::channel();
-        let handle = tokio::spawn(async move {
-            if ready.await.is_err() {
-                return;
-            }
-            supervise(
-                core,
-                supervised,
-                events,
-                status,
-                observed_status,
-                supervised_process,
-            )
-            .await;
-        });
-        lock(&entry.data).supervisor = Some(handle);
-        let _ignored = start.send(());
-        Ok(())
-    }
-
-    pub(crate) fn attach_target(&mut self, target: OwnedTargetProcess) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let mut data = lock(&entry.data);
-        if data
-            .transport
-            .as_ref()
-            .is_none_or(|transport| transport.target.is_some())
-        {
-            return Err(invalid_transition(&entry, &data, "attach target"));
-        }
-        let Some(transport) = data.transport.as_mut() else {
-            return Err(invalid_transition(&entry, &data, "attach target"));
-        };
-        transport.target = Some(target);
-        Ok(())
-    }
-
-    fn client(&self) -> Result<DapClient> {
-        let entry = self.core.entry(self.id)?;
-        let data = lock(&entry.data);
-        data.transport
-            .as_ref()
-            .map(|transport| transport.client.clone())
-            .ok_or_else(|| invalid_transition(&entry, &data, "access transport"))
-    }
-
-    pub(crate) async fn wait_until_configurable(
-        &self,
-        deadline: tokio::time::Instant,
-    ) -> Result<DebugSessionStateKind> {
-        let entry = self.core.entry(self.id)?;
-        let mut changed = entry.changed.subscribe();
-        loop {
-            {
-                let data = lock(&entry.data);
-                if data.initialized_seen {
-                    return Ok(data.state.kind());
-                }
-                if matches!(
-                    data.state,
-                    DebugSessionState::Terminating | DebugSessionState::Ended(_)
-                ) {
-                    return Err(DapError::SessionEndedDuringStartup {
-                        session_id: self.id,
-                        message: format!("state is {:?}", data.state.kind()),
-                    });
-                }
-            }
-            tokio::time::timeout_at(deadline, changed.changed())
-                .await
-                .map_err(|_| DapError::DebugStartupTimeout {
-                    phase: DebugStartupPhase::AwaitInitialized,
-                })?
-                .map_err(|_| DapError::TransportClosed)?;
-        }
-    }
-
-    pub(crate) fn complete_start(&self) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let mut data = lock(&entry.data);
-        match data.state {
-            DebugSessionState::Stopped(_) | DebugSessionState::Running => Ok(()),
-            DebugSessionState::Configuring => transition(
-                &entry,
-                &mut data,
-                DebugSessionState::Running,
-                "complete start",
-            ),
-            _ => Err(invalid_transition(&entry, &data, "complete start")),
-        }
-    }
-
-    pub(crate) async fn cancel_start(mut self) -> Result<()> {
-        self.committed = true;
-        let entry = self.core.entry(self.id)?;
-        self.core
-            .finalize(entry, DebugSessionEndReason::LaunchCancelled, true, true)
-            .await
-    }
-
-    pub(crate) fn set_capabilities(&self, capabilities: Capabilities) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let client = {
-            let mut data = lock(&entry.data);
-            if !matches!(
-                data.state,
-                DebugSessionState::Initializing | DebugSessionState::Configuring
-            ) {
-                return Err(invalid_transition(&entry, &data, "set capabilities"));
-            }
-            let client = data
-                .transport
-                .as_ref()
-                .map(|transport| transport.client.clone());
-            data.capabilities = capabilities.clone();
-            notify(&entry, &mut data);
-            client
-        };
-        if let Some(client) = client {
-            client
-                .set_supports_cancel_request(capabilities.supports_cancel_request.unwrap_or(false));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn mark_configuring(&self) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let mut data = lock(&entry.data);
-        if matches!(data.state, DebugSessionState::Configuring) {
-            return Ok(());
-        }
-        transition(
-            &entry,
-            &mut data,
-            DebugSessionState::Configuring,
-            "configure",
-        )
-    }
-
-    pub(crate) fn mark_running(&self) -> Result<()> {
-        let entry = self.core.entry(self.id)?;
-        let mut data = lock(&entry.data);
-        if matches!(data.state, DebugSessionState::Running) {
-            return Ok(());
-        }
-        transition(&entry, &mut data, DebugSessionState::Running, "run")
-    }
-
-    pub(crate) fn commit(mut self) -> Result<DebugSessionId> {
-        let entry = self.core.entry(self.id)?;
-        let data = lock(&entry.data);
-        if matches!(
-            data.state,
-            DebugSessionState::Terminating | DebugSessionState::Ended(_)
-        ) {
-            return Err(DapError::SessionEndedDuringStartup {
-                session_id: self.id,
-                message: format!("state is {:?}", data.state.kind()),
-            });
-        }
-        drop(data);
-        self.committed = true;
-        Ok(self.id)
-    }
-}
-
-impl Drop for DebugSessionReservation {
-    fn drop(&mut self) {
-        if !self.committed {
-            self.core.cancel_reservation_drop(self.id);
-        }
-    }
-}
+mod reservation;
 
 struct ManagerCore {
     config: DebugSessionManagerConfig,
     operations: Arc<DebugOperationConfig>,
+    #[allow(dead_code)]
+    inspection: Arc<DebugInspectionConfig>,
     #[allow(dead_code)]
     manager_id: u64,
     registry: Mutex<Registry>,
@@ -649,10 +444,13 @@ struct SessionEntry {
     workspace: DebugWorkspaceKey,
     adapter_id: String,
     data: Mutex<SessionData>,
-    finalization: AsyncMutex<()>,
-    operation: AsyncMutex<()>,
+    finalization: tokio::sync::Mutex<()>,
+    operation: tokio::sync::Mutex<()>,
     source_hash: Arc<Semaphore>,
     breakpoint_validation: Arc<Semaphore>,
+    inspection_parse: Arc<Semaphore>,
+    publication: Mutex<()>,
+    active_inspections: Mutex<Vec<Weak<InspectionToken>>>,
     #[cfg(test)]
     breakpoint_test_gates: breakpoints::BreakpointTestGates,
     closed: AtomicBool,
@@ -671,6 +469,173 @@ struct SessionData {
     change_generation: u64,
     breakpoints: breakpoints::BreakpointRegistry,
     execution_revision: u64,
+    frame_identities: HashMap<i32, (i32, u32)>,
+    transport_revision: u64,
+    inspection_invalidation: Option<InspectionInvalidation>,
+}
+
+#[derive(Clone, Copy)]
+enum InspectionInvalidation {
+    AdapterOrTargetExited,
+    TransportFailure,
+    ManagerOrOwnerShutdown,
+}
+
+const INSPECTION_OPEN: u8 = 0;
+const INSPECTION_ADMITTED: u8 = 1;
+const INSPECTION_RESPONSE_WON: u8 = 2;
+const INSPECTION_SETTLED: u8 = 3;
+const INSPECTION_PRE_INVALIDATED_BASE: u8 = 16;
+const INSPECTION_POST_INVALIDATED_BASE: u8 = 32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InspectionTokenCause {
+    AdapterOrTargetExited,
+    TransportFailure,
+    ClientReplaced,
+    ManagerOrOwnerShutdown,
+    Revision,
+}
+
+impl InspectionTokenCause {
+    fn code(self) -> u8 {
+        match self {
+            Self::AdapterOrTargetExited => 0,
+            Self::TransportFailure => 1,
+            Self::ClientReplaced => 2,
+            Self::ManagerOrOwnerShutdown => 3,
+            Self::Revision => 4,
+        }
+    }
+}
+
+struct InspectionToken {
+    client: DapClient,
+    state: AtomicU8,
+    invalidator: Mutex<Option<crate::client::TrackedRequestInvalidator>>,
+}
+
+impl InspectionToken {
+    fn new(client: DapClient) -> Arc<Self> {
+        Arc::new(Self {
+            client,
+            state: AtomicU8::new(INSPECTION_OPEN),
+            invalidator: Mutex::new(None),
+        })
+    }
+
+    fn admit(&self) -> bool {
+        self.state
+            .compare_exchange(
+                INSPECTION_OPEN,
+                INSPECTION_ADMITTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn invalidate(&self, cause: InspectionTokenCause) {
+        let pre = INSPECTION_PRE_INVALIDATED_BASE + cause.code();
+        let post = INSPECTION_POST_INVALIDATED_BASE + cause.code();
+        let won = self.client.synchronize_admission(|| {
+            loop {
+                let current = self.state.load(Ordering::Acquire);
+                let next = match current {
+                    INSPECTION_OPEN => pre,
+                    INSPECTION_ADMITTED => post,
+                    _ => return false,
+                };
+                if self
+                    .state
+                    .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+        });
+        if !won {
+            return;
+        }
+        let invalidator = lock(&self.invalidator).clone();
+        if let Some(invalidator) = invalidator {
+            invalidator.invalidate();
+        }
+    }
+
+    fn attach(&self, invalidator: crate::client::TrackedRequestInvalidator) {
+        *lock(&self.invalidator) = Some(invalidator.clone());
+        if self.invalidation().is_some() {
+            invalidator.invalidate();
+        }
+    }
+
+    fn mark_response_won(&self) {
+        let mut current = self.state.load(Ordering::Acquire);
+        loop {
+            if current == INSPECTION_RESPONSE_WON || current == INSPECTION_SETTLED {
+                return;
+            }
+            match self.state.compare_exchange(
+                current,
+                INSPECTION_RESPONSE_WON,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(next) => current = next,
+            }
+        }
+    }
+
+    fn settle(&self) {
+        if self.state.load(Ordering::Acquire) != INSPECTION_RESPONSE_WON {
+            self.state.store(INSPECTION_SETTLED, Ordering::Release);
+        }
+    }
+
+    fn invalidation(&self) -> Option<(bool, InspectionTokenCause)> {
+        let state = self.state.load(Ordering::Acquire);
+        let (post, value) = if state >= INSPECTION_POST_INVALIDATED_BASE {
+            (true, state - INSPECTION_POST_INVALIDATED_BASE)
+        } else if state >= INSPECTION_PRE_INVALIDATED_BASE {
+            (false, state - INSPECTION_PRE_INVALIDATED_BASE)
+        } else {
+            return None;
+        };
+        let cause = match value {
+            0 => InspectionTokenCause::AdapterOrTargetExited,
+            1 => InspectionTokenCause::TransportFailure,
+            2 => InspectionTokenCause::ClientReplaced,
+            3 => InspectionTokenCause::ManagerOrOwnerShutdown,
+            4 => InspectionTokenCause::Revision,
+            _ => return None,
+        };
+        Some((post, cause))
+    }
+
+    fn is_post_admission(&self) -> bool {
+        let state = self.state.load(Ordering::Acquire);
+        state == INSPECTION_ADMITTED || state >= INSPECTION_POST_INVALIDATED_BASE
+    }
+}
+
+impl InspectionInvalidation {
+    fn from_end_reason(reason: &DebugSessionEndReason) -> Self {
+        match reason {
+            DebugSessionEndReason::DebuggeeExited { .. }
+            | DebugSessionEndReason::AdapterExited { .. } => Self::AdapterOrTargetExited,
+            DebugSessionEndReason::TransportClosed
+            | DebugSessionEndReason::ProtocolError { .. }
+            | DebugSessionEndReason::EventStreamLagged { .. } => Self::TransportFailure,
+            DebugSessionEndReason::Requested
+            | DebugSessionEndReason::LaunchCancelled
+            | DebugSessionEndReason::OwnerDisconnected
+            | DebugSessionEndReason::OwnerExpired
+            | DebugSessionEndReason::ServerShutdown => Self::ManagerOrOwnerShutdown,
+        }
+    }
 }
 
 struct SessionTransport {
@@ -715,7 +680,7 @@ impl ManagerCore {
 
     fn cancel_reservation_drop(self: &Arc<Self>, id: DebugSessionId) {
         let Ok(entry) = self.entry(id) else { return };
-        entry.closed.store(true, Ordering::Release);
+        entry.fence_terminal(InspectionInvalidation::ManagerOrOwnerShutdown);
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let core = Arc::clone(self);
             handle.spawn(async move {
@@ -728,6 +693,7 @@ impl ManagerCore {
 
         let _finalization = entry.finalization.blocking_lock();
         let transport = {
+            let _publication = lock(&entry.publication);
             let mut data = lock(&entry.data);
             if data.transport.is_none() {
                 drop(data);
@@ -763,30 +729,38 @@ impl ManagerCore {
     }
 
     fn drain_owner(&self, owner: &str) -> Vec<Arc<SessionEntry>> {
-        let mut registry = lock(&self.registry);
-        let ids = registry.ids_by_owner.remove(owner).unwrap_or_default();
-        for id in &ids {
-            if let Some(entry) = registry.entries.get(id) {
-                entry.fence_terminal();
-            }
+        let entries = {
+            let registry = lock(&self.registry);
+            registry
+                .ids_by_owner
+                .get(owner)
+                .into_iter()
+                .flatten()
+                .filter_map(|id| registry.entries.get(id).cloned())
+                .collect::<Vec<_>>()
+        };
+        for entry in &entries {
+            entry.fence_terminal(InspectionInvalidation::ManagerOrOwnerShutdown);
         }
-        registry.active_by_owner.remove(owner);
-        registry.terminal_order.retain(|id| !ids.contains(id));
-        ids.into_iter()
-            .filter_map(|id| registry.entries.remove(&id))
+        entries
+            .into_iter()
+            .filter_map(|entry| self.remove_entry(entry.id))
             .collect()
     }
 
     fn drain_all(&self) -> Vec<Arc<SessionEntry>> {
-        let mut registry = lock(&self.registry);
-        for entry in registry.entries.values() {
-            entry.fence_terminal();
+        let entries = lock(&self.registry)
+            .entries
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in &entries {
+            entry.fence_terminal(InspectionInvalidation::ManagerOrOwnerShutdown);
         }
-        let entries = registry.entries.drain().map(|(_, entry)| entry).collect();
-        registry.active_by_owner.clear();
-        registry.ids_by_owner.clear();
-        registry.terminal_order.clear();
         entries
+            .into_iter()
+            .filter_map(|entry| self.remove_entry(entry.id))
+            .collect()
     }
 
     async fn finalize_many(
@@ -873,9 +847,10 @@ impl ManagerCore {
         retain: bool,
         abort_supervisor: bool,
     ) -> Result<()> {
-        entry.fence_terminal();
+        entry.fence_terminal(InspectionInvalidation::from_end_reason(&reason));
         let _finalization = entry.finalization.lock().await;
         let (transport, supervisor) = {
+            let _publication = lock(&entry.publication);
             let mut data = lock(&entry.data);
             if data.state.is_terminal() {
                 return Ok(());
@@ -916,6 +891,7 @@ impl ManagerCore {
         }
         let cleanup_error = (!failures.is_empty()).then(|| failures.join("; "));
         {
+            let _publication = lock(&entry.publication);
             let mut data = lock(&entry.data);
             data.state = DebugSessionState::Ended(DebugSessionEnd {
                 reason,
@@ -982,7 +958,8 @@ impl Drop for ManagerCore {
                 .collect::<Vec<_>>()
         };
         for entry in entries {
-            entry.fence_terminal();
+            entry.fence_terminal(InspectionInvalidation::ManagerOrOwnerShutdown);
+            let _publication = lock(&entry.publication);
             let mut data = lock(&entry.data);
             if let Some(handle) = data.supervisor.take() {
                 handle.abort();

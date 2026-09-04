@@ -13,6 +13,7 @@ mod client;
 mod control;
 mod error;
 mod framing;
+mod inspection;
 mod launch;
 mod manager;
 mod process;
@@ -30,6 +31,7 @@ pub use error::{DapError, DebugStartOperation, DebugStartupPhase, Result};
 pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,
 };
+pub use inspection::*;
 pub use jcode_dap_types::*;
 pub use launch::{
     DebugAdapterConfig, DebugAdapterKind, DebugLaunchRequest, DebugOwnedAttachRequest,

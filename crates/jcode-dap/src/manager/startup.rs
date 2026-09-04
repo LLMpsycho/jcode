@@ -72,6 +72,7 @@ impl DebugSessionReservation {
 
     pub(crate) fn set_start(&self, start: DebugSessionStart) -> Result<()> {
         let entry = self.core.entry(self.id)?;
+        let _publication = lock(&entry.publication);
         let mut data = lock(&entry.data);
         data.start = Some(start);
         notify(&entry, &mut data);

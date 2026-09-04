@@ -48,7 +48,15 @@ fn launch_arguments_use_canonical_workspace_paths_and_literal_args() {
 fn initialize_advertises_no_run_in_terminal_support() {
     let value = serde_json::to_value(AdapterProfile::LldbDap.initialize_arguments()).unwrap();
     assert_eq!(value["supportsRunInTerminalRequest"], false);
-    assert_eq!(value["adapterId"], "lldb");
+    assert_eq!(value["adapterID"], "lldb");
+}
+
+#[test]
+fn initialize_arguments_advertise_phase_30f_client_capabilities() {
+    let arguments = AdapterProfile::LldbDap.initialize_arguments();
+    assert_eq!(arguments.supports_variable_type, Some(true));
+    assert_eq!(arguments.supports_variable_paging, Some(true));
+    assert_eq!(arguments.supports_run_in_terminal_request, Some(false));
 }
 
 #[tokio::test]
