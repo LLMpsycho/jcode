@@ -11,9 +11,13 @@ from scripts.competitive_eval.adapters.omp import OmpAdapter
 
 
 class AdapterTests(unittest.TestCase):
-    def make_binary(self, root: Path, name: str) -> Path:
+    def make_binary(self, root: Path, name: str, *, debugger: bool = False) -> Path:
         path = root / name
-        path.write_text("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'tool v1.2.3 (abc123)'; fi\n", encoding="utf-8")
+        marker = "# step_in_targets\n" if debugger else ""
+        path.write_text(
+            f"#!/bin/sh\n{marker}if [ \"$1\" = \"--version\" ]; then echo 'tool v1.2.3 (abc123)'; fi\n",
+            encoding="utf-8",
+        )
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
         return path
 
@@ -48,7 +52,7 @@ class AdapterTests(unittest.TestCase):
         self.assertFalse(JcodeAdapter(None).probe().supported)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            binary = self.make_binary(root, "jcode")
+            binary = self.make_binary(root, "jcode", debugger=True)
             adapter = JcodeAdapter(binary)
             spec = self.run_spec(root)
             command = adapter.build_command(spec)
@@ -60,6 +64,10 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(len(version.binary_sha256), 64)
             self.assertIn("v1.2.3", version.version)
             self.assertIn("lsp", adapter.probe().capabilities)
+            self.assertIn("debugger", adapter.probe().capabilities)
+
+            old_binary = self.make_binary(root, "old-jcode")
+            self.assertNotIn("debugger", JcodeAdapter(old_binary).probe().capabilities)
 
     def test_omp_adapter_requires_explicit_binary_and_fresh_config(self) -> None:
         self.assertFalse(OmpAdapter(None).probe().supported)

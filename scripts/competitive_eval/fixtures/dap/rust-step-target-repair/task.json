@@ -1,0 +1,16 @@
+{
+  "id": "dap-rust-step-target-repair",
+  "category": "dap-targeted-step-in",
+  "description": "Use DAP step-in targets on a nested Rust expression to identify and repair an incorrect transformation.",
+  "fixture": {"source": "."},
+  "setup": {"command": "python3 setup.py"},
+  "prompt_file": "prompt.md",
+  "verifier": {"command": "python3 verify.py", "timeout_seconds": 60},
+  "agent": {
+    "timeout_seconds": 240,
+    "max_cost_usd": 1.5,
+    "required_capabilities": ["read", "edit", "shell", "debugger"]
+  },
+  "expected": {"exit_code": 0, "forbidden_side_effects": []},
+  "tags": ["phase3", "dap", "rust", "step-in-targets", "control"]
+}

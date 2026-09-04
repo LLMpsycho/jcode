@@ -13,7 +13,7 @@ Finished work:
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
 - 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
-- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI.
+- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair.
 - Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
@@ -156,6 +156,5 @@ No item below blocks the completed Phase 3 MVP:
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
 - Persistent cross-process debug-session recovery.
-- DAP competitive benchmark tasks.
 
 Before real debugger launch or reverse process requests are enabled on Windows, the runtime needs owned process-tree containment such as a Job Object. The current non-Unix fallback guarantees direct-child cleanup only and does not claim descendant-tree containment.

@@ -1,12 +1,34 @@
 from __future__ import annotations
 
-from .base import ExplicitBinaryAdapter, RunSpec
+from pathlib import Path
+
+from .base import ExplicitBinaryAdapter, ProbeResult, RunSpec
+
+
+def _binary_contains(path: Path, marker: bytes) -> bool:
+    overlap = b""
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            data = overlap + chunk
+            if marker in data:
+                return True
+            overlap = data[-max(0, len(marker) - 1) :]
+    return False
 
 
 class JcodeAdapter(ExplicitBinaryAdapter):
     name = "jcode"
     repo = "1jehuang/jcode"
-    capabilities = ("read", "edit", "shell", "lsp", "swarm")
+    capabilities = ("read", "edit", "shell", "lsp", "debugger", "swarm")
+
+    def probe(self) -> ProbeResult:
+        base = super().probe()
+        if not base.supported or self.binary is None:
+            return base
+        capabilities = self.capabilities
+        if not _binary_contains(self.binary, b"step_in_targets"):
+            capabilities = tuple(item for item in capabilities if item != "debugger")
+        return ProbeResult(True, capabilities=capabilities)
 
     def build_command(self, run: RunSpec) -> list[str]:
         if self.binary is None:
