@@ -4,17 +4,27 @@ The completed foundations cover the DAP protocol, owner-scoped session manager, 
 
 ## Completion status
 
-**Phase 3 MVP is complete and validated.** There are no remaining Phase 3 implementation blockers.
+**Status as of 2026-09-04: Phase 3 MVP and the selected safe post-MVP slices are complete.** There are no remaining implementation blockers for the Phase 3 deliverable. The follow-ups in [Remaining non-MVP work](#remaining-non-mvp-work) are intentionally deferred because they either expand debugger authority or belong to later product-policy work.
 
-Finished work:
+| Workstream | Status | Delivered boundary |
+| --- | --- | --- |
+| 30A-30C protocol foundation | Done | Stable types, bounded framing, async client, transport shutdown, and adapter-process ownership. |
+| 30D session and process lifecycle | Done | Owner-scoped sessions, bounded output, validated LLDB/GDB profiles, launch, and owned spawn-and-attach. |
+| 30E breakpoints and control | Done | Source breakpoints, threads, continue/pause/step control, reconciliation, revisions, and lifecycle supervision. |
+| 30F bounded inspection | Done | Stack traces, scopes, variables, evaluation, opaque handles, and race-safe publication. |
+| 30G agent integration | Done | Opt-in 18-action tool, shared server service, lifecycle cleanup, TUI rendering, and Rust/TypeScript SDK propagation. |
+| Safe post-MVP extensions | Done | Step-in targets, current-frame defaulting, deterministic configured-adapter selection, native GDB profile, LLDB interoperability, and competitive DAP fixtures. |
+| Authority-expanding or later-policy work | Deferred | PID attach, reverse process execution, downloads, persistent recovery, broader discovery, and higher-level policy. |
+
+Completed implementation details:
 
 - 30A through 30C: stable DAP types, framing, protocol classification, asynchronous client behavior, transport shutdown, and owned adapter-process safety.
 - 30D: owner-scoped session management, bounded output, explicit `lldb-dap` and native `gdb-dap` launch profiles, and owned spawn-and-attach without caller-supplied PIDs.
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
-- 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
+- 30G: opt-in configuration, one server-owned DAP service, the exact 18-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
 - Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Target discovery defaults to the unambiguous current frame when no frame token is supplied. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair. Omitted adapter requests select only validated available configured profiles, while explicit unavailable selection fails without fallback.
-- Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
+- Acceptance: final feature head `5232f4db5` passed formatting, focused DAP manager/tool/TUI tests, SDK parity, all competitive-eval tests, dependency boundaries, binary packaging, an installed public campaign dry run, and a real system `lldb-dap` launch/inspect/terminate workflow. PR #4 was merged into the fork's `master` as `1bb18473b4ca098f313a6cace4f9669a5d663493`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
 
@@ -150,13 +160,16 @@ These checks pass, including 6 focused DAP agent-tool tests, the disconnect and 
 
 ## Remaining non-MVP work
 
-No item below blocks the completed Phase 3 MVP:
+No item below blocks the completed Phase 3 deliverable. These are the only implementation areas still open from this plan:
 
-- Adapter discovery beyond the explicit `lldb-dap` and native `gdb-dap` profiles.
-- Higher-level debug policy beyond bounded step-in target discovery and the 30F inspection APIs.
-- Arbitrary PID attachment.
-- Executing reverse `runInTerminal` requests.
-- Network, download, or installation behavior.
-- Persistent cross-process debug-session recovery.
+| Remaining item | Why it is deferred | Required before implementation |
+| --- | --- | --- |
+| Adapter discovery beyond configured `lldb-dap` and native `gdb-dap` profiles | Current deterministic configured-profile selection is sufficient for the shipped boundary. Discovery adds platform and executable-trust policy. | Define trusted discovery locations, precedence, version probing, and failure behavior. |
+| Higher-level debug policy beyond step-in targets and bounded 30F inspection | This is agent/advisor product policy rather than missing protocol plumbing. | Design with Phase 4 advisor and independent-verification work. |
+| Arbitrary PID attachment | It grants authority over processes Jcode did not create. | Add explicit authorization, ownership proof, auditability, and platform-specific containment policy. |
+| Executing reverse `runInTerminal` requests | It lets an adapter request process creation. The current implementation observes and rejects these requests fail-closed. | Add a consent and command policy, strict environment and working-directory controls, ownership tracking, and cleanup. |
+| Network, download, or adapter installation behavior | Jcode currently launches only locally configured executables and performs no implicit installation. | Add supply-chain verification, provenance, update, consent, and offline behavior. |
+| Persistent cross-process debug-session recovery | Current opaque handles and process ownership are intentionally server-process scoped. | Define durable ownership, credential and token invalidation, process reattachment, and crash-consistency semantics. |
+| Windows debugger process-tree containment | The current non-Unix fallback guarantees direct-child cleanup only. | Add owned descendant-tree containment such as a Windows Job Object before enabling real debugger launch or reverse process requests on Windows. |
 
-Before real debugger launch or reverse process requests are enabled on Windows, the runtime needs owned process-tree containment such as a Job Object. The current non-Unix fallback guarantees direct-child cleanup only and does not claim descendant-tree containment.
+The recommended next roadmap step is Phase 4 advisor and independent verification. The authority-expanding DAP items above should remain deferred unless a concrete product requirement justifies their security and lifecycle surface.
