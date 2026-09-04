@@ -304,7 +304,7 @@ impl Tool for LspTool {
                             &workspace,
                             Some(document.version),
                             text,
-                            json!({"count": items.len(), "diagnostic_evidence": {"path": file, "freshness": freshness, "items": items.iter().take(32).collect::<Vec<_>>()}}),
+                            json!({"count": items.len(), "diagnostic_evidence": {"path": file, "freshness": freshness, "items": diagnostic_evidence(items)}}),
                             max_chars,
                             freshness,
                         ))
@@ -715,7 +715,9 @@ fn shaped_output(
     if truncated {
         text = text.chars().take(max_chars).collect::<String>();
         text.push_str("\n… output truncated");
-        items = json!([]);
+        if action != LspAction::Diagnostics {
+            items = json!([]);
+        }
     }
     ToolOutput::new(text)
         .with_title(format!("lsp {}", action.as_str()))
@@ -735,8 +737,8 @@ fn render_diagnostics(items: &[Diagnostic], root: &Path, file: &Path) -> String 
         return "No diagnostics.".to_owned();
     }
     let path = file.strip_prefix(root).unwrap_or(file).display();
-    items
-        .iter()
+    prioritized_diagnostics(items)
+        .into_iter()
         .map(|diagnostic| {
             let severity = match diagnostic.severity {
                 Some(DiagnosticSeverity::ERROR) => "error",
@@ -754,6 +756,26 @@ fn render_diagnostics(items: &[Diagnostic], root: &Path, file: &Path) -> String 
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn prioritized_diagnostics(items: &[Diagnostic]) -> Vec<&Diagnostic> {
+    let mut ordered: Vec<_> = items.iter().collect();
+    ordered.sort_by_key(|item| item.severity.map_or(1, |severity| severity.0));
+    ordered
+}
+
+fn diagnostic_evidence(items: &[Diagnostic]) -> Vec<Value> {
+    prioritized_diagnostics(items)
+        .into_iter()
+        .take(32)
+        .map(|item| {
+            json!({
+                "range": item.range,
+                "severity": item.severity,
+                "message": crate::message::redact_secrets(&item.message).chars().take(512).collect::<String>()
+            })
+        })
+        .collect()
 }
 
 fn render_locations(value: &Value, root: &Path) -> (String, usize) {
