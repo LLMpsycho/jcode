@@ -10,7 +10,8 @@ use tokio::task::JoinHandle;
 use crate::client::DapClientStatus;
 use crate::launch::{AdapterProfile, ResolvedLaunch, resolve_program, revalidate_program};
 use crate::process::{OwnedChildObserver, OwnedTargetProcess};
-use crate::session::{OutputRing, SessionEvent, next_manager_id, parse_event};
+use crate::session::{OutputRing, SessionEvent, parse_event};
+mod initialization;
 #[cfg(test)]
 mod lifecycle_tests;
 mod source_hash;
@@ -32,6 +33,13 @@ pub struct DebugSessionManager {
     core: Arc<ManagerCore>,
 }
 
+trait ManagerInitialization: Sized {
+    fn initialize(
+        config: DebugSessionManagerConfig,
+        operations: DebugOperationConfig,
+    ) -> Result<Self>;
+}
+
 impl DebugSessionManager {
     pub fn new(config: DebugSessionManagerConfig) -> Result<Self> {
         Self::new_with_operation_config(config, DebugOperationConfig::default())
@@ -41,16 +49,7 @@ impl DebugSessionManager {
         config: DebugSessionManagerConfig,
         operations: DebugOperationConfig,
     ) -> Result<Self> {
-        config.validate()?;
-        operations.validate()?;
-        Ok(Self {
-            core: Arc::new(ManagerCore {
-                config,
-                operations: Arc::new(operations),
-                manager_id: next_manager_id()?,
-                registry: Mutex::new(Registry::default()),
-            }),
-        })
+        Self::initialize(config, operations)
     }
 
     pub fn sessions(&self, owner_session_id: &str) -> Vec<DebugSessionSnapshot> {
