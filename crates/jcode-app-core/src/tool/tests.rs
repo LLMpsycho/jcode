@@ -355,7 +355,7 @@ async fn advisor_gate_applies_to_risky_calls_nested_inside_batch() {
     let session_id = "test-advisor-gates-batch-subcall";
     let manager = crate::advisor::advisor_manager();
     manager.remove(session_id);
-    manager.set_enabled(session_id, true);
+    manager.set_enabled(session_id, true).expect("save advisor control");
     assert!(manager.schedule_turn(
         session_id.to_string(),
         Arc::new(BlockingNoteProvider),

@@ -305,7 +305,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
-        crate::advisor::advisor_manager().remove(&self.session.id);
+        crate::advisor::advisor_manager().reset_history(&self.session.id);
         self.persist_session_best_effort("conversation rewind");
         Ok(removed)
     }
@@ -324,7 +324,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
-        crate::advisor::advisor_manager().remove(&self.session.id);
+        crate::advisor::advisor_manager().reset_history(&self.session.id);
         self.persist_session_best_effort("conversation rewind undo");
         Ok(restored)
     }
@@ -709,6 +709,7 @@ impl Agent {
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
+        crate::advisor::advisor_manager().resume(&self.session.id);
         self.refresh_agents_md_snapshot();
         crate::tool::clear_session_tool_policy(&previous_session_id);
         crate::tool::set_session_tool_policy(

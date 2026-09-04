@@ -1435,11 +1435,12 @@ pub(super) async fn handle_client(
                         let enabled = manager.is_enabled(&session_id, configured);
                         match manager.snapshot(&session_id) {
                             Some(snapshot) => format!(
-                                "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s)",
+                                "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); {}",
                                 if enabled { "on" } else { "off" },
                                 snapshot.status,
                                 snapshot.unresolved_blocking_notes,
-                                manager.notes(&session_id).len()
+                                manager.notes(&session_id).len(),
+                                snapshot.last_error.as_deref().unwrap_or("no error")
                             ),
                             None => format!(
                                 "Advisor: {} (idle); no retained notes",
@@ -1474,35 +1475,30 @@ pub(super) async fn handle_client(
                         }
                     }
                     AdvisorRequest::Dismiss(note_id) => {
-                        if manager.resolve_note(
-                            &session_id,
-                            &note_id,
-                            AdvisorNoteDisposition::Dismissed,
-                        ) {
-                            format!("Dismissed advisor note {note_id}.")
-                        } else {
-                            format!("Advisor note {note_id} was not found.")
+                        match manager.resolve_note(&session_id, &note_id, AdvisorNoteDisposition::Dismissed) {
+                            Ok(true) => format!("Dismissed advisor note {note_id}."),
+                            Ok(false) => format!("Advisor note {note_id} was not found."),
+                            Err(error) => error.to_string(),
                         }
                     }
                     AdvisorRequest::Acknowledge(note_id) => {
-                        if manager.resolve_note(
-                            &session_id,
-                            &note_id,
-                            AdvisorNoteDisposition::Acknowledged,
-                        ) {
-                            format!("Acknowledged advisor note {note_id}.")
-                        } else {
-                            format!("Advisor note {note_id} was not found.")
+                        match manager.resolve_note(&session_id, &note_id, AdvisorNoteDisposition::Acknowledged) {
+                            Ok(true) => format!("Acknowledged advisor note {note_id}."),
+                            Ok(false) => format!("Advisor note {note_id} was not found."),
+                            Err(error) => error.to_string(),
                         }
                     }
                     AdvisorRequest::Enable => {
-                        manager.set_enabled(&session_id, true);
-                        "Advisor enabled for this session.".to_string()
+                        match manager.set_enabled(&session_id, true) {
+                            Ok(()) => "Advisor enabled for this session.".to_string(),
+                            Err(error) => error.to_string(),
+                        }
                     }
                     AdvisorRequest::Disable => {
-                        manager.set_enabled(&session_id, false);
-                        "Advisor disabled for this session; future risky tools are released."
-                            .to_string()
+                        match manager.set_enabled(&session_id, false) {
+                            Ok(()) => "Advisor disabled for this session; future risky tools are released.".to_string(),
+                            Err(error) => error.to_string(),
+                        }
                     }
                 };
                 let json = encode_event(&ServerEvent::AdvisorResult {
