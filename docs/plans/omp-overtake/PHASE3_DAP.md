@@ -2,6 +2,21 @@
 
 The completed foundations cover the DAP protocol, owner-scoped session manager, 30D launch and owned attach, 30E breakpoints and execution control, 30F bounded state inspection, and the 30G opt-in agent-tool, lifecycle, TUI, protocol, and SDK integration. Arbitrary PID attachment remains intentionally unavailable.
 
+## Completion status
+
+**Phase 3 MVP is complete and validated.** There are no remaining Phase 3 implementation blockers.
+
+Finished work:
+
+- 30A through 30C: stable DAP types, framing, protocol classification, asynchronous client behavior, transport shutdown, and owned adapter-process safety.
+- 30D: owner-scoped session management, bounded output, `lldb-dap` launch, and owned spawn-and-attach without caller-supplied PIDs.
+- 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
+- 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
+- 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
+- Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
+
+The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
+
 ## Implemented
 
 - `jcode-dap-types` with stable request, response, event, initialize, capability, and `runInTerminal` wire contracts.
@@ -130,7 +145,9 @@ JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh build --profile selfdev -
 
 These checks pass, including 6 focused DAP agent-tool tests, the disconnect and resume lifecycle regressions, 82 protocol tests, 16 harness API tests, 12 Rust SDK unit tests, 10 Rust SDK client behavior tests, and 19 focused TypeScript client/protocol tests. The built binary also completed an isolated-socket `jcode run` smoke test. Repository-wide guardrail and strict-clippy results are not claimed because their `fork/master` baseline includes unrelated existing warning, size, panic, swallowed-error, and wildcard-re-export drift; the dependency-boundary check, formatting, focused compilation, and changed-path tests pass.
 
-## Deliberately deferred
+## Remaining non-MVP work
+
+No item below blocks the completed Phase 3 MVP:
 
 - Adapter discovery and debugger profiles beyond configured `lldb-dap`.
 - Step-in targets and higher-level debug policy beyond the bounded 30F inspection APIs.
