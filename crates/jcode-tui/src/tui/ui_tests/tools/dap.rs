@@ -13,7 +13,7 @@ fn call(action: &str, input: serde_json::Value) -> ToolCall {
 }
 
 #[test]
-fn all_mvp_actions_have_bounded_input_summaries() {
+fn all_actions_have_bounded_input_summaries() {
     let cases = [
         (
             "launch",
@@ -38,6 +38,10 @@ fn all_mvp_actions_have_bounded_input_summaries() {
         ("step_out", serde_json::json!({"thread_id":1})),
         ("threads", serde_json::json!({})),
         ("stack_trace", serde_json::json!({"thread_id":1})),
+        (
+            "step_in_targets",
+            serde_json::json!({"frame":"opaque-frame-handle-that-is-long"}),
+        ),
         (
             "scopes",
             serde_json::json!({"frame":"opaque-frame-handle-that-is-long"}),
@@ -75,7 +79,7 @@ fn all_mvp_actions_have_bounded_input_summaries() {
 }
 
 #[test]
-fn all_mvp_actions_render_labeled_versioned_results() {
+fn all_actions_render_labeled_versioned_results() {
     let cases = [
         (
             "launch",
@@ -115,6 +119,11 @@ fn all_mvp_actions_render_labeled_versioned_results() {
             "stack_trace",
             serde_json::json!({"frames":[{},{}]}),
             "Frames:",
+        ),
+        (
+            "step_in_targets",
+            serde_json::json!({"targets":[{},{}]}),
+            "Step-in targets:",
         ),
         ("scopes", serde_json::json!({"scopes":[{}]}), "Scopes:"),
         (

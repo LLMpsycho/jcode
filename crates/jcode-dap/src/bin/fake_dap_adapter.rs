@@ -79,7 +79,8 @@ fn main() -> std::io::Result<()> {
                     "supportsConditionalBreakpoints":true,
                     "supportsHitConditionalBreakpoints":true,
                     "supportsLogPoints":true,
-                    "supportsSteppingGranularity":true
+                    "supportsSteppingGranularity":true,
+                    "supportsStepInTargetsRequest":true
                 })),
             )?;
         } else if command == "launch" || command == "attach" {
@@ -203,6 +204,28 @@ fn main() -> std::io::Result<()> {
                 &mut seq,
                 &request,
                 Some(json!({"threads":[{"id":1,"name":"main"},{"id":2,"name":"worker"}]})),
+            )?;
+        } else if command == "stackTrace" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({
+                    "stackFrames":[{"id":11,"name":"main","line":12,"column":9}],
+                    "totalFrames":1
+                })),
+            )?;
+        } else if command == "stepInTargets" {
+            respond(
+                &mut output,
+                &mut seq,
+                &request,
+                Some(json!({
+                    "targets":[
+                        {"id":41,"label":"call helper","line":12,"column":9},
+                        {"id":42,"label":"call alternate","instructionPointerReference":"0x2a"}
+                    ]
+                })),
             )?;
         } else if command == "continue" {
             append_log(&log_path, "marker\tcontinue-received")?;

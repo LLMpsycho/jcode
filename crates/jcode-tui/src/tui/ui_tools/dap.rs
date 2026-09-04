@@ -56,10 +56,16 @@ pub(super) fn summarize(tool: &ToolCall, max_width: usize) -> String {
         "remove_breakpoint" => {
             string(&tool.input, &["breakpoint"]).map(|value| truncate_identifier_display(value, 18))
         }
-        "continue" | "pause" | "step_over" | "step_in" | "step_out" | "stack_trace" => {
+        "continue" | "pause" | "step_over" | "step_out" | "stack_trace" => {
             number(&tool.input, &["thread_id", "threadId"]).map(|value| format!("thread {value}"))
         }
-        "scopes" => string(&tool.input, &["frame"])
+        "step_in" => string(&tool.input, &["target"])
+            .map(|value| format!("target {}", truncate_identifier_display(value, 18)))
+            .or_else(|| {
+                number(&tool.input, &["thread_id", "threadId"])
+                    .map(|value| format!("thread {value}"))
+            }),
+        "step_in_targets" | "scopes" => string(&tool.input, &["frame"])
             .map(|value| format!("frame {}", truncate_identifier_display(value, 18))),
         "variables" => string(&tool.input, &["variables"])
             .map(|value| format!("ref {}", truncate_identifier_display(value, 18))),
@@ -137,8 +143,7 @@ pub(crate) fn result_summary_lines(
     let parsed = serde_json::from_str::<serde_json::Value>(content.trim());
     let envelope = match &parsed {
         Ok(value)
-            if value.get("protocol").and_then(|value| value.as_str())
-                == Some("jcode.dap.v1")
+            if value.get("protocol").and_then(|value| value.as_str()) == Some("jcode.dap.v1")
                 && value.get("action").and_then(|value| value.as_str()) == Some(action) =>
         {
             Some(value)
@@ -197,6 +202,17 @@ pub(crate) fn result_summary_lines(
                     details.push(format!("Frames: {count}"));
                 }
                 push(&mut details, "Thread", &["thread_id", "threadId"], 16);
+            }
+            "step_in_targets" => {
+                if let Some(count) = count(value, &["targets", "count"]) {
+                    details.push(format!("Step-in targets: {count}"));
+                }
+                push(
+                    &mut details,
+                    "Revision",
+                    &["execution_revision", "executionRevision", "revision"],
+                    16,
+                );
             }
             "scopes" => {
                 if let Some(count) = count(value, &["scopes", "count"]) {

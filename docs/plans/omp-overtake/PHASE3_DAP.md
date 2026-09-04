@@ -13,6 +13,7 @@ Finished work:
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
 - 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
+- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI.
 - Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
@@ -119,7 +120,7 @@ The operator and agent-facing contract is documented in:
 - [`docs/tools/dap.md`](../../tools/dap.md)
 - [`docs/troubleshooting/dap.md`](../../troubleshooting/dap.md)
 
-The implemented boundary is opt-in and initially supports only configured `kind = "lldb-dap"`. Its 17 tool actions cover owned launch and attach, session inspection and cleanup, breakpoints, thread and execution control, bounded stack/scope/variable inspection, and doubly opted-in evaluation. `ToolContext` supplies the trusted owner and canonical workspace. Request JSON cannot override either boundary, and attach never accepts a PID.
+The implemented boundary is opt-in and initially supports only configured `kind = "lldb-dap"`. Its 18 tool actions cover owned launch and attach, session inspection and cleanup, breakpoints, thread and execution control, bounded stack/step-in-target/scope/variable inspection, and doubly opted-in evaluation. `ToolContext` supplies the trusted owner and canonical workspace. Request JSON cannot override either boundary, and attach never accepts a PID.
 
 Session and inspection identifiers are opaque owner-scoped tokens. Output, protocol messages, request concurrency, retained events, stack frames, scopes, variables, strings, and evaluation results remain bounded. The surface deliberately provides no adapter downloads or discovery, raw DAP request escape hatch, environment override, interactive shell, or cross-process session persistence. A transient transport replacement with a live successor for the same owner preserves the debug session. True owner disconnect, startup timeout or cancellation, adapter failure, explicit owner teardown, server reload, and shutdown converge on owned transport and process-group cleanup.
 
@@ -150,7 +151,7 @@ These checks pass, including 6 focused DAP agent-tool tests, the disconnect and 
 No item below blocks the completed Phase 3 MVP:
 
 - Adapter discovery and debugger profiles beyond configured `lldb-dap`.
-- Step-in targets and higher-level debug policy beyond the bounded 30F inspection APIs.
+- Higher-level debug policy beyond bounded step-in target discovery and the 30F inspection APIs.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.

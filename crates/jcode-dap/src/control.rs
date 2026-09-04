@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::{DebugSessionState, DebugSessionStateKind};
+use crate::{DebugSessionState, DebugSessionStateKind, DebugStepInTargetHandle};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DebugThreadId(i64);
@@ -114,6 +114,13 @@ impl DebugStepRequest {
         self.granularity = granularity;
         self
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DebugTargetedStepInRequest {
+    pub target: DebugStepInTargetHandle,
+    pub expected_execution_revision: Option<DebugExecutionRevision>,
+    pub granularity: DebugSteppingGranularity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

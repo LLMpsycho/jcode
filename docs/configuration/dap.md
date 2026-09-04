@@ -34,7 +34,7 @@ The subsystem applies bounded defaults for:
 - retained output event count, retained UTF-8 bytes, and output page size;
 - adapter stderr retention;
 - breakpoint sources and breakpoints per source;
-- thread snapshots, stack frames, scopes, and variables per response;
+- thread snapshots, stack frames, step-in targets, scopes, and variables per response;
 - string fields, evaluate expressions, and evaluate results.
 
 Invalid or excessive limits fail configuration rather than silently disabling bounds. Output pages may be shorter than requested and include loss metadata when older data was evicted or oversized source events were discarded.

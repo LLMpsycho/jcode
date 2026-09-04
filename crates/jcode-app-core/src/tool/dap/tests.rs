@@ -35,7 +35,8 @@ fn schema_exposes_exact_action_set() {
         .unwrap()
         .as_array()
         .unwrap();
-    assert_eq!(actions.len(), 17);
+    assert_eq!(actions.len(), 18);
+    assert!(actions.iter().any(|value| value == "step_in_targets"));
     assert!(!actions.iter().any(|v| v == "custom" || v == "request"));
     assert!(schema.pointer("/properties/pid").is_none());
 }
@@ -66,6 +67,6 @@ async fn lifecycle_gate_serializes_cleanup_and_reconnect() {
         std::time::Duration::from_secs(1),
         service.cleanup_owner("owner"),
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 }

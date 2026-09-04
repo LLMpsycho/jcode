@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use jcode_dap::{
-    DebugAdapterConfig, DebugContinueRequest, DebugLaunchRequest, DebugOperationConfig,
-    DebugPauseRequest, DebugRemoveBreakpointRequest, DebugSessionManager,
+    DebugAdapterConfig, DebugContinueRequest, DebugControlOperation, DebugLaunchRequest,
+    DebugOperationConfig, DebugPauseRequest, DebugRemoveBreakpointRequest, DebugSessionManager,
     DebugSessionManagerConfig, DebugSessionStateKind, DebugSetBreakpointRequest,
-    DebugSourceBreakpoint, DebugStepRequest, DebugWorkspaceKey,
+    DebugSourceBreakpoint, DebugStackTraceRequest, DebugStepInTargetsRequest, DebugStepRequest,
+    DebugSteppingGranularity, DebugTargetedStepInRequest, DebugWorkspaceKey,
 };
 use tokio::time::{sleep, timeout};
 
@@ -147,20 +148,49 @@ async fn real_subprocess_full_breakpoint_and_control_contract_repeats_cleanly() 
             .await
             .unwrap();
         wait_state(&manager, launched.id, DebugSessionStateKind::Stopped).await;
-        for step in 0..3 {
-            match step {
-                0 => manager
+        let stack = manager
+            .stack_trace("owner", launched.id, DebugStackTraceRequest::new(1))
+            .await
+            .unwrap();
+        let targets = manager
+            .step_in_targets(
+                "owner",
+                launched.id,
+                DebugStepInTargetsRequest {
+                    frame: stack.frames[0].handle.clone(),
+                    expected_execution_revision: Some(stack.execution_revision),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(targets.targets.len(), 2);
+        manager
+            .step_in_target(
+                "owner",
+                launched.id,
+                DebugTargetedStepInRequest {
+                    target: targets.targets[0].handle.clone(),
+                    expected_execution_revision: Some(targets.execution_revision),
+                    granularity: DebugSteppingGranularity::Statement,
+                },
+            )
+            .await
+            .unwrap();
+        wait_state(&manager, launched.id, DebugSessionStateKind::Stopped).await;
+        for operation in [
+            DebugControlOperation::StepOver,
+            DebugControlOperation::StepOut,
+        ] {
+            match operation {
+                DebugControlOperation::StepOver => manager
                     .step_over("owner", launched.id, DebugStepRequest::default())
                     .await
                     .unwrap(),
-                1 => manager
-                    .step_in("owner", launched.id, DebugStepRequest::default())
-                    .await
-                    .unwrap(),
-                _ => manager
+                DebugControlOperation::StepOut => manager
                     .step_out("owner", launched.id, DebugStepRequest::default())
                     .await
                     .unwrap(),
+                _ => unreachable!(),
             };
             wait_state(&manager, launched.id, DebugSessionStateKind::Stopped).await;
         }
@@ -172,12 +202,15 @@ async fn real_subprocess_full_breakpoint_and_control_contract_repeats_cleanly() 
             "threads\t",
             "continue\t",
             "pause\t",
+            "stackTrace\t",
+            "stepInTargets\t",
             "next\t",
             "stepIn\t",
             "stepOut\t",
         ] {
             assert!(log.contains(command), "missing {command}");
         }
+        assert!(log.contains("\"targetId\":41"));
         let adapter_pid = log
             .lines()
             .find_map(|line| line.strip_prefix("adapter_pid\t"))

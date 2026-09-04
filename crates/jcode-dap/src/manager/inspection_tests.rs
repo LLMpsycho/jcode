@@ -8,8 +8,9 @@ use super::*;
 use crate::testing::FakeAdapter;
 use crate::{
     DebugEvaluateContext, DebugEvaluateOutcome, DebugEvaluateRequest, DebugEvaluateTarget,
-    DebugScopesRequest, DebugSessionManagerConfig, DebugStackTraceRequest, DebugVariablesRequest,
-    Message,
+    DebugScopesRequest, DebugSessionManagerConfig, DebugStackTraceRequest,
+    DebugStepInTargetsRequest, DebugSteppingGranularity, DebugTargetedStepInRequest,
+    DebugVariablesRequest, Message,
 };
 
 struct InspectionFixture {
@@ -108,6 +109,17 @@ async fn stop(fixture: &mut InspectionFixture) {
 #[tokio::test]
 async fn inspection_stack_scopes_variables_and_evaluate_round_trip() {
     let mut fixture = fixture();
+    {
+        let entry = fixture
+            .manager
+            .core
+            .authorized_entry("owner", fixture.id)
+            .unwrap();
+        lock(&entry.data)
+            .capabilities
+            .additional
+            .insert("supportsStepInTargetsRequest".into(), json!(true));
+    }
     stop(&mut fixture).await;
 
     let stack_task = {
@@ -137,6 +149,47 @@ async fn inspection_stack_scopes_variables_and_evaluate_round_trip() {
     assert_eq!(stack.thread_id.get(), 7);
     assert_eq!(stack.frames.len(), 1);
     let frame = stack.frames[0].handle.clone();
+
+    let targets_task = {
+        let manager = fixture.manager.clone();
+        let frame = frame.clone();
+        let id = fixture.id;
+        tokio::spawn(async move {
+            manager
+                .step_in_targets(
+                    "owner",
+                    id,
+                    DebugStepInTargetsRequest {
+                        frame,
+                        expected_execution_revision: Some(stack.execution_revision),
+                    },
+                )
+                .await
+        })
+    };
+    let targets_request = recv(&mut fixture.adapter).await;
+    assert_eq!(targets_request.command, "stepInTargets");
+    assert_eq!(targets_request.arguments, Some(json!({"frameId": 11})));
+    fixture
+        .adapter
+        .respond_ok(
+            &targets_request,
+            Some(json!({
+                "targets": [{
+                    "id": 41,
+                    "label": "call helper",
+                    "line": 3,
+                    "column": 7,
+                    "instructionPointerReference": "0x29"
+                }]
+            })),
+        )
+        .await
+        .unwrap();
+    let targets = targets_task.await.unwrap().unwrap();
+    assert_eq!(targets.targets[0].label, "call helper");
+    assert_eq!(targets.targets[0].line, Some(3));
+    let step_target = targets.targets[0].handle.clone();
 
     let scopes_task = {
         let manager = fixture.manager.clone();
@@ -256,4 +309,36 @@ async fn inspection_stack_scopes_variables_and_evaluate_round_trip() {
         }
         DebugEvaluateOutcome::Unknown(unknown) => panic!("unexpected unknown: {unknown:?}"),
     }
+
+    let step_task = {
+        let manager = fixture.manager.clone();
+        let id = fixture.id;
+        tokio::spawn(async move {
+            manager
+                .step_in_target(
+                    "owner",
+                    id,
+                    DebugTargetedStepInRequest {
+                        target: step_target,
+                        expected_execution_revision: Some(stack.execution_revision),
+                        granularity: DebugSteppingGranularity::Statement,
+                    },
+                )
+                .await
+        })
+    };
+    let step_request = recv(&mut fixture.adapter).await;
+    assert_eq!(step_request.command, "stepIn");
+    assert_eq!(
+        step_request.arguments,
+        Some(json!({"threadId": 7, "targetId": 41}))
+    );
+    fixture
+        .adapter
+        .respond_ok(&step_request, None)
+        .await
+        .unwrap();
+    let stepped = step_task.await.unwrap().unwrap();
+    assert_eq!(stepped.thread_id.get(), 7);
+    assert!(stepped.execution_revision.get() > stack.execution_revision.get());
 }
