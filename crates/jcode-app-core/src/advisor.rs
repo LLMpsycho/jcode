@@ -449,7 +449,9 @@ impl AdvisorManager {
                 return false;
             }
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
-            if runtime.persistence_failed { return false; }
+            if runtime.persistence_failed {
+                return false;
+            }
             runtime.turns_observed = runtime.turns_observed.saturating_add(1);
             runtime.immunity_turns = immunity_turns;
             runtime.delivery_queue = Some(Arc::downgrade(&pending.queue));
@@ -697,7 +699,10 @@ impl AdvisorManager {
             runtime.status = AdvisorStatus::Ready;
             if runtime.last_note_hash == Some(note_hash)
                 || runtime.notes_emitted >= config.max_notes_per_turn
-                || (runtime.notes.len() == MAX_NOTE_METADATA && runtime.notes.iter().all(|note| note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved))
+                || (runtime.notes.len() == MAX_NOTE_METADATA
+                    && runtime.notes.iter().all(|note| {
+                        note.blocking && note.disposition == AdvisorNoteDisposition::Unresolved
+                    }))
             {
                 false
             } else {
@@ -793,7 +798,9 @@ static ADVISOR_MANAGER: LazyLock<Arc<AdvisorManager>> = LazyLock::new(|| {
     let manager = AdvisorManager::default();
     #[cfg(not(test))]
     let manager = AdvisorManager::persistent(
-        crate::storage::jcode_dir().unwrap_or_else(|_| crate::storage::durable_state_dir()).join("state/advisor")
+        crate::storage::jcode_dir()
+            .unwrap_or_else(|_| crate::storage::durable_state_dir())
+            .join("state/advisor"),
     );
     Arc::new(manager)
 });

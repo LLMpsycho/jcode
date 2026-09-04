@@ -74,7 +74,10 @@ struct TodoInput {
 
 fn parse_todo_input(input: Value) -> Result<TodoInput> {
     let params: TodoInput = serde_json::from_value(normalize_todo_input(input))?;
-    if let Some(criteria) = params.plan.as_ref().and_then(|plan| plan.acceptance_criteria.as_ref())
+    if let Some(criteria) = params
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.acceptance_criteria.as_ref())
         && (criteria.len() > 32 || criteria.iter().any(|criterion| criterion.len() > 1024))
     {
         bail!("acceptance_criteria supports at most 32 requirements of 1024 bytes each");
@@ -985,7 +988,7 @@ impl Tool for TodoTool {
 
 #[cfg(test)]
 mod tests {
-use super::*;
+    use super::*;
 
     #[test]
     fn tool_is_named_todo() {
