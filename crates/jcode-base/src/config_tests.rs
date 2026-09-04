@@ -168,6 +168,38 @@ fn mermaid_feature_defaults_on_and_parses_false() {
 }
 
 #[test]
+fn advisor_defaults_disabled_and_parses_all_phase_four_modes() {
+    let defaults = Config::default();
+    assert!(!defaults.advisor.enabled);
+    assert_eq!(defaults.advisor.mode, super::AdvisorMode::Interactive);
+    assert_eq!(defaults.advisor.max_notes_per_turn, 1);
+    assert_eq!(
+        defaults.advisor.block_on_severity,
+        super::AdvisorSeverity::Blocker
+    );
+    assert!(defaults.advisor.redact);
+
+    for (raw, expected) in [
+        ("interactive", super::AdvisorMode::Interactive),
+        ("selfdev-guardian", super::AdvisorMode::SelfdevGuardian),
+        ("final-review", super::AdvisorMode::FinalReview),
+    ] {
+        let cfg: Config = toml::from_str(&format!(
+            "[advisor]\nenabled = true\nmode = \"{raw}\"\nmax_notes_per_turn = 2\nblock_on_severity = \"concern\"\nredact = false\n"
+        ))
+        .expect("advisor config should parse");
+        assert!(cfg.advisor.enabled);
+        assert_eq!(cfg.advisor.mode, expected);
+        assert_eq!(cfg.advisor.max_notes_per_turn, 2);
+        assert_eq!(
+            cfg.advisor.block_on_severity,
+            super::AdvisorSeverity::Concern
+        );
+        assert!(!cfg.advisor.redact);
+    }
+}
+
+#[test]
 fn mermaid_environment_override_uses_standard_boolean_values() {
     let _guard = crate::storage::lock_test_env();
     let previous = std::env::var_os("JCODE_ENABLE_MERMAID");

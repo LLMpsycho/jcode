@@ -1531,6 +1531,22 @@ Acceptance:
 
 Add a second model that catches requirement drift, unsafe assumptions, incomplete verification, and poor tool strategy.
 
+## Implementation status
+
+The first advisor foundation slice is implemented on `feat/phase4-advisor-foundation`:
+
+- disabled-by-default typed configuration for all three planned modes;
+- a session-scoped internal `AdvisorManager` connected to streaming and non-streaming turn completion;
+- independent provider forks with an optional advisor model route, without mutating the primary provider;
+- bounded and optionally redacted turn evidence, bounded private context, structured notes, severity policy, deduplication, and per-turn note budgets;
+- safe-boundary delivery through the existing soft-interrupt queue, including preflight delivery before the next provider request;
+- graceful malformed-response/provider failure handling and cleanup when a session closes.
+
+This does **not** complete Phase 4. Remaining work is tracked in
+[`PHASE4_ADVISOR.md`](./PHASE4_ADVISOR.md), especially richer evidence capture,
+resume/rewind/compaction semantics, handled-note immunity, blocker tool gating,
+user controls, and mode-specific final verdict behavior.
+
 ## 10.1 Integrate at existing turn lifecycle
 
 Jcode already has turn start/end hooks and soft-interrupt queues. Build an internal service rather than an external hook-only feature.

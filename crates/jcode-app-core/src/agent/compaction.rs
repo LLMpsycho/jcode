@@ -6,6 +6,7 @@ impl Agent {
         self.locked_tools = None;
         self.provider_session_id = None;
         self.session.provider_session_id = None;
+        crate::advisor::advisor_manager().remove(&self.session.id);
     }
 
     pub fn poll_compaction_completion_event(&mut self) -> Option<CompactionEvent> {

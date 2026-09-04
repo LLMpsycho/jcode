@@ -1307,7 +1307,8 @@ fn test_summarize_tool_calls_includes_tool_only_assistant_messages() {
             id: "tool_1".to_string(),
             name: "bash".to_string(),
             input: serde_json::json!({
-                "command": "pwd"
+                "command": "pwd",
+                "intent": "Inspect the current directory"
             }),
             thought_signature: None,
         }],
@@ -1316,6 +1317,10 @@ fn test_summarize_tool_calls_includes_tool_only_assistant_messages() {
     let summaries = summarize_tool_calls(&session, 10);
     assert_eq!(summaries.len(), 1);
     assert_eq!(summaries[0].tool_name, "bash");
+    assert_eq!(
+        summaries[0].intent.as_deref(),
+        Some("Inspect the current directory")
+    );
     assert!(summaries[0].brief_output.contains("pwd"));
 }
 
