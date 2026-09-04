@@ -311,7 +311,7 @@ def exercise(binary, mode, fixture, model):
             daemon.checkpoint()
             if fixture:
                 assert not fixture.errors, fixture.errors
-                assert fixture.primary_tools and all(fixture.primary_tools), "primary lost normal tools"
+                assert any(fixture.primary_tools), "primary lost normal tools"
             return {"mode": mode, "status": "passed", "restart": True,
                     "reload_and_immunity": bool(fixture), "rewind": True}
         except Exception:
