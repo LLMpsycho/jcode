@@ -4,6 +4,7 @@
 //! enforcement. Provider context and in-flight reviews are never persisted.
 
 mod persistence;
+mod evidence;
 mod routing;
 
 use crate::config::{AdvisorConfig, AdvisorMode, AdvisorSeverity};
@@ -260,6 +261,8 @@ struct AdvisorRuntime {
     immunity_until_turn: u64,
     immunity_turns: u64,
     delivery_queue: Option<std::sync::Weak<Mutex<Vec<SoftInterruptMessage>>>>,
+    capture: Option<evidence::TurnEvidence>,
+    seen_diagnostics: VecDeque<u64>,
     notes: VecDeque<AdvisorNoteMetadata>,
 }
 
@@ -311,6 +314,7 @@ impl AdvisorManager {
             runtime.enabled_override = Some(enabled);
             if !enabled {
                 clear_queued_notes(runtime);
+                runtime.capture = None;
                 runtime.pending = None;
                 runtime.status = AdvisorStatus::Idle;
                 runtime.active_review_id = self

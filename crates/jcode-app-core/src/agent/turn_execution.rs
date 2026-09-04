@@ -17,8 +17,9 @@ impl Agent {
             eprintln!("[trace] session_id {}", self.session.id);
         }
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(&self.session.id, &crate::advisor::config_for_current_session());
         let result = self.run_turn(true).await.map(|_| ());
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index).await;
         result
     }
 
@@ -46,8 +47,9 @@ impl Agent {
             eprintln!("[trace] session_id {}", self.session.id);
         }
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(&self.session.id, &crate::advisor::config_for_current_session());
         let result = self.run_turn(false).await;
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index).await;
         result
     }
 
@@ -111,11 +113,12 @@ impl Agent {
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(&self.session.id, &crate::advisor::config_for_current_session());
         self.fire_turn_start_hook("chat");
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index).await;
         result
     }
 
@@ -207,7 +210,7 @@ impl Agent {
         crate::hooks::dispatch_observer(event);
     }
 
-    fn schedule_advisor_review(
+    async fn schedule_advisor_review(
         &self,
         objective: &str,
         turn_succeeded: bool,
@@ -218,12 +221,13 @@ impl Agent {
         if !manager.is_enabled(&self.session.id, config.enabled) {
             return;
         }
-        let input = crate::advisor::AdvisorTurnInput::from_completed_turn(
+        let mut input = crate::advisor::AdvisorTurnInput::from_completed_turn(
             objective,
             self.latest_assistant_text_after(start_message_index),
-            self.get_tool_call_summaries(12),
+            Vec::new(),
             turn_succeeded,
         );
+        manager.enrich_input(&self.session.id, &mut input, self.session.working_dir.as_deref()).await;
         let _ = manager.schedule_turn(
             self.session.id.clone(),
             self.provider_fork(),

@@ -857,7 +857,11 @@ impl Tool for BashTool {
     }
 
     fn parameters_schema(&self) -> Value {
-        destructive_gate::bash_parameters_schema()
+        let mut schema = destructive_gate::bash_parameters_schema();
+        schema["properties"]["verification"] = serde_json::json!({
+            "type": "boolean", "description": "Mark this command as an explicit verification check; its actual exit status will be recorded."
+        });
+        schema
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
@@ -1057,7 +1061,7 @@ impl BashTool {
                     output.push_str(&stderr);
                 }
                 let output = format_command_output(output, status.code());
-                Ok(ToolOutput::new(output).with_title(title_for_work))
+                Ok(ToolOutput::new(output).with_title(title_for_work).with_exit_code(status.code()))
             });
 
         match tokio::time::timeout(timeout_duration, &mut work_handle).await {
@@ -1172,7 +1176,7 @@ impl BashTool {
                             .intent
                             .clone()
                             .unwrap_or_else(|| params.command.clone()),
-                    ),
+                    ).with_exit_code(status.code()),
                 );
             }
 

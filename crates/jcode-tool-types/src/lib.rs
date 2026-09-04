@@ -33,6 +33,17 @@ impl ToolOutput {
         self
     }
 
+    /// Actual process completion, independent of human-readable shell output.
+    /// A null exit code means signal/unknown termination, never successful
+    /// verification. Background handoff must not set this until completion.
+    pub fn with_exit_code(mut self, code: Option<i32>) -> Self {
+        let metadata = self.metadata.get_or_insert_with(|| serde_json::json!({}));
+        if let Some(object) = metadata.as_object_mut() {
+            object.insert("execution".into(), serde_json::json!({"exit_code": code, "status": "completed"}));
+        }
+        self
+    }
+
     pub fn with_image(mut self, media_type: impl Into<String>, data: impl Into<String>) -> Self {
         self.images.push(ToolImage {
             media_type: media_type.into(),

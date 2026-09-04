@@ -845,6 +845,7 @@ impl Registry {
         if let (Some(lsp_pool), Ok(output)) = (&self.lsp_pool, &mut result) {
             lsp::attach_post_edit_feedback(resolved_name, output, &ctx, Arc::clone(lsp_pool)).await;
         }
+        crate::advisor::advisor_manager().capture_tool(&ctx.session_id, resolved_name, &input, &result);
         let latency_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
 
         crate::telemetry::record_tool_execution(resolved_name, &input, result.is_ok(), latency_ms);

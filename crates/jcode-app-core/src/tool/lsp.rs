@@ -284,7 +284,7 @@ impl Tool for LspTool {
                             &workspace,
                             Some(document.version),
                             text,
-                            json!({"count": items.len()}),
+                            json!({"count": items.len(), "diagnostic_evidence": {"path": file, "freshness": freshness, "items": items.iter().take(32).collect::<Vec<_>>()}}),
                             max_chars,
                             freshness,
                         ))
