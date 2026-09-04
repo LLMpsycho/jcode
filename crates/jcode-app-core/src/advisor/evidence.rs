@@ -346,6 +346,24 @@ fn record_diagnostics(
 /// Explicit bounded source: tracked working-tree numstat against HEAD, not a
 /// patch or raw file content. It can include earlier edits and omits untracked
 /// files; per-tool revision evidence above identifies writes in this turn.
+fn evidence_git(root: &Path) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .current_dir(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env_remove("GIT_CONFIG")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .env_remove("GIT_CONFIG_COUNT")
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    command
+}
+
 async fn bounded_diff(root: Option<&Path>) -> String {
     let Some(root) = root else {
         return "Working-tree diff unavailable: no session directory.".into();
@@ -354,17 +372,14 @@ async fn bounded_diff(root: Option<&Path>) -> String {
         // --no-ext-diff/--no-textconv do not stop Git clean/process filters.
         // Inspect configuration without running a worktree command, and refuse
         // that evidence source rather than executing a configured filter.
-        let filters = tokio::process::Command::new("git")
+        let filters = evidence_git(root)
             .args([
                 "--no-pager",
                 "config",
                 "--get-regexp",
                 r"^filter\..*\.(clean|process)$",
             ])
-            .current_dir(root)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
             .status()
             .await
             .ok()?;
@@ -375,7 +390,7 @@ async fn bounded_diff(root: Option<&Path>) -> String {
             }
             _ => return None,
         }
-        let mut child = tokio::process::Command::new("git")
+        let mut child = evidence_git(root)
             .args([
                 "--no-pager",
                 "-c",
@@ -387,11 +402,7 @@ async fn bounded_diff(root: Option<&Path>) -> String {
                 "HEAD",
                 "--",
             ])
-            .current_dir(root)
-            .env("GIT_OPTIONAL_LOCKS", "0")
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
             .spawn()
             .ok()?;
         let mut bytes = Vec::new();
@@ -518,7 +529,8 @@ mod tests {
             .success()
         );
         std::fs::write(dir.path().join("file"), "after\n").expect("change");
-        assert!(bounded_diff(Some(dir.path())).await.contains("1\t1\tfile"));
+        let summary = bounded_diff(Some(dir.path())).await;
+        assert!(summary.contains("1\t1\tfile"), "{summary}");
         std::fs::write(dir.path().join(".gitattributes"), "file filter=advisor\n")
             .expect("attributes");
         for key in ["filter.advisor.clean", "filter.advisor.process"] {

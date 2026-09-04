@@ -39,10 +39,11 @@ The Git summary explicitly identifies its scope: tracked working-tree changes
 against HEAD can include earlier work and omit untracked files. Missing Git,
 missing HEAD, absent diagnostics, timed-out sources, and unavailable todo state
 are reported as unavailable, never as a clean verification result. Configured
-Git clean/process filters also make the diff source unavailable: a plain numstat
+Repository Git clean/process filters also make the diff source unavailable: a plain numstat
 can otherwise execute them despite disabling external diff/text conversion.
-File-revision
-metadata independently records writes during the reviewed turn.
+System/global Git configuration and inherited command-line config overrides are
+excluded from both the filter check and diff command. File-revision metadata
+independently records writes during the reviewed turn.
 
 A foreground `bash` call may declare `verification: true`; the advisor receives
 its actual process completion and exit code. A successful ordinary command or
