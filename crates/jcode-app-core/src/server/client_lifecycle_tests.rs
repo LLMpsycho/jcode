@@ -1060,7 +1060,7 @@ async fn client_initiated_turn_fans_out_stream_and_terminal_events_to_live_attac
     assert_eq!(done_id, 479);
     result.expect("turn should complete successfully");
 
-    ready.send(()).expect("owner is ready for follow-up turns");
+    ready.send(true).expect("owner is ready for follow-up turns");
 
     for rx in [&mut origin_rx, &mut attached_rx] {
         let mut saw_post_attach_delta = false;
@@ -1177,7 +1177,7 @@ fn accepted_reload_recovery_continuation_marks_intent_delivered() -> anyhow::Res
                 .expect("processing task should report completion");
         assert_eq!(done_id, 77);
         result?;
-        ready.send(()).expect("owner is ready");
+        ready.send(true).expect("owner is ready");
         if let Some(handle) = processing_task.take() {
             handle.await.expect("processing task join");
         }

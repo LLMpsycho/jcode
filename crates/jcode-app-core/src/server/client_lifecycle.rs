@@ -740,6 +740,7 @@ pub(super) async fn handle_client(
             done = processing_done_rx.recv() => {
                 if let Some((done_id, result, completion_report, ready)) = done {
                     if Some(done_id) != processing_message_id {
+                        let _ = ready.send(false);
                         crate::logging::warn(&format!(
                             "Done event id={} doesn't match processing_message_id={:?}, dropping",
                             done_id, processing_message_id
@@ -815,7 +816,7 @@ pub(super) async fn handle_client(
                             }
                         }
                     }
-                    let _ = ready.send(());
+                    let _ = ready.send(true);
                 } else {
                     break;
                 }
