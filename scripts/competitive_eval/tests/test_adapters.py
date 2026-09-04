@@ -59,6 +59,7 @@ class AdapterTests(unittest.TestCase):
             self.assertTrue(environment["JCODE_SOCKET"].startswith(str(spec.run_dir)))
             self.assertEqual(len(version.binary_sha256), 64)
             self.assertIn("v1.2.3", version.version)
+            self.assertIn("lsp", adapter.probe().capabilities)
 
     def test_omp_adapter_requires_explicit_binary_and_fresh_config(self) -> None:
         self.assertFalse(OmpAdapter(None).probe().supported)

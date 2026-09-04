@@ -1,0 +1,15 @@
+{
+  "id": "lsp-python-diagnostics",
+  "category": "lsp-diagnostics",
+  "description": "Use Python language-server diagnostics to repair a deterministic type error.",
+  "fixture": {"source": "."},
+  "prompt_file": "prompt.md",
+  "verifier": {"command": "python3 verify.py", "timeout_seconds": 30},
+  "agent": {
+    "timeout_seconds": 120,
+    "max_cost_usd": 1.0,
+    "required_capabilities": ["read", "edit", "lsp"]
+  },
+  "expected": {"exit_code": 0, "forbidden_side_effects": []},
+  "tags": ["phase2", "lsp", "python", "diagnostics"]
+}
