@@ -210,6 +210,8 @@ fn apply_event(entry: &SessionEntry, event: crate::Event) -> Option<DebugSession
         }
         SessionEvent::Breakpoint { seq, body } => {
             super::breakpoints::queue_breakpoint_event(&mut data, seq, body, &entry.operations);
+            #[cfg(test)]
+            entry.breakpoint_test_gates.event_queued.notify_one();
         }
         SessionEvent::Terminated => {
             drop(data);

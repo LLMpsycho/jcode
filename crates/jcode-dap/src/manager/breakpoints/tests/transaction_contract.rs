@@ -184,9 +184,22 @@ async fn two_source_adapter_id_collision_rejects_and_id_only_events_mutate_neith
         .unwrap();
     assert!(matches!(
         task.await.unwrap(),
-        Err(DapError::InvalidSetBreakpointsResponse { .. })
+        Err(DapError::InvalidSetBreakpointsResponse { message })
+            if message == "adapter breakpoint id collides with another source"
     ));
     let before = f.manager.breakpoints("owner", f.id).unwrap();
+    assert_eq!(before.sources.len(), 2);
+    assert_eq!(before.total_breakpoints, 2);
+    assert_eq!(
+        before.sources[0].synchronization,
+        DebugBreakpointSynchronization::Synchronized
+    );
+    assert_eq!(before.sources[0].breakpoints[0].adapter_id, Some(21));
+    assert_eq!(
+        before.sources[1].synchronization,
+        DebugBreakpointSynchronization::Indeterminate
+    );
+    assert_eq!(before.sources[1].breakpoints[0].adapter_id, Some(21));
     f.adapter
         .event(
             "breakpoint",

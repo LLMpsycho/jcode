@@ -140,12 +140,26 @@ async fn thread_count_and_name_limits_accept_boundary_and_reject_plus_one_withou
     .await
     .unwrap();
     assert_eq!(accepted.threads.len(), 2);
-    for invalid in [
-        json!({"threads":[{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":3,"name":"c"}]}),
-        json!({"threads":[{"id":1,"name":"12345"}]}),
-    ] {
-        assert!(threads_round_trip(&mut f, invalid).await.is_err());
-    }
+    assert_eq!(
+        threads_round_trip(
+            &mut f,
+            json!({"threads":[{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":3,"name":"c"}]}),
+        )
+        .await
+        .unwrap_err(),
+        DapError::ThreadLimitExceeded {
+            observed: 3,
+            limit: 2,
+        }
+    );
+    assert_eq!(
+        threads_round_trip(&mut f, json!({"threads":[{"id":1,"name":"12345"}]}))
+            .await
+            .unwrap_err(),
+        DapError::InvalidThreadsResponse {
+            message: "thread name exceeds configured byte limit".to_owned(),
+        }
+    );
     let recovered = threads_round_trip(&mut f, json!({"threads":[{"id":9,"name":"okay"}]}))
         .await
         .unwrap();

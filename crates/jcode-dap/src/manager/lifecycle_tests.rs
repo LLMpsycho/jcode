@@ -5,7 +5,7 @@ use tokio::time::timeout;
 
 use super::*;
 use crate::testing::FakeAdapter;
-use crate::{DebugContinueRequest, Message, StoppedState};
+use crate::{DebugSetBreakpointRequest, DebugSourceBreakpoint, Message};
 
 #[tokio::test]
 async fn manager_drop_closes_transport_with_detached_operation_and_releases_core() {
@@ -43,20 +43,20 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
     reservation.mark_running().unwrap();
     let id = reservation.commit().unwrap();
     let entry = manager.core.authorized_entry("owner", id).unwrap();
-    {
-        let mut data = lock(&entry.data);
-        data.state = DebugSessionState::Stopped(StoppedState {
-            reason: "breakpoint".into(),
-            thread_id: Some(7),
-            all_threads_stopped: true,
-            description: None,
-        });
-    }
+    let validation_gate = Arc::clone(&entry.breakpoint_validation)
+        .acquire_owned()
+        .await
+        .unwrap();
     let caller = {
         let manager = manager.clone();
+        let program = root.join("main");
         tokio::spawn(async move {
             manager
-                .continue_execution("owner", id, DebugContinueRequest::default())
+                .set_breakpoint(
+                    "owner",
+                    id,
+                    DebugSetBreakpointRequest::new(program, DebugSourceBreakpoint::new(1)),
+                )
                 .await
         })
     };
@@ -68,10 +68,36 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
         Message::Request(request) => request,
         other => panic!("expected continue request, got {other:?}"),
     };
-    assert_eq!(request.command, "continue");
+    assert_eq!(request.command, "setBreakpoints");
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
+    adapter
+        .respond_ok(
+            &request,
+            Some(serde_json::json!({"breakpoints":[{"id":1,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    entry
+        .breakpoint_test_gates
+        .response_validation_entered
+        .notified()
+        .await;
+    adapter
+        .event(
+            "breakpoint",
+            Some(serde_json::json!({
+                "reason":"changed",
+                "breakpoint":{"id":1,"verified":false,"message":"late"}
+            })),
+        )
+        .await
+        .unwrap();
+    entry.breakpoint_test_gates.event_queued.notified().await;
+    // The response and event are now inside the detached operation's pipeline. If it does not
+    // recheck the terminal fence after its await, releasing the validation gate can commit them.
     let state_before_drop = entry.snapshot().unwrap();
+    assert!(breakpoints::breakpoint_snapshot(&entry).sources.is_empty());
     drop(manager);
     timeout(Duration::from_secs(1), async {
         while weak_core.upgrade().is_some() {
@@ -81,15 +107,14 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
     .await
     .unwrap();
     assert!(weak_core.upgrade().is_none());
-    let _ = adapter
-        .respond_ok(&request, Some(serde_json::json!({})))
-        .await;
-    let _ = adapter
-        .event(
-            "stopped",
-            Some(serde_json::json!({"reason":"late","threadId":9})),
-        )
-        .await;
+    drop(validation_gate);
+    timeout(Duration::from_secs(1), async {
+        while Arc::strong_count(&entry) > 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(
         timeout(Duration::from_secs(1), adapter.recv())
             .await
@@ -98,8 +123,9 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
     );
     assert_eq!(
         state_before_drop.state.kind(),
-        DebugSessionStateKind::Stopped
+        DebugSessionStateKind::Running
     );
     assert_eq!(entry.snapshot().unwrap(), state_before_drop);
+    assert!(breakpoints::breakpoint_snapshot(&entry).sources.is_empty());
     let _ = std::fs::remove_dir_all(root);
 }

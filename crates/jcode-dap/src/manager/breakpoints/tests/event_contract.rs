@@ -210,3 +210,69 @@ fn adapter_message_limit_accepts_boundary_and_truncates_boundary_plus_one() {
         1
     );
 }
+
+#[tokio::test]
+async fn public_breakpoint_snapshot_bounds_adapter_message_at_utf8_byte_boundary() {
+    let mut f = fixture_with_operations(
+        "owner",
+        DebugOperationConfig {
+            max_breakpoint_message_bytes: 4,
+            ..DebugOperationConfig::default()
+        },
+    );
+    let manager = f.manager.clone();
+    let id = f.id;
+    let source = f.source.clone();
+    let task = tokio::spawn(async move {
+        manager
+            .set_breakpoint(
+                "owner",
+                id,
+                DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+            )
+            .await
+    });
+    let request = request(&mut f.adapter).await;
+    f.adapter
+        .respond_ok(
+            &request,
+            Some(json!({"breakpoints":[{"id":7,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    task.await.unwrap().unwrap();
+
+    for (message, retained, truncated) in [("éé", "éé", 0), ("aéé", "éé", 1)] {
+        f.adapter
+            .event(
+                "breakpoint",
+                Some(json!({
+                    "reason":"changed",
+                    "breakpoint":{"id":7,"verified":true,"message":message}
+                })),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let breakpoint = f
+                    .manager
+                    .breakpoints("owner", f.id)
+                    .unwrap()
+                    .sources
+                    .into_iter()
+                    .flat_map(|source| source.breakpoints)
+                    .next()
+                    .unwrap();
+                if breakpoint.message.as_deref() == Some(retained)
+                    && breakpoint.message_truncated_prefix_bytes == truncated
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+}

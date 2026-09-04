@@ -339,8 +339,9 @@ impl DebugSessionManager {
             finalization: AsyncMutex::new(()),
             operation: AsyncMutex::new(()),
             source_hash: Arc::new(Semaphore::new(1)),
+            breakpoint_validation: Arc::new(Semaphore::new(1)),
             #[cfg(test)]
-            breakpoint_test_gates: (Arc::new(Semaphore::new(1)), Arc::new(Semaphore::new(1))),
+            breakpoint_test_gates: breakpoints::BreakpointTestGates::default(),
             closed: AtomicBool::new(false),
             operations: Arc::clone(&self.core.operations),
             changed,
@@ -652,8 +653,9 @@ struct SessionEntry {
     finalization: AsyncMutex<()>,
     operation: AsyncMutex<()>,
     source_hash: Arc<Semaphore>,
+    breakpoint_validation: Arc<Semaphore>,
     #[cfg(test)]
-    breakpoint_test_gates: (Arc<Semaphore>, Arc<Semaphore>),
+    breakpoint_test_gates: breakpoints::BreakpointTestGates,
     closed: AtomicBool,
     operations: Arc<DebugOperationConfig>,
     changed: watch::Sender<u64>,

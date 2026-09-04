@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
+#[cfg(test)]
+use tokio::sync::{Notify, Semaphore};
 use tokio::time::Instant;
 
 use super::source_hash::{ResolvedSource, resolve_source};
@@ -16,6 +18,26 @@ use crate::{
 };
 
 const MAX_DAP_INTEGER: u64 = 9_007_199_254_740_991;
+
+#[cfg(test)]
+pub(super) struct BreakpointTestGates {
+    pub(super) predispatch: Arc<Semaphore>,
+    pub(super) response_validation_entered: Arc<Notify>,
+    pub(super) post_response_revalidation_entered: Arc<Notify>,
+    pub(super) event_queued: Arc<Notify>,
+}
+
+#[cfg(test)]
+impl Default for BreakpointTestGates {
+    fn default() -> Self {
+        Self {
+            predispatch: Arc::new(Semaphore::new(1)),
+            response_validation_entered: Arc::new(Notify::new()),
+            post_response_revalidation_entered: Arc::new(Notify::new()),
+            event_queued: Arc::new(Notify::new()),
+        }
+    }
+}
 
 #[derive(Default)]
 pub(super) struct BreakpointRegistry {
@@ -339,7 +361,7 @@ async fn transact(
     #[cfg(test)]
     let _predispatch = match tokio::time::timeout_at(
         deadline,
-        Arc::clone(&entry.breakpoint_test_gates.0).acquire_owned(),
+        Arc::clone(&entry.breakpoint_test_gates.predispatch).acquire_owned(),
     )
     .await
     {
@@ -390,38 +412,34 @@ async fn transact(
             return Err(error);
         }
     };
+    let response_seq = response.seq;
     #[cfg(test)]
-    let _response_validation = match tokio::time::timeout_at(
+    entry
+        .breakpoint_test_gates
+        .response_validation_entered
+        .notify_one();
+    let parsed = match parse_breakpoints_response_bounded(
+        &entry,
+        response,
+        desired.len(),
+        Arc::clone(&operations),
+        entry.workspace.clone(),
+        source.canonical.clone(),
         deadline,
-        Arc::clone(&entry.breakpoint_test_gates.1).acquire_owned(),
     )
     .await
     {
-        Ok(Ok(permit)) => permit,
-        Ok(Err(_)) => {
-            clear_transaction(&entry, &operations);
-            return Err(DapError::TransportClosed);
-        }
-        Err(_) => {
-            finish_ambiguous(&entry, &source, &desired, &operations);
-            return Err(DapError::RequestTimeout {
-                command: "setBreakpoints response validation".to_owned(),
-            });
-        }
-    };
-    let parsed = match parse_breakpoints_response(
-        &response,
-        desired.len(),
-        &operations,
-        &entry.workspace,
-        &source.canonical,
-    ) {
         Ok(parsed) => parsed,
         Err(error) => {
             finish_ambiguous(&entry, &source, &desired, &operations);
             return Err(error);
         }
     };
+    #[cfg(test)]
+    entry
+        .breakpoint_test_gates
+        .post_response_revalidation_entered
+        .notify_one();
     let after = resolve_source(
         &entry.workspace,
         &entry,
@@ -500,7 +518,7 @@ async fn transact(
     let mut queued = transaction
         .bounded_events
         .into_iter()
-        .filter(|event| event.seq > response.seq)
+        .filter(|event| event.seq > response_seq)
         .collect::<Vec<_>>();
     queued.sort_by_key(|event| event.seq);
     for event in queued {
@@ -675,6 +693,39 @@ fn parse_breakpoints_response(
         }
     }
     Ok(body.breakpoints)
+}
+
+async fn parse_breakpoints_response_bounded(
+    entry: &SessionEntry,
+    response: Response,
+    count: usize,
+    operations: Arc<DebugOperationConfig>,
+    workspace: DebugWorkspaceKey,
+    expected_source: PathBuf,
+    deadline: Instant,
+) -> Result<Vec<WireBreakpoint>> {
+    let permit = tokio::time::timeout_at(
+        deadline,
+        Arc::clone(&entry.breakpoint_validation).acquire_owned(),
+    )
+    .await
+    .map_err(|_| DapError::RequestTimeout {
+        command: "setBreakpoints response validation".to_owned(),
+    })?
+    .map_err(|_| DapError::TransportClosed)?;
+    let mut task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        parse_breakpoints_response(&response, count, &operations, &workspace, &expected_source)
+    });
+    match tokio::time::timeout_at(deadline, &mut task).await {
+        Ok(result) => result.map_err(|error| DapError::DebugOperationTaskFailed {
+            operation: "setBreakpoints response validation",
+            message: error.to_string(),
+        })?,
+        Err(_) => Err(DapError::RequestTimeout {
+            command: "setBreakpoints response validation".to_owned(),
+        }),
+    }
 }
 fn validate_location(bp: &WireBreakpoint) -> Result<()> {
     for value in [bp.line, bp.column, bp.end_line, bp.end_column]

@@ -31,7 +31,7 @@ async fn current_operation_source_mutation_between_initial_hash_and_primary_disp
  {
     let mut f = fixture("owner");
     let entry = f.manager.core.entry(f.id).unwrap();
-    let held = Arc::clone(&entry.breakpoint_test_gates.0)
+    let held = Arc::clone(&entry.breakpoint_test_gates.predispatch)
         .acquire_owned()
         .await
         .unwrap();

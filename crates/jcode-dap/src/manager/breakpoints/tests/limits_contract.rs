@@ -78,50 +78,59 @@ async fn source_per_source_and_total_limits_accept_boundary_and_reject_plus_one_
 
 #[tokio::test]
 async fn expression_and_canonical_source_path_limits_accept_boundary_and_reject_plus_one() {
-    let mut f = fixture_with_operations(
-        "owner",
-        DebugOperationConfig {
-            operation_timeout: Duration::from_secs(2),
-            max_breakpoint_expression_bytes: 4,
-            ..Default::default()
-        },
-    );
-    {
-        let entry = f.manager.core.entry(f.id).unwrap();
-        lock(&entry.data)
-            .capabilities
-            .additional
-            .insert("supportsConditionalBreakpoints".into(), json!(true));
+    for (capability, boundary, plus_one) in [
+        (
+            "supportsConditionalBreakpoints",
+            DebugSourceBreakpoint::new(1).with_condition("éé"),
+            DebugSourceBreakpoint::new(2).with_condition("aéé"),
+        ),
+        (
+            "supportsHitConditionalBreakpoints",
+            DebugSourceBreakpoint::new(1).with_hit_condition("éé"),
+            DebugSourceBreakpoint::new(2).with_hit_condition("aéé"),
+        ),
+        (
+            "supportsLogPoints",
+            DebugSourceBreakpoint::new(1).with_log_message("éé"),
+            DebugSourceBreakpoint::new(2).with_log_message("aéé"),
+        ),
+    ] {
+        let mut f = fixture_with_operations(
+            "owner",
+            DebugOperationConfig {
+                operation_timeout: Duration::from_secs(2),
+                max_breakpoint_expression_bytes: 4,
+                ..Default::default()
+            },
+        );
+        {
+            let entry = f.manager.core.entry(f.id).unwrap();
+            lock(&entry.data)
+                .capabilities
+                .additional
+                .insert(capability.into(), json!(true));
+        }
+        let source = f.source.clone();
+        complete_set(&mut f, source, boundary, 20).await.unwrap();
+        let before = f.manager.breakpoints("owner", f.id).unwrap();
+        assert!(matches!(
+            f.manager
+                .set_breakpoint(
+                    "owner",
+                    f.id,
+                    DebugSetBreakpointRequest::new(&f.source, plus_one),
+                )
+                .await,
+            Err(DapError::InvalidBreakpoint { message })
+                if message == "breakpoint expression is empty or exceeds configured byte limit"
+        ));
+        assert_eq!(f.manager.breakpoints("owner", f.id).unwrap(), before);
+        assert!(
+            timeout(Duration::from_millis(20), f.adapter.recv())
+                .await
+                .is_err()
+        );
     }
-    let source = f.source.clone();
-    complete_set(
-        &mut f,
-        source,
-        DebugSourceBreakpoint::new(1).with_condition("1234"),
-        20,
-    )
-    .await
-    .unwrap();
-    let before = f.manager.breakpoints("owner", f.id).unwrap();
-    assert!(matches!(
-        f.manager
-            .set_breakpoint(
-                "owner",
-                f.id,
-                DebugSetBreakpointRequest::new(
-                    &f.source,
-                    DebugSourceBreakpoint::new(2).with_condition("12345"),
-                ),
-            )
-            .await,
-        Err(DapError::InvalidBreakpoint { .. })
-    ));
-    assert_eq!(f.manager.breakpoints("owner", f.id).unwrap(), before);
-    assert!(
-        timeout(Duration::from_millis(20), f.adapter.recv())
-            .await
-            .is_err()
-    );
 
     for accepted in [true, false] {
         let root = std::env::temp_dir().join(format!(
@@ -184,16 +193,17 @@ async fn expression_and_canonical_source_path_limits_accept_boundary_and_reject_
                 .unwrap();
             task.await.unwrap().unwrap();
         } else {
-            assert!(
+            assert!(matches!(
                 manager
                     .set_breakpoint(
                         "owner",
                         id,
                         DebugSetBreakpointRequest::new(&source, DebugSourceBreakpoint::new(1)),
                     )
-                    .await
-                    .is_err()
-            );
+                    .await,
+                Err(DapError::InvalidDebugSource { path, message })
+                    if path == source && message == "source path exceeds configured byte limit"
+            ));
             assert!(manager.breakpoints("owner", id).unwrap().sources.is_empty());
             assert!(
                 timeout(Duration::from_millis(20), adapter.recv())

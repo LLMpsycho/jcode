@@ -52,12 +52,10 @@ async fn one_deadline_expires_independently_during_primary_response_wait() {
 async fn one_deadline_expires_independently_during_response_validation() {
     let mut f = deadline_fixture();
     let entry = f.manager.core.entry(f.id).unwrap();
-    let held = Arc::clone(&entry.breakpoint_test_gates.1)
+    let held = Arc::clone(&entry.breakpoint_validation)
         .acquire_owned()
         .await
         .unwrap();
-    tokio::task::yield_now().await;
-    expire_deadline().await;
     let task = spawn_set(&f, 1);
     let primary = request(&mut f.adapter).await;
     f.adapter
@@ -67,6 +65,12 @@ async fn one_deadline_expires_independently_during_response_validation() {
         )
         .await
         .unwrap();
+    entry
+        .breakpoint_test_gates
+        .response_validation_entered
+        .notified()
+        .await;
+    expire_deadline().await;
     assert!(
         matches!(task.await.unwrap(), Err(DapError::RequestTimeout { command }) if command == "setBreakpoints response validation")
     );
@@ -87,8 +91,6 @@ async fn one_deadline_expires_independently_during_post_response_revalidation() 
         .acquire_owned()
         .await
         .unwrap();
-    tokio::task::yield_now().await;
-    expire_deadline().await;
     f.adapter
         .respond_ok(
             &primary,
@@ -96,7 +98,17 @@ async fn one_deadline_expires_independently_during_post_response_revalidation() 
         )
         .await
         .unwrap();
-    assert!(task.await.unwrap().is_err());
+    entry
+        .breakpoint_test_gates
+        .post_response_revalidation_entered
+        .notified()
+        .await;
+    expire_deadline().await;
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::BreakpointReconciliationIndeterminate { message, .. })
+            if message == "source changed and compensating clear failed"
+    ));
     drop(held);
     assert_eq!(
         f.manager.breakpoints("owner", f.id).unwrap().sources[0].synchronization,
