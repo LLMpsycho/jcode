@@ -117,7 +117,10 @@ It verifies bounded/redacted structured input, normal primary tools, tool-less
 advisor calls, inspected notes, acknowledge/dismiss, two-turn immunity, process
 restart, actual reload/disconnect/reconnect, persisted disable, rewind, and undo
 for all three modes. Applied compaction and stale in-flight completions have
-focused runtime tests.
+focused runtime tests. The server also waits for owner bookkeeping before
+forwarding terminal completion on the ordered stream, so immediate follow-up
+turns cannot race a stale busy flag. This is covered by readiness/stale-owner
+tests and the existing late-attachment stream-order regression.
 
 ```bash
 JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor

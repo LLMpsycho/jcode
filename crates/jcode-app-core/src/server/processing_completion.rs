@@ -29,12 +29,23 @@ mod tests {
         let (events, mut observed) = mpsc::unbounded_channel();
         let (completions, mut pending) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            publish(7, Ok(()), None, ServerEvent::Done { id: 7 }, &events, &completions).await;
+            publish(
+                7,
+                Ok(()),
+                None,
+                ServerEvent::Done { id: 7 },
+                &events,
+                &completions,
+            )
+            .await;
         });
         let (id, result, _, ready) = pending.recv().await.expect("completion");
         assert_eq!(id, 7);
         result.expect("success");
-        assert!(observed.try_recv().is_err(), "Done must not race owner bookkeeping");
+        assert!(
+            observed.try_recv().is_err(),
+            "Done must not race owner bookkeeping"
+        );
         ready.send(()).expect("owner ready");
         task.await.expect("publisher");
         assert!(matches!(observed.recv().await, Some(ServerEvent::Done { id: 7 })));
@@ -45,7 +56,15 @@ mod tests {
         let (events, mut observed) = mpsc::unbounded_channel();
         let (completions, mut pending) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            publish(8, Ok(()), None, ServerEvent::Done { id: 8 }, &events, &completions).await;
+            publish(
+                8,
+                Ok(()),
+                None,
+                ServerEvent::Done { id: 8 },
+                &events,
+                &completions,
+            )
+            .await;
         });
         let (_, _, _, stale_owner) = pending.recv().await.expect("completion");
         drop(stale_owner);
