@@ -495,6 +495,9 @@ pub struct Config {
     /// Language Server Protocol configuration.
     pub lsp: jcode_lsp_types::LspConfig,
 
+    /// Debug Adapter Protocol configuration.
+    pub dap: jcode_dap_types::DapConfig,
+
     /// Agent Client Protocol adapter configuration
     pub acp: AcpConfig,
 

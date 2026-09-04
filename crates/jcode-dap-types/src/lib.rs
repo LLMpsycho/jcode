@@ -5,6 +5,83 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const MIN_OUTPUT_BYTES: usize = 1_024;
+pub const MAX_OUTPUT_BYTES: usize = 16 * 1_024 * 1_024;
+pub const MIN_OPAQUE_HANDLES_PER_OWNER: usize = 1;
+pub const MAX_OPAQUE_HANDLES_PER_OWNER: usize = 65_536;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DapAdapterKind {
+    #[default]
+    LldbDap,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DapAdapterConfig {
+    pub kind: DapAdapterKind,
+    pub command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DapConfig {
+    pub enabled: bool,
+    pub allow_evaluate: bool,
+    pub max_output_bytes: usize,
+    pub max_opaque_handles_per_owner: usize,
+    pub adapters: BTreeMap<String, DapAdapterConfig>,
+}
+
+impl Default for DapConfig {
+    fn default() -> Self {
+        let adapters = BTreeMap::from([(
+            "lldb-dap".to_owned(),
+            DapAdapterConfig {
+                kind: DapAdapterKind::LldbDap,
+                command: "lldb-dap".to_owned(),
+            },
+        )]);
+        Self {
+            enabled: false,
+            allow_evaluate: false,
+            max_output_bytes: 1024 * 1024,
+            max_opaque_handles_per_owner: 8_192,
+            adapters,
+        }
+    }
+}
+
+impl DapConfig {
+    pub fn validation_issues(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        if !(MIN_OUTPUT_BYTES..=MAX_OUTPUT_BYTES).contains(&self.max_output_bytes) {
+            issues.push(format!(
+                "dap.max_output_bytes must be between {MIN_OUTPUT_BYTES} and {MAX_OUTPUT_BYTES}"
+            ));
+        }
+        if !(MIN_OPAQUE_HANDLES_PER_OWNER..=MAX_OPAQUE_HANDLES_PER_OWNER)
+            .contains(&self.max_opaque_handles_per_owner)
+        {
+            issues.push(format!(
+                "dap.max_opaque_handles_per_owner must be between {MIN_OPAQUE_HANDLES_PER_OWNER} and {MAX_OPAQUE_HANDLES_PER_OWNER}"
+            ));
+        }
+        for (adapter_id, adapter) in &self.adapters {
+            if adapter_id.trim().is_empty() {
+                issues.push("dap.adapters contains an empty adapter id".to_owned());
+            }
+            if adapter.command.trim().is_empty() {
+                issues.push(format!(
+                    "dap.adapters.{adapter_id}.command must not be empty"
+                ));
+            }
+        }
+        issues
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub seq: i64,
@@ -179,6 +256,48 @@ pub enum RunInTerminalKind {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn dap_config_defaults_are_opt_in_and_use_local_lldb_dap() {
+        let config = DapConfig::default();
+        assert!(!config.enabled);
+        assert!(!config.allow_evaluate);
+        assert_eq!(config.adapters["lldb-dap"].kind, DapAdapterKind::LldbDap);
+        assert_eq!(config.adapters["lldb-dap"].command, "lldb-dap");
+        assert!(config.validation_issues().is_empty());
+    }
+
+    #[test]
+    fn dap_config_is_strict_and_reports_bounded_limits() {
+        let unknown = serde_json::from_value::<DapConfig>(json!({"downloadAdapters": true}))
+            .expect_err("unknown DAP config keys must fail")
+            .to_string();
+        assert!(unknown.contains("downloadAdapters"));
+
+        let unsupported_kind = serde_json::from_value::<DapAdapterConfig>(
+            json!({"kind":"custom","command":"custom-dap"}),
+        )
+        .expect_err("unsupported adapter kinds must fail")
+        .to_string();
+        assert!(unsupported_kind.contains("custom"));
+
+        let config = DapConfig {
+            max_output_bytes: MAX_OUTPUT_BYTES + 1,
+            max_opaque_handles_per_owner: MIN_OPAQUE_HANDLES_PER_OWNER - 1,
+            ..DapConfig::default()
+        };
+        let issues = config.validation_issues();
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("max_output_bytes"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("max_opaque_handles_per_owner"))
+        );
+    }
 
     #[test]
     fn base_dtos_have_stable_wire_json() {
