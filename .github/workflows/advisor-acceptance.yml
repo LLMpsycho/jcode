@@ -1,0 +1,48 @@
+name: Advisor acceptance
+
+on:
+  push:
+    branches: [feat/phase4-advisor-completion]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/**'
+      - 'scripts/test_advisor*'
+      - '.github/workflows/advisor-acceptance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  advisor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        id: formatting
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: Advisor runtime and capability regressions
+        run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor
+      - name: Advisor configuration
+        run: scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
+      - name: Tool contracts
+        run: scripts/dev_cargo.sh test --locked -p jcode-tool-core --lib
+      - name: Build isolated selfdev binary
+        run: scripts/dev_cargo.sh build --locked --profile selfdev --bin jcode
+      - name: Enforce formatting result
+        if: always() && steps.formatting.outcome == 'failure'
+        run: exit 1
