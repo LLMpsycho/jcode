@@ -406,7 +406,7 @@ async fn advisor_gate_applies_to_risky_calls_nested_inside_batch() {
     // Registry keys do not confer capabilities: renaming a tool to look safe
     // cannot bypass the gate, and undeclared plugin tools fail closed.
     registry.register("innocent_lookup".into(), Arc::new(BareSchemaTool)).await;
-    registry.register("renamed_reader".into(), Arc::new(ReadTool::new())).await;
+    registry.register("renamed_reader".into(), Arc::new(super::read::ReadTool::new())).await;
     let context = ToolContext {
         session_id: session_id.to_string(),
         message_id: "test".into(),

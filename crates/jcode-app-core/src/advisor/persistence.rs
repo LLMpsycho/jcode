@@ -33,7 +33,7 @@ impl AdvisorManager {
         self.store.as_ref().map(|root| root.join(format!("{key}.json")))
     }
 
-    fn persist(&self, session: &str, runtime: &mut AdvisorRuntime) -> Result<()> {
+    pub(super) fn persist(&self, session: &str, runtime: &mut AdvisorRuntime) -> Result<()> {
         let Some(path) = self.state_path(session) else { return Ok(()); };
         let checkpoint = Checkpoint {
             version: 1,
