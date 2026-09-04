@@ -731,7 +731,10 @@ fn coerce_empty_string_to_null(value: &mut Value) {
 impl Tool for TodoTool {
     fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
         use crate::tool::ToolCapability;
-        if ["todos", "goals", "plan"].iter().any(|key| input.get(key).is_some_and(|v| !v.is_null())) {
+        if ["todos", "goals", "plan"]
+            .iter()
+            .any(|key| input.get(key).is_some_and(|v| !v.is_null()))
+        {
             ToolCapability::ChangeState
         } else {
             ToolCapability::ReadOnly

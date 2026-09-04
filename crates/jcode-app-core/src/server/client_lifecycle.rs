@@ -1475,31 +1475,38 @@ pub(super) async fn handle_client(
                         }
                     }
                     AdvisorRequest::Dismiss(note_id) => {
-                        match manager.resolve_note(&session_id, &note_id, AdvisorNoteDisposition::Dismissed) {
+                        match manager.resolve_note(
+                            &session_id,
+                            &note_id,
+                            AdvisorNoteDisposition::Dismissed,
+                        ) {
                             Ok(true) => format!("Dismissed advisor note {note_id}."),
                             Ok(false) => format!("Advisor note {note_id} was not found."),
                             Err(error) => error.to_string(),
                         }
                     }
                     AdvisorRequest::Acknowledge(note_id) => {
-                        match manager.resolve_note(&session_id, &note_id, AdvisorNoteDisposition::Acknowledged) {
+                        match manager.resolve_note(
+                            &session_id,
+                            &note_id,
+                            AdvisorNoteDisposition::Acknowledged,
+                        ) {
                             Ok(true) => format!("Acknowledged advisor note {note_id}."),
                             Ok(false) => format!("Advisor note {note_id} was not found."),
                             Err(error) => error.to_string(),
                         }
                     }
-                    AdvisorRequest::Enable => {
-                        match manager.set_enabled(&session_id, true) {
-                            Ok(()) => "Advisor enabled for this session.".to_string(),
-                            Err(error) => error.to_string(),
+                    AdvisorRequest::Enable => match manager.set_enabled(&session_id, true) {
+                        Ok(()) => "Advisor enabled for this session.".to_string(),
+                        Err(error) => error.to_string(),
+                    },
+                    AdvisorRequest::Disable => match manager.set_enabled(&session_id, false) {
+                        Ok(()) => {
+                            "Advisor disabled for this session; future risky tools are released."
+                                .to_string()
                         }
-                    }
-                    AdvisorRequest::Disable => {
-                        match manager.set_enabled(&session_id, false) {
-                            Ok(()) => "Advisor disabled for this session; future risky tools are released.".to_string(),
-                            Err(error) => error.to_string(),
-                        }
-                    }
+                        Err(error) => error.to_string(),
+                    },
                 };
                 let json = encode_event(&ServerEvent::AdvisorResult {
                     id,

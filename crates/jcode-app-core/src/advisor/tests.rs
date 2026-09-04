@@ -14,22 +14,47 @@ async fn handled_note_immunity_survives_restart_and_prevents_paraphrase_storms()
         response: r#"{"severity":"concern","summary":"verify first","evidence":[],"recommended_action":"run checks","blocking":false}"#.into(),
     });
     let queue = Arc::new(Mutex::new(Vec::new()));
-    assert!(manager.schedule_turn("immunity".into(), provider.clone(), queue.clone(), AdvisorTurnInput::default(), enabled_config()));
+    assert!(manager.schedule_turn(
+        "immunity".into(),
+        provider.clone(),
+        queue.clone(),
+        AdvisorTurnInput::default(),
+        enabled_config()
+    ));
     wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
     let id = manager.notes("immunity")[0].id.clone();
-    manager.resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged).expect("ack");
-    assert!(queue.lock().expect("queue").is_empty(), "handled queued notes must not reappear");
+    manager
+        .resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged)
+        .expect("ack");
+    assert!(
+        queue.lock().expect("queue").is_empty(),
+        "handled queued notes must not reappear"
+    );
     drop(manager);
     let manager = Arc::new(AdvisorManager::persistent(dir.path().to_path_buf()));
     manager.resume("immunity");
     // No provider call means paraphrased or alternating findings cannot defeat
     // suppression. A duplicate ack does not extend the window indefinitely.
     for _ in 0..2 {
-        assert!(!manager.schedule_turn("immunity".into(), provider.clone(), queue.clone(), AdvisorTurnInput::default(), enabled_config()));
-        manager.resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged).expect("duplicate ack");
+        assert!(!manager.schedule_turn(
+            "immunity".into(),
+            provider.clone(),
+            queue.clone(),
+            AdvisorTurnInput::default(),
+            enabled_config()
+        ));
+        manager
+            .resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged)
+            .expect("duplicate ack");
     }
     assert_eq!(calls.load(Ordering::Relaxed), 1);
-    assert!(manager.schedule_turn("immunity".into(), provider, queue, AdvisorTurnInput::default(), enabled_config()));
+    assert!(manager.schedule_turn(
+        "immunity".into(),
+        provider,
+        queue,
+        AdvisorTurnInput::default(),
+        enabled_config()
+    ));
     wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
     assert_eq!(calls.load(Ordering::Relaxed), 2);
 }
@@ -590,7 +615,10 @@ async fn configured_mode_contract_reaches_the_forked_provider() {
                 systems: Arc::clone(&systems),
             }),
             Arc::new(Mutex::new(Vec::new())),
-            AdvisorTurnInput { objective: "bounded acceptance".into(), ..AdvisorTurnInput::default() },
+            AdvisorTurnInput {
+                objective: "bounded acceptance".into(),
+                ..AdvisorTurnInput::default()
+            },
             AdvisorConfig {
                 enabled: true,
                 mode,
@@ -660,7 +688,9 @@ fn escaped_fields_cannot_exceed_total_input_budget() {
 #[tokio::test]
 async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disabled() {
     let manager = Arc::new(AdvisorManager::default());
-    manager.set_enabled("gating", true).expect("save advisor control");
+    manager
+        .set_enabled("gating", true)
+        .expect("save advisor control");
     assert!(manager.schedule_turn(
         "gating".to_string(),
         Arc::new(AdvisorProvider {
@@ -680,16 +710,34 @@ async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disab
         "severity, not model boolean, controls gating"
     );
     use crate::tool::ToolCapability;
-    assert!(manager.blocks_tool_call("gating", "read", ToolCapability::ReadOnly).is_none());
-    assert!(manager.blocks_tool_call("gating", "bash", ToolCapability::Execute).is_some());
+    assert!(
+        manager
+            .blocks_tool_call("gating", "read", ToolCapability::ReadOnly)
+            .is_none()
+    );
+    assert!(
+        manager
+            .blocks_tool_call("gating", "bash", ToolCapability::Execute)
+            .is_some()
+    );
 
     assert!(
-        manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Acknowledged,).expect("ack")
+        manager
+            .resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Acknowledged,)
+            .expect("ack")
     );
-    assert!(manager.blocks_tool_call("gating", "bash", ToolCapability::Execute).is_none());
+    assert!(
+        manager
+            .blocks_tool_call("gating", "bash", ToolCapability::Execute)
+            .is_none()
+    );
 
-    manager.resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Unresolved).expect("unresolve");
-    manager.set_enabled("gating", false).expect("save advisor control");
+    manager
+        .resolve_note("gating", &notes[0].id, AdvisorNoteDisposition::Unresolved)
+        .expect("unresolve");
+    manager
+        .set_enabled("gating", false)
+        .expect("save advisor control");
     assert!(
         manager
             .blocks_tool_call("gating", "write", ToolCapability::WriteFiles)
@@ -700,7 +748,9 @@ async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disab
 #[tokio::test]
 async fn enable_override_activates_globally_disabled_advisor() {
     let manager = Arc::new(AdvisorManager::default());
-    manager.set_enabled("enabled-override", true).expect("save advisor control");
+    manager
+        .set_enabled("enabled-override", true)
+        .expect("save advisor control");
     assert!(manager.is_enabled("enabled-override", false));
 
     assert!(manager.schedule_turn(
@@ -733,7 +783,9 @@ async fn disabling_fences_an_in_flight_review_and_discards_its_note() {
     ));
     wait_for_status(&manager, "disable-in-flight", AdvisorStatus::Reviewing).await;
 
-    manager.set_enabled("disable-in-flight", false).expect("save advisor control");
+    manager
+        .set_enabled("disable-in-flight", false)
+        .expect("save advisor control");
     release.notify_waiters();
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
 

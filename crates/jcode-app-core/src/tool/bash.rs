@@ -1061,7 +1061,9 @@ impl BashTool {
                     output.push_str(&stderr);
                 }
                 let output = format_command_output(output, status.code());
-                Ok(ToolOutput::new(output).with_title(title_for_work).with_exit_code(status.code()))
+                Ok(ToolOutput::new(output)
+                    .with_title(title_for_work)
+                    .with_exit_code(status.code()))
             });
 
         match tokio::time::timeout(timeout_duration, &mut work_handle).await {
@@ -1171,12 +1173,14 @@ impl BashTool {
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
                 return Ok(
-                    ToolOutput::new(format_command_output(output, status.code())).with_title(
-                        params
-                            .intent
-                            .clone()
-                            .unwrap_or_else(|| params.command.clone()),
-                    ).with_exit_code(status.code()),
+                    ToolOutput::new(format_command_output(output, status.code()))
+                        .with_title(
+                            params
+                                .intent
+                                .clone()
+                                .unwrap_or_else(|| params.command.clone()),
+                        )
+                        .with_exit_code(status.code()),
                 );
             }
 

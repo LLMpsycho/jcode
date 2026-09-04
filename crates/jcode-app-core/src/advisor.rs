@@ -3,8 +3,8 @@
 //! Bounded post-turn review, durable session controls, and capability-based
 //! enforcement. Provider context and in-flight reviews are never persisted.
 
-mod persistence;
 mod evidence;
+mod persistence;
 mod routing;
 
 use crate::config::{AdvisorConfig, AdvisorMode, AdvisorSeverity};
@@ -310,7 +310,10 @@ impl AdvisorManager {
 
     pub fn set_enabled(&self, owner_session_id: &str, enabled: bool) -> anyhow::Result<()> {
         {
-            let mut sessions = self.sessions.lock().map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
+            let mut sessions = self
+                .sessions
+                .lock()
+                .map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
             let runtime = sessions.entry(owner_session_id.to_string()).or_default();
             runtime.enabled_override = Some(enabled);
             if !enabled {
@@ -346,13 +349,23 @@ impl AdvisorManager {
         id: &str,
         disposition: AdvisorNoteDisposition,
     ) -> anyhow::Result<bool> {
-        let mut sessions = self.sessions.lock().map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
-        let Some(runtime) = sessions.get_mut(owner_session_id) else { return Ok(false); };
-        let Some(note) = runtime.notes.iter_mut().find(|note| note.id == id) else { return Ok(false); };
-        let newly_handled = note.disposition == AdvisorNoteDisposition::Unresolved && disposition != AdvisorNoteDisposition::Unresolved;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
+        let Some(runtime) = sessions.get_mut(owner_session_id) else {
+            return Ok(false);
+        };
+        let Some(note) = runtime.notes.iter_mut().find(|note| note.id == id) else {
+            return Ok(false);
+        };
+        let newly_handled = note.disposition == AdvisorNoteDisposition::Unresolved
+            && disposition != AdvisorNoteDisposition::Unresolved;
         note.disposition = disposition;
         if newly_handled {
-            runtime.immunity_until_turn = runtime.turns_observed.saturating_add(runtime.immunity_turns);
+            runtime.immunity_until_turn = runtime
+                .turns_observed
+                .saturating_add(runtime.immunity_turns);
             runtime.pending = None;
             runtime.active_review_id = 0;
             runtime.status = AdvisorStatus::Idle;
@@ -531,8 +544,7 @@ impl AdvisorManager {
             if runtime.private_context.len() > MAX_PRIVATE_CONTEXT {
                 runtime.private_context.remove(0);
             }
-            if self.persist(&owner_session_id, runtime).is_err()
-            {
+            if self.persist(&owner_session_id, runtime).is_err() {
                 runtime.status = AdvisorStatus::Failed;
                 return;
             }
@@ -589,7 +601,11 @@ impl AdvisorManager {
         config: AdvisorConfig,
     ) {
         if let Err(error) = routing::apply(provider.as_ref(), &config) {
-            self.fail(&owner_session_id, review_id, format!("advisor model selection failed: {error}"));
+            self.fail(
+                &owner_session_id,
+                review_id,
+                format!("advisor model selection failed: {error}"),
+            );
             return;
         }
 
@@ -660,7 +676,11 @@ impl AdvisorManager {
         };
         let note = note.bounded(&config);
         if config.mode == AdvisorMode::FinalReview && !evidence::grounded(&input, &note) {
-            self.fail(&owner_session_id, review_id, "final review did not cite supplied evidence".into());
+            self.fail(
+                &owner_session_id,
+                review_id,
+                "final review did not cite supplied evidence".into(),
+            );
             return;
         }
         let note_hash = note.dedupe_hash();
@@ -698,9 +718,14 @@ impl AdvisorManager {
                     disposition: AdvisorNoteDisposition::Unresolved,
                 });
                 while runtime.notes.len() > MAX_NOTE_METADATA {
-                    let removable = runtime.notes.iter().position(|note| !note.blocking || note.disposition != AdvisorNoteDisposition::Unresolved);
-                    if let Some(index) = removable { runtime.notes.remove(index); }
-                    else { runtime.notes.pop_back(); }
+                    let removable = runtime.notes.iter().position(|note| {
+                        !note.blocking || note.disposition != AdvisorNoteDisposition::Unresolved
+                    });
+                    if let Some(index) = removable {
+                        runtime.notes.remove(index);
+                    } else {
+                        runtime.notes.pop_back();
+                    }
                 }
                 self.persist(&owner_session_id, runtime).is_ok()
             }
@@ -708,7 +733,9 @@ impl AdvisorManager {
 
         if should_deliver
             && let Ok(sessions) = self.sessions.lock()
-            && sessions.get(&owner_session_id).is_some_and(|runtime| runtime.active_review_id == review_id && runtime.status == AdvisorStatus::Ready)
+            && sessions.get(&owner_session_id).is_some_and(|runtime| {
+                runtime.active_review_id == review_id && runtime.status == AdvisorStatus::Ready
+            })
             && let Ok(mut pending) = queue.lock()
         {
             pending.push(SoftInterruptMessage {
@@ -739,7 +766,10 @@ impl AdvisorManager {
 }
 
 fn clear_queued_notes(runtime: &AdvisorRuntime) {
-    if let Some(queue) = runtime.delivery_queue.as_ref().and_then(std::sync::Weak::upgrade)
+    if let Some(queue) = runtime
+        .delivery_queue
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
         && let Ok(mut pending) = queue.lock()
     {
         pending.retain(|message| !message.content.starts_with("[ADVISOR "));

@@ -140,7 +140,9 @@ impl ToolCapability {
     /// Safe actions are an explicit allowlist owned by each implementation.
     /// Absent, malformed, and future actions retain the mutating capability.
     pub fn for_actions(input: &Value, read_only: &[&str], otherwise: Self) -> Self {
-        if input.get("action").and_then(Value::as_str)
+        if input
+            .get("action")
+            .and_then(Value::as_str)
             .is_some_and(|action| read_only.contains(&action))
         {
             Self::ReadOnly

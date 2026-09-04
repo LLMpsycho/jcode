@@ -243,7 +243,19 @@ pub(crate) struct DapTool {
 impl Tool for DapTool {
     fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
         use crate::tool::ToolCapability;
-        ToolCapability::for_actions(input, &["sessions", "threads", "stack_trace", "scopes", "variables", "output", "step_in_targets"], ToolCapability::Execute)
+        ToolCapability::for_actions(
+            input,
+            &[
+                "sessions",
+                "threads",
+                "stack_trace",
+                "scopes",
+                "variables",
+                "output",
+                "step_in_targets",
+            ],
+            ToolCapability::Execute,
+        )
     }
 
     fn name(&self) -> &str {

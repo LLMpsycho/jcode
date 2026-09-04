@@ -39,7 +39,10 @@ impl ToolOutput {
     pub fn with_exit_code(mut self, code: Option<i32>) -> Self {
         let metadata = self.metadata.get_or_insert_with(|| serde_json::json!({}));
         if let Some(object) = metadata.as_object_mut() {
-            object.insert("execution".into(), serde_json::json!({"exit_code": code, "status": "completed"}));
+            object.insert(
+                "execution".into(),
+                serde_json::json!({"exit_code": code, "status": "completed"}),
+            );
         }
         self
     }

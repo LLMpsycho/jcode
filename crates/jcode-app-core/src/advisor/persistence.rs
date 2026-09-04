@@ -23,18 +23,25 @@ struct Checkpoint {
 
 impl AdvisorManager {
     pub fn persistent(root: PathBuf) -> Self {
-        Self { store: Some(root), ..Self::default() }
+        Self {
+            store: Some(root),
+            ..Self::default()
+        }
     }
 
     fn state_path(&self, session: &str) -> Option<PathBuf> {
         // Public session IDs can contain arbitrary text; never interpolate them
         // into a pathname or expose their content in persistence errors.
         let key = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, session.as_bytes());
-        self.store.as_ref().map(|root| root.join(format!("{key}.json")))
+        self.store
+            .as_ref()
+            .map(|root| root.join(format!("{key}.json")))
     }
 
     pub(super) fn persist(&self, session: &str, runtime: &mut AdvisorRuntime) -> Result<()> {
-        let Some(path) = self.state_path(session) else { return Ok(()); };
+        let Some(path) = self.state_path(session) else {
+            return Ok(());
+        };
         let checkpoint = Checkpoint {
             version: 1,
             enabled_override: runtime.enabled_override,
@@ -49,27 +56,38 @@ impl AdvisorManager {
         if result.is_err() {
             runtime.last_error = Some("advisor checkpoint could not be saved".into());
         }
-        result.map_err(|_| anyhow::anyhow!("advisor checkpoint could not be saved; control is not durable"))
+        result.map_err(|_| {
+            anyhow::anyhow!("advisor checkpoint could not be saved; control is not durable")
+        })
     }
 
     /// Restore controls and budget without replaying a provider request or
     /// delivering a historical interrupt. A corrupt checkpoint gates effects
     /// until the user explicitly disables or repairs the advisor.
     pub fn resume(&self, session: &str) {
-        let Some(path) = self.state_path(session) else { return; };
-        let Ok(mut sessions) = self.sessions.lock() else { return; };
-        if sessions.contains_key(session) { return; }
+        let Some(path) = self.state_path(session) else {
+            return;
+        };
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        if sessions.contains_key(session) {
+            return;
+        }
         match load(&path) {
             Ok(Some(checkpoint)) => {
-                sessions.insert(session.to_string(), AdvisorRuntime {
-                    enabled_override: checkpoint.enabled_override,
-                    turns_observed: checkpoint.turns_observed,
-                    cursor: checkpoint.cursor,
-                    immunity_until_turn: checkpoint.immunity_until_turn,
-                    immunity_turns: checkpoint.immunity_turns.min(100),
-                    notes: checkpoint.notes,
-                    ..AdvisorRuntime::default()
-                });
+                sessions.insert(
+                    session.to_string(),
+                    AdvisorRuntime {
+                        enabled_override: checkpoint.enabled_override,
+                        turns_observed: checkpoint.turns_observed,
+                        cursor: checkpoint.cursor,
+                        immunity_until_turn: checkpoint.immunity_until_turn,
+                        immunity_turns: checkpoint.immunity_turns.min(100),
+                        notes: checkpoint.notes,
+                        ..AdvisorRuntime::default()
+                    },
+                );
             }
             Ok(None) => {}
             Err(_) => {
@@ -87,8 +105,12 @@ impl AdvisorManager {
     /// Changed transcript invalidates review context and notes, but does not
     /// revoke a user's disable or replenish the session's provider budget.
     pub fn reset_history(&self, session: &str) {
-        let Ok(mut sessions) = self.sessions.lock() else { return; };
-        let Some(previous) = sessions.remove(session) else { return; };
+        let Ok(mut sessions) = self.sessions.lock() else {
+            return;
+        };
+        let Some(previous) = sessions.remove(session) else {
+            return;
+        };
         clear_queued_notes(&previous);
         let mut runtime = AdvisorRuntime {
             immunity_until_turn: previous.immunity_until_turn,
@@ -120,13 +142,18 @@ fn load(path: &Path) -> Result<Option<Checkpoint>> {
     };
     let mut bytes = Vec::new();
     file.take(MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_STATE_BYTES { bail!("checkpoint exceeds bound"); }
-    let mut checkpoint: Checkpoint = serde_json::from_slice(&bytes).context("invalid advisor checkpoint")?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        bail!("checkpoint exceeds bound");
+    }
+    let mut checkpoint: Checkpoint =
+        serde_json::from_slice(&bytes).context("invalid advisor checkpoint")?;
     if checkpoint.version != 1 || checkpoint.notes.len() > MAX_NOTE_METADATA {
         bail!("unsupported advisor checkpoint");
     }
     for note in &checkpoint.notes {
-        if !note.id.starts_with("adv-") || note.id.len() > 64 { bail!("invalid advisor note ID"); }
+        if !note.id.starts_with("adv-") || note.id.len() > 64 {
+            bail!("invalid advisor note ID");
+        }
     }
     checkpoint.notes = checkpoint.notes.into_iter().map(sanitize_note).collect();
     Ok(Some(checkpoint))
@@ -141,9 +168,14 @@ fn sanitize_note(mut note: AdvisorNoteMetadata) -> AdvisorNoteMetadata {
     }
     // Account for JSON escaping, including pathological control characters.
     while serde_json::to_vec(&note).is_ok_and(|bytes| bytes.len() > 4096) {
-        if note.evidence.pop().is_some() { continue; }
+        if note.evidence.pop().is_some() {
+            continue;
+        }
         note.summary = truncate_utf8(note.summary.clone(), note.summary.len() / 2);
-        note.recommended_action = truncate_utf8(note.recommended_action.clone(), note.recommended_action.len() / 2);
+        note.recommended_action = truncate_utf8(
+            note.recommended_action.clone(),
+            note.recommended_action.len() / 2,
+        );
     }
     note
 }
@@ -161,28 +193,53 @@ mod tests {
             let mut sessions = manager.sessions.lock().expect("sessions");
             let runtime = sessions.get_mut("../session").expect("runtime");
             runtime.cursor = 7;
-            runtime.private_context.push(AdvisorTurnInput { objective: "PRIVATE_TRANSCRIPT".into(), ..AdvisorTurnInput::default() });
+            runtime.private_context.push(AdvisorTurnInput {
+                objective: "PRIVATE_TRANSCRIPT".into(),
+                ..AdvisorTurnInput::default()
+            });
             runtime.notes.push_back(AdvisorNoteMetadata {
-                id: "adv-existing".into(), severity: AdvisorSeverity::Blocker,
-                summary: "verify".into(), evidence: vec![], recommended_action: "test".into(),
-                blocking: true, disposition: AdvisorNoteDisposition::Unresolved,
+                id: "adv-existing".into(),
+                severity: AdvisorSeverity::Blocker,
+                summary: "verify".into(),
+                evidence: vec![],
+                recommended_action: "test".into(),
+                blocking: true,
+                disposition: AdvisorNoteDisposition::Unresolved,
             });
             manager.persist("../session", runtime).expect("persist");
         }
-        let bytes = std::fs::read_to_string(manager.state_path("../session").expect("path")).expect("read");
+        let bytes =
+            std::fs::read_to_string(manager.state_path("../session").expect("path")).expect("read");
         assert!(!bytes.contains("PRIVATE_TRANSCRIPT"));
         drop(manager);
         let manager = AdvisorManager::persistent(dir.path().to_path_buf());
         manager.resume("../session");
         assert_eq!(manager.snapshot("../session").expect("snapshot").cursor, 7);
-        assert_eq!(manager.snapshot("../session").expect("snapshot").private_context_len, 0);
+        assert_eq!(
+            manager
+                .snapshot("../session")
+                .expect("snapshot")
+                .private_context_len,
+            0
+        );
         assert_eq!(manager.notes("../session")[0].id, "adv-existing");
-        assert!(manager.resolve_note("../session", "adv-existing", AdvisorNoteDisposition::Dismissed).expect("dismiss"));
+        assert!(
+            manager
+                .resolve_note(
+                    "../session",
+                    "adv-existing",
+                    AdvisorNoteDisposition::Dismissed
+                )
+                .expect("dismiss")
+        );
         manager.set_enabled("../session", false).expect("disable");
         let restarted = AdvisorManager::persistent(dir.path().to_path_buf());
         restarted.resume("../session");
         assert!(!restarted.is_enabled("../session", true));
-        assert_eq!(restarted.notes("../session")[0].disposition, AdvisorNoteDisposition::Dismissed);
+        assert_eq!(
+            restarted.notes("../session")[0].disposition,
+            AdvisorNoteDisposition::Dismissed
+        );
         restarted.reset_history("../session");
         assert!(!restarted.is_enabled("../session", true));
         assert!(restarted.notes("../session").is_empty());
@@ -194,9 +251,19 @@ mod tests {
         let manager = AdvisorManager::persistent(dir.path().to_path_buf());
         std::fs::write(manager.state_path("broken").expect("path"), "{").expect("corrupt fixture");
         manager.resume("broken");
-        assert!(manager.blocks_tool_call("broken", "effect", crate::tool::ToolCapability::Execute).is_some());
-        manager.set_enabled("broken", false).expect("explicit recovery");
-        assert!(manager.blocks_tool_call("broken", "effect", crate::tool::ToolCapability::Execute).is_none());
+        assert!(
+            manager
+                .blocks_tool_call("broken", "effect", crate::tool::ToolCapability::Execute)
+                .is_some()
+        );
+        manager
+            .set_enabled("broken", false)
+            .expect("explicit recovery");
+        assert!(
+            manager
+                .blocks_tool_call("broken", "effect", crate::tool::ToolCapability::Execute)
+                .is_none()
+        );
         let file = dir.path().join("file");
         std::fs::write(&file, "not a directory").expect("fixture");
         let blocked = AdvisorManager::persistent(file);
@@ -206,10 +273,13 @@ mod tests {
     #[test]
     fn checkpoint_redacts_notes_and_bounds_escaped_content() {
         let note = AdvisorNoteMetadata {
-            id: "adv-safe".into(), severity: AdvisorSeverity::Concern,
+            id: "adv-safe".into(),
+            severity: AdvisorSeverity::Concern,
             summary: "OPENAI_API_KEY=sk-test-openai-example".into(),
-            evidence: vec!["\0".repeat(4096); 8], recommended_action: "\0".repeat(4096),
-            blocking: false, disposition: AdvisorNoteDisposition::Acknowledged,
+            evidence: vec!["\0".repeat(4096); 8],
+            recommended_action: "\0".repeat(4096),
+            blocking: false,
+            disposition: AdvisorNoteDisposition::Acknowledged,
         };
         let cleaned = sanitize_note(note);
         let bytes = serde_json::to_string(&cleaned).expect("encode");

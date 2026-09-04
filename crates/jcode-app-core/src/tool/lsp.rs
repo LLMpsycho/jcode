@@ -79,14 +79,34 @@ struct LspInput {
 impl Tool for LspTool {
     fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
         use crate::tool::ToolCapability;
-        if input.get("apply").is_some_and(|v| !v.is_null() && v != &serde_json::Value::Bool(false)) {
+        if input
+            .get("apply")
+            .is_some_and(|v| !v.is_null() && v != &serde_json::Value::Bool(false))
+        {
             return ToolCapability::WriteFiles;
         }
-        ToolCapability::for_actions(input, &[
-            "status", "diagnostics", "hover", "definition", "references", "document_symbols",
-            "workspace_symbols", "rename", "rename_file", "code_actions", "implementation",
-            "type_definition", "signature_help", "incoming_calls", "outgoing_calls", "capabilities",
-        ], ToolCapability::Execute)
+        ToolCapability::for_actions(
+            input,
+            &[
+                "status",
+                "diagnostics",
+                "hover",
+                "definition",
+                "references",
+                "document_symbols",
+                "workspace_symbols",
+                "rename",
+                "rename_file",
+                "code_actions",
+                "implementation",
+                "type_definition",
+                "signature_help",
+                "incoming_calls",
+                "outgoing_calls",
+                "capabilities",
+            ],
+            ToolCapability::Execute,
+        )
     }
 
     fn name(&self) -> &str {
