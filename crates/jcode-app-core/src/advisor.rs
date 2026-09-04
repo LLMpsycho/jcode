@@ -4,6 +4,8 @@
 //! cursors, structured note parsing, deduplication, budgets, and soft-interrupt
 //! delivery. Risky-tool gating and user controls remain separate follow-ups.
 
+mod evidence;
+
 use crate::config::{AdvisorConfig, AdvisorMode, AdvisorSeverity};
 use crate::message::{Message, StreamEvent, redact_secrets};
 use crate::protocol::ToolCallSummary;
@@ -87,6 +89,14 @@ impl AdvisorTurnInput {
             .to_string(),
             ..Self::default()
         }
+    }
+
+    pub(crate) fn enrich_from_session(
+        self,
+        session: &crate::session::Session,
+        start_message_index: usize,
+    ) -> Self {
+        evidence::enrich_completed_turn(self, session, start_message_index)
     }
 
     fn bounded(mut self, redact: bool) -> Self {

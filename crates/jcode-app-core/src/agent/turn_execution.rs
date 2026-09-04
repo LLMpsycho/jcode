@@ -223,7 +223,8 @@ impl Agent {
             self.latest_assistant_text_after(start_message_index),
             self.get_tool_call_summaries(12),
             turn_succeeded,
-        );
+        )
+        .enrich_from_session(&self.session, start_message_index);
         let _ = manager.schedule_turn(
             self.session.id.clone(),
             self.provider_fork(),
