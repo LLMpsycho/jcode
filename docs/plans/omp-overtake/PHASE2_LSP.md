@@ -12,7 +12,7 @@ This branch implements the Rust-first Phase 2 path from the OMP overtake master 
 - Document open/change/save synchronization with UTF-16 incremental ranges.
 - Push and pull diagnostic support, including new/worsened diagnostic deltas.
 - Agent actions for status, diagnostics, hover, definition, references, document/workspace symbols, implementation, type definition, signature help, call hierarchy, code actions, capabilities, reload, symbol rename, and file rename.
-- Bounded human-readable output plus structured metadata. Raw protocol payloads are not emitted by default.
+- Bounded human-readable output plus structured metadata. Raw protocol payloads are not emitted by default. Diagnostic rendering prioritizes highest severity, and truncated text retains bounded redacted diagnostic evidence without raw server data.
 - Same-turn semantic feedback on all built-in mutation tools that emit revision metadata.
 - Cross-file symbol and file rename preview and atomic apply. Apply requires current full-file reads for every affected file, revalidates all files before publication, preserves permissions, updates the snapshot ledger, rolls back publication failures, and emits file-touch events for old and new paths.
 - Explicitly selected code-action edits run through the same guarded transaction path. Optional language-server commands are reported but are not executed implicitly.
