@@ -315,6 +315,12 @@ pub fn summarize_tool_calls(
                 };
                 calls.push(crate::protocol::ToolCallSummary {
                     tool_name: name.clone(),
+                    intent: input
+                        .get("intent")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|intent| !intent.is_empty())
+                        .map(|intent| crate::util::truncate_str(intent, 200).to_string()),
                     brief_output: brief,
                     timestamp_secs: msg.timestamp.map(|ts| ts.timestamp().max(0) as u64),
                 });

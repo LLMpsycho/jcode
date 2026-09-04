@@ -25,9 +25,9 @@ foundation from the full advisor product.
   primary turn completes.
 - Inputs have explicit fields for objective, completed primary response, concise
   tool results, diff, diagnostics, verification, todos, and acceptance criteria.
-- The initial lifecycle integration populates objective, completed response,
-  concise tool summaries, and turn success. The richer diff, diagnostics, todo,
-  and acceptance enrichers remain pending.
+- The lifecycle integration populates objective, completed response, concise
+  tool summaries with their declared intent, and turn success. The richer diff,
+  diagnostics, todo, and acceptance enrichers remain pending.
 - Individual fields, tool counts, total serialized input, response size,
   evidence count, and retained private turns are bounded.
 - Recognized secrets are redacted before evidence is retained or sent when
@@ -62,6 +62,8 @@ Focused tests exercise:
 - exactly-once cursor movement for accepted reviews;
 - field, tool, total-input, response, evidence, and private-context bounds;
 - recognized-secret redaction on retained input and published notes;
+- bounded, redacted tool intent flowing from stored tool calls into advisor
+  evidence;
 - strict structured-note parsing and graceful malformed-response failure;
 - deduplication across consecutive reviewed turns;
 - bounded latest-review coalescing while a provider call is active;
@@ -80,7 +82,6 @@ features below.
 - Populate diff summaries through an explicit bounded source.
 - Capture new diagnostics and verification results without replaying raw output.
 - Include current todo and acceptance-criterion state through stable contracts.
-- Preserve tool intent as well as tool name and concise result.
 
 ### Lifecycle semantics
 

@@ -27,6 +27,8 @@ const ADVISOR_SYSTEM_PROMPT: &str = "You are Jcode's independent advisor. Review
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvisorToolInput {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     pub result: String,
 }
 
@@ -57,6 +59,7 @@ impl AdvisorTurnInput {
                 .take(MAX_TOOLS)
                 .map(|tool| AdvisorToolInput {
                     name: tool.tool_name,
+                    intent: tool.intent,
                     result: tool.brief_output,
                 })
                 .collect(),
@@ -89,6 +92,7 @@ impl AdvisorTurnInput {
         self.tools.truncate(MAX_TOOLS);
         for tool in &mut self.tools {
             tool.name = truncate_utf8(tool.name.clone(), 256);
+            tool.intent = tool.intent.take().map(clean);
             tool.result = clean(std::mem::take(&mut tool.result));
         }
 
@@ -969,6 +973,10 @@ mod tests {
             tools: (0..MAX_TOOLS + 5)
                 .map(|index| AdvisorToolInput {
                     name: format!("tool-{index}"),
+                    intent: Some(format!(
+                        "OPENAI_API_KEY=sk-test-openai-example {}",
+                        "i".repeat(MAX_FIELD_BYTES * 2)
+                    )),
                     result: "y".repeat(MAX_FIELD_BYTES * 2),
                 })
                 .collect(),
@@ -979,6 +987,12 @@ mod tests {
         assert!(encoded.len() <= MAX_INPUT_BYTES);
         assert!(input.objective.contains("[REDACTED_SECRET]"));
         assert!(input.tools.len() <= MAX_TOOLS);
+        assert!(
+            input.tools[0]
+                .intent
+                .as_deref()
+                .is_some_and(|intent| intent.contains("[REDACTED_SECRET]"))
+        );
     }
 
     #[test]

@@ -178,6 +178,8 @@ pub use wire::{Request, ServerEvent, bounded_tool_done_fields};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallSummary {
     pub tool_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
     pub brief_output: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp_secs: Option<u64>,

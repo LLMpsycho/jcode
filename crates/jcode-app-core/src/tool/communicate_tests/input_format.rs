@@ -176,11 +176,13 @@ fn format_tool_summary_includes_call_count() {
         &[
             ToolCallSummary {
                 tool_name: "read".to_string(),
+                intent: None,
                 brief_output: "Read 20 lines".to_string(),
                 timestamp_secs: None,
             },
             ToolCallSummary {
                 tool_name: "grep".to_string(),
+                intent: None,
                 brief_output: "Found 3 matches".to_string(),
                 timestamp_secs: None,
             },
