@@ -80,7 +80,13 @@ mod config_tests {
             max_thread_name_bytes: 1,
             max_queued_breakpoint_events: 1,
         };
-        assert!(minimal.validate().is_ok());
+        assert!(
+            crate::DebugSessionManager::new_with_operation_config(
+                crate::DebugSessionManagerConfig::default(),
+                minimal.clone(),
+            )
+            .is_ok()
+        );
 
         let mut invalid = Vec::new();
         macro_rules! zero {
@@ -111,7 +117,10 @@ mod config_tests {
         invalid.push(overflow);
         for config in invalid {
             assert!(matches!(
-                config.validate(),
+                crate::DebugSessionManager::new_with_operation_config(
+                    crate::DebugSessionManagerConfig::default(),
+                    config,
+                ),
                 Err(crate::DapError::InvalidManagerConfiguration { .. })
             ));
         }

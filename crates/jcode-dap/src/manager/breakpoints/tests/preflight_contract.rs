@@ -196,6 +196,9 @@ async fn conditional_hit_conditional_and_logpoint_gates_require_exact_boolean_tr
             Some(Value::Null),
             Some(json!(false)),
             Some(json!("true")),
+            Some(json!(1)),
+            Some(json!({})),
+            Some(json!([])),
         ] {
             let mut advertised = capabilities.clone();
             if let Some(value) = unsupported {
