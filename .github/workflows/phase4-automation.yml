@@ -14,9 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  inspect:
+  implement-evidence:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Check out automation branch
         uses: actions/checkout@v4
@@ -28,21 +28,26 @@ jobs:
           ref: feat/phase4-advisor-completion
           path: worktree
           fetch-depth: 0
-      - name: Inspect advisor integration surfaces
+      - name: Apply bounded evidence enrichment
         shell: bash
         working-directory: worktree
         run: |
           set -euo pipefail
-          echo '=== branch/base ==='
-          git status --short --branch
-          git log -1 --oneline
-          echo '=== todo stable contracts ==='
-          grep -n -E '^pub fn (load_todos|load_goals|load_plan)|^pub struct (TodoItem|TodoGoal|TodoPlan)' crates/jcode-base/src/todo.rs crates/jcode-task-types/src/lib.rs || true
-          echo '=== session message fields ==='
-          grep -n -A80 -E '^pub struct Session \{' crates/jcode-base/src/session.rs crates/jcode-session-types/src/lib.rs | head -180 || true
-          echo '=== tool output fields ==='
-          grep -n -A100 -E '^pub struct ToolOutput|^pub enum ContentBlock' crates/jcode-tool-types/src/lib.rs crates/jcode-message-types/src/lib.rs | head -240 || true
-          echo '=== model-route cost/permission metadata ==='
-          grep -R -n -E 'RouteCheapnessEstimate|cheapness|ResolvedCredential' crates/jcode-provider-core/src | head -220 || true
-          echo '=== tests using captured advisor prompt ==='
-          grep -R -n -E 'AdvisorTurnInput|advisor.*prompt|ModeCaptureProvider' crates/jcode-app-core/src/*test* crates/jcode-app-core/src/advisor.rs | head -260 || true
+          objective='feat(advisor): enrich completed-turn evidence'
+          if git log --format=%s origin/master..HEAD | grep -Fqx "$objective"; then
+            echo 'evidence objective already committed'
+            exit 0
+          fi
+          python3 ../automation/scripts/stage1_evidence.py
+          cargo fmt --all
+          git diff --check
+          cargo test -p jcode-app-core --no-default-features --lib advisor::evidence::tests
+          cargo test -p jcode-app-core --no-default-features --lib advisor::tests
+          cargo check -p jcode-app-core --no-default-features --lib
+          git config user.name 'LLMpsycho'
+          git config user.email '211350563+LLMpsycho@users.noreply.github.com'
+          git add crates/jcode-app-core/src/advisor.rs \
+                  crates/jcode-app-core/src/advisor/evidence.rs \
+                  crates/jcode-app-core/src/agent/turn_execution.rs
+          git commit -m "$objective"
+          git push origin HEAD:feat/phase4-advisor-completion
