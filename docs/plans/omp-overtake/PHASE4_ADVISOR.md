@@ -43,6 +43,9 @@ foundation from the full advisor product.
 - One active review may retain one latest pending review. New completions
   coalesce into that bounded slot instead of creating an unbounded queue or
   silently losing the latest turn, and every provider review has a timeout.
+- Configurable cadence reviews one out of every N completed turns, while a
+  per-session cap bounds the total provider reviews started by one runtime.
+  A zero cap disables scheduling without allocating runtime state.
 - Notes use the existing soft-interrupt queue. Completed background notes are
   injected before the next user objective reaches the provider, while existing
   mid-turn safe points handle notes that finish during a turn.
@@ -70,6 +73,8 @@ Focused tests exercise:
 - strict structured-note parsing and graceful malformed-response failure;
 - deduplication across consecutive reviewed turns;
 - bounded latest-review coalescing while a provider call is active;
+- configured review cadence, session-budget exhaustion, and zero-budget
+  operation with no provider or runtime cost;
 - stale completion fencing across runtime recreation;
 - advisor reset on rewind, rewind undo, and compaction application;
 - severity-derived urgency and safe-boundary soft-interrupt delivery;
@@ -92,8 +97,6 @@ features below.
 - Define and test resume behavior across daemon/process restart.
 - Add a handled-note acknowledgement and immunity window, rather than relying
   only on exact-note deduplication.
-- Add explicit call-rate and session-budget policy beyond one in-flight review
-  and the per-turn publication limit.
 
 ### Enforcement and controls
 

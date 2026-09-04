@@ -191,6 +191,7 @@ pub enum AdvisorStatus {
 #[derive(Debug, Clone)]
 pub struct AdvisorRuntimeSnapshot {
     pub owner_session_id: String,
+    pub turns_observed: u64,
     pub cursor: u64,
     pub status: AdvisorStatus,
     pub private_context_len: usize,
@@ -207,6 +208,7 @@ struct PendingReview {
 
 #[derive(Default)]
 struct AdvisorRuntime {
+    turns_observed: u64,
     cursor: u64,
     status: AdvisorStatus,
     private_context: Vec<AdvisorTurnInput>,
@@ -229,6 +231,7 @@ impl AdvisorManager {
         let runtime = sessions.get(owner_session_id)?;
         Some(AdvisorRuntimeSnapshot {
             owner_session_id: owner_session_id.to_string(),
+            turns_observed: runtime.turns_observed,
             cursor: runtime.cursor,
             status: runtime.status,
             private_context_len: runtime.private_context.len(),
@@ -251,9 +254,12 @@ impl AdvisorManager {
         input: AdvisorTurnInput,
         config: AdvisorConfig,
     ) -> bool {
-        if !config.enabled || config.max_notes_per_turn == 0 {
+        if !config.enabled || config.max_notes_per_turn == 0 || config.max_reviews_per_session == 0
+        {
             return false;
         }
+        let cadence = config.review_every_n_turns.max(1) as u64;
+        let max_reviews_per_session = config.max_reviews_per_session as u64;
 
         let input = input.bounded(config.redact);
         let pending = PendingReview {
@@ -271,6 +277,12 @@ impl AdvisorManager {
                 return false;
             };
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
+            runtime.turns_observed = runtime.turns_observed.saturating_add(1);
+            if (runtime.turns_observed - 1) % cadence != 0
+                || runtime.cursor >= max_reviews_per_session
+            {
+                return false;
+            }
             if runtime.status == AdvisorStatus::Reviewing {
                 runtime.pending = Some(pending);
                 return true;
@@ -961,6 +973,88 @@ mod tests {
         let snapshot = manager.snapshot("context").expect("runtime");
         assert_eq!(snapshot.cursor as usize, MAX_PRIVATE_CONTEXT + 2);
         assert_eq!(snapshot.private_context_len, MAX_PRIVATE_CONTEXT);
+    }
+
+    #[tokio::test]
+    async fn review_cadence_and_session_budget_bound_provider_calls() {
+        let manager = Arc::new(AdvisorManager::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider: Arc<dyn Provider> = Arc::new(AdvisorProvider {
+            calls: Arc::clone(&calls),
+            response: r#"{"severity":"nit","summary":"ok","evidence":[],"recommended_action":"continue","blocking":false}"#.to_string(),
+        });
+        let config = AdvisorConfig {
+            enabled: true,
+            review_every_n_turns: 2,
+            max_reviews_per_session: 2,
+            ..AdvisorConfig::default()
+        };
+
+        assert!(manager.schedule_turn(
+            "budgeted".to_string(),
+            Arc::clone(&provider),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config.clone(),
+        ));
+        wait_for_status(&manager, "budgeted", AdvisorStatus::Ready).await;
+        assert!(!manager.schedule_turn(
+            "budgeted".to_string(),
+            Arc::clone(&provider),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config.clone(),
+        ));
+        assert!(manager.schedule_turn(
+            "budgeted".to_string(),
+            Arc::clone(&provider),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config.clone(),
+        ));
+        wait_for_status(&manager, "budgeted", AdvisorStatus::Ready).await;
+        assert!(!manager.schedule_turn(
+            "budgeted".to_string(),
+            Arc::clone(&provider),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config.clone(),
+        ));
+        assert!(!manager.schedule_turn(
+            "budgeted".to_string(),
+            provider,
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config,
+        ));
+
+        let snapshot = manager.snapshot("budgeted").expect("runtime");
+        assert_eq!(snapshot.turns_observed, 5);
+        assert_eq!(snapshot.cursor, 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn zero_session_budget_has_no_runtime_or_provider_cost() {
+        let manager = Arc::new(AdvisorManager::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = AdvisorConfig {
+            enabled: true,
+            max_reviews_per_session: 0,
+            ..AdvisorConfig::default()
+        };
+        assert!(!manager.schedule_turn(
+            "zero-budget".to_string(),
+            Arc::new(AdvisorProvider {
+                calls: Arc::clone(&calls),
+                response: String::new(),
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput::default(),
+            config,
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(manager.snapshot("zero-budget").is_none());
     }
 
     #[test]

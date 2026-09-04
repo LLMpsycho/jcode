@@ -922,6 +922,10 @@ pub struct AdvisorConfig {
     pub model: Option<String>,
     /// Maximum notes the advisor may publish for one primary turn.
     pub max_notes_per_turn: usize,
+    /// Review one out of every N completed primary turns.
+    pub review_every_n_turns: usize,
+    /// Maximum provider reviews started during one advisor runtime.
+    pub max_reviews_per_session: usize,
     /// Minimum severity that may gate a future risky operation.
     pub block_on_severity: AdvisorSeverity,
     /// Redact recognized secrets before advisor context is retained or sent.
@@ -935,6 +939,8 @@ impl Default for AdvisorConfig {
             mode: AdvisorMode::Interactive,
             model: None,
             max_notes_per_turn: 1,
+            review_every_n_turns: 1,
+            max_reviews_per_session: 100,
             block_on_severity: AdvisorSeverity::Blocker,
             redact: true,
         }

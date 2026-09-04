@@ -679,6 +679,10 @@ mode = "interactive"
 # model = "openrouter:anthropic/claude-sonnet-4"
 # Maximum notes delivered for one completed primary turn.
 max_notes_per_turn = 1
+# Review one out of every N completed primary turns. The first turn is reviewed.
+review_every_n_turns = 1
+# Maximum provider reviews started during one session runtime.
+max_reviews_per_session = 100
 # Minimum severity allowed to mark a future risky operation as blocked.
 # Phase 4's first slice records this policy but does not enforce tool gating yet.
 block_on_severity = "blocker"
@@ -828,6 +832,8 @@ mod tests {
         assert!(!parsed.advisor.enabled);
         assert_eq!(parsed.advisor.mode, AdvisorMode::Interactive);
         assert_eq!(parsed.advisor.max_notes_per_turn, 1);
+        assert_eq!(parsed.advisor.review_every_n_turns, 1);
+        assert_eq!(parsed.advisor.max_reviews_per_session, 100);
         assert_eq!(parsed.advisor.block_on_severity, AdvisorSeverity::Blocker);
         assert!(parsed.advisor.redact);
     }
