@@ -37,7 +37,7 @@ Unsupported adapter capabilities produce structured errors rather than raw DAP f
 ```json
 {
   "action": "launch",
-  "adapter_kind": "lldb_dap",
+  "adapter": "lldb-dap",
   "program": "target/debug/repro",
   "args": ["--case", "invalid-pointer"],
   "cwd": ".",
@@ -52,7 +52,7 @@ Paths are resolved canonically inside the current `ToolContext` workspace. Argum
 ```json
 {
   "action": "attach",
-  "adapter_kind": "lldb_dap",
+  "adapter": "lldb-dap",
   "program": "target/debug/service",
   "args": ["--wait-for-debugger"],
   "cwd": ".",

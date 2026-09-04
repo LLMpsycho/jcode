@@ -1,6 +1,6 @@
 # Phase 3 DAP protocol foundation
 
-This branch implements the DAP protocol foundation, owner-scoped session manager, the Phase 3 30D launch and owned-attach slice, and the 30E breakpoint/thread/execution-control slice. It does not register an agent tool or expose arbitrary PID attachment.
+The completed foundations cover the DAP protocol, owner-scoped session manager, 30D launch and owned attach, 30E breakpoints and execution control, 30F bounded state inspection, and the 30G opt-in agent-tool, lifecycle, TUI, protocol, and SDK integration. Arbitrary PID attachment remains intentionally unavailable.
 
 ## Implemented
 
@@ -34,7 +34,7 @@ This branch implements the DAP protocol foundation, owner-scoped session manager
 - Owner-authorized source breakpoints use canonical workspace-contained regular files, exact-byte SHA-256 revisions, full-source `setBreakpoints` replacement, manager-local monotonic IDs, capability gates, bounded public snapshots, compensating clears, and explicit indeterminate synchronization.
 - Every breakpoint event is queued in one bounded per-session queue while a transaction is in flight. Response sequence ordering installs adapter IDs before applying higher-sequence ID-only events, while overflow and ambiguous outcomes cannot claim synchronized state.
 - Per-entry operation gates serialize breakpoint mutation, ephemeral thread lookup, and execution control without holding synchronous state locks across I/O. Detached operations own the session entry and immutable operation config, never `Arc<ManagerCore>`; terminal closure prevents post-cleanup commits.
-- Ephemeral `threads`, `continue`, `pause`, `next`, `stepIn`, and `stepOut` operations enforce owner, state, thread, capability, deadline, and execution-revision checks. No stack, frame, scope, variable, or evaluation cache exists.
+- Ephemeral `threads`, `continue`, `pause`, `next`, `stepIn`, and `stepOut` operations enforce owner, state, thread, capability, deadline, and execution-revision checks. Bounded stack traces, scopes, variables, and evaluation use manager-issued revision-scoped handles that expire when execution advances.
 
 ## Verified behavior
 
@@ -95,15 +95,49 @@ git diff --check
 
 All focused DAP checks pass with 211 non-doc tests plus 2 compile-fail doctests: 174 crate-internal library/client/process tests, 12 Phase 30E contract/lifecycle subprocess tests, 1 repeated breakpoint/control subprocess test, 10 framing/protocol integration tests, 11 launch-process tests, and 3 DAP type tests. Low-level client and process tests are crate-internal so those primitives remain unavailable to external callers. The repository-wide code-size and test-size budgets still report unrelated pre-existing drift outside these crates and are not claimed as passing. Every production and test file in `crates/jcode-dap` remains below 1,200 lines, with `manager.rs` at 999 lines.
 
+## Phase 30G agent-tool integration
+
+The operator and agent-facing contract is documented in:
+
+- [`docs/architecture/dap.md`](../../architecture/dap.md)
+- [`docs/configuration/dap.md`](../../configuration/dap.md)
+- [`docs/tools/dap.md`](../../tools/dap.md)
+- [`docs/troubleshooting/dap.md`](../../troubleshooting/dap.md)
+
+The implemented boundary is opt-in and initially supports only configured `kind = "lldb-dap"`. Its 17 tool actions cover owned launch and attach, session inspection and cleanup, breakpoints, thread and execution control, bounded stack/scope/variable inspection, and doubly opted-in evaluation. `ToolContext` supplies the trusted owner and canonical workspace. Request JSON cannot override either boundary, and attach never accepts a PID.
+
+Session and inspection identifiers are opaque owner-scoped tokens. Output, protocol messages, request concurrency, retained events, stack frames, scopes, variables, strings, and evaluation results remain bounded. The surface deliberately provides no adapter downloads or discovery, raw DAP request escape hatch, environment override, interactive shell, or cross-process session persistence. A transient transport replacement with a live successor for the same owner preserves the debug session. True owner disconnect, startup timeout or cancellation, adapter failure, explicit owner teardown, server reload, and shutdown converge on owned transport and process-group cleanup.
+
+One server-owned `DapService` supplies the same manager and opaque-token broker to ordinary, recovered, headless, and swarm agent registries. A shared lifecycle gate serializes complete tool actions with owner teardown, shutdown, disconnect cleanup, and resume transitions. Control and breakpoint actions reserve response-token capacity before issuing their DAP mutation. The TUI renders bounded `jcode.dap.v1` results, while the Rust and TypeScript SDKs preserve the existing tool-output string and expose optional bounded presentation metadata rather than adding a policy-bypassing direct DAP API.
+
+Phase 30G focused validation includes:
+
+```text
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test -p jcode-app-core tool::dap --lib
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test -p jcode-app-core client_disconnect_cleanup --lib
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test -p jcode-app-core 'server::client_session::tests::resume_tests' --lib
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test -p jcode-tui dap --lib
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh check -p jcode-app-core -p jcode-tui
+scripts/dev_cargo.sh test -p jcode-protocol
+scripts/dev_cargo.sh test -p jcode-harness-api
+scripts/dev_cargo.sh test -p jcode-sdk --lib
+scripts/dev_cargo.sh test -p jcode-sdk --test client_behavior
+cd sdk/typescript && npm run typecheck && npm run build
+node --test --experimental-strip-types test/client.test.ts test/protocol.test.ts
+python3 scripts/check_dependency_boundaries.py
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh build --profile selfdev -p jcode --bin jcode
+```
+
+These checks pass, including 6 focused DAP agent-tool tests, the disconnect and resume lifecycle regressions, 82 protocol tests, 16 harness API tests, 12 Rust SDK unit tests, 10 Rust SDK client behavior tests, and 19 focused TypeScript client/protocol tests. The built binary also completed an isolated-socket `jcode run` smoke test. Repository-wide guardrail and strict-clippy results are not claimed because their `fork/master` baseline includes unrelated existing warning, size, panic, swallowed-error, and wildcard-re-export drift; the dependency-boundary check, formatting, focused compilation, and changed-path tests pass.
+
 ## Deliberately deferred
 
 - Adapter discovery and debugger profiles beyond configured `lldb-dap`.
-- Agent tool registration and TUI integration.
-- Stack trace, frame selection, scopes, variables, evaluate, step-in targets, and higher-level debug policy.
+- Step-in targets and higher-level debug policy beyond the bounded 30F inspection APIs.
 - Arbitrary PID attachment.
 - Executing reverse `runInTerminal` requests.
 - Network, download, or installation behavior.
-- App-core ownership wiring, agent-facing operations, and persistent cross-process debug-session recovery.
+- Persistent cross-process debug-session recovery.
 - DAP competitive benchmark tasks.
 
 Before real debugger launch or reverse process requests are enabled on Windows, the runtime needs owned process-tree containment such as a Job Object. The current non-Unix fallback guarantees direct-child cleanup only and does not claim descendant-tree containment.
