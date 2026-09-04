@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  implement-evidence:
+  implement-persistence:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -28,26 +28,34 @@ jobs:
           ref: feat/phase4-advisor-completion
           path: worktree
           fetch-depth: 0
-      - name: Apply bounded evidence enrichment
+      - name: Restore Rust build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            worktree/target
+          key: phase4-rust-${{ runner.os }}-${{ hashFiles('worktree/Cargo.lock') }}
+      - name: Apply redacted restart persistence
         shell: bash
         working-directory: worktree
         run: |
           set -euo pipefail
-          objective='feat(advisor): enrich completed-turn evidence'
+          objective='feat(advisor): persist redacted session state'
           if git log --format=%s origin/master..HEAD | grep -Fqx "$objective"; then
-            echo 'evidence objective already committed'
+            echo 'persistence objective already committed'
             exit 0
           fi
-          python3 ../automation/scripts/stage1_evidence.py
+          python3 ../automation/scripts/stage2_persistence.py
           cargo fmt --all
           git diff --check
-          cargo test -p jcode-app-core --no-default-features --lib advisor::evidence::tests
-          cargo test -p jcode-app-core --no-default-features --lib advisor::tests
+          cargo test -p jcode-app-core --no-default-features --lib advisor::
           cargo check -p jcode-app-core --no-default-features --lib
           git config user.name 'LLMpsycho'
           git config user.email '211350563+LLMpsycho@users.noreply.github.com'
           git add crates/jcode-app-core/src/advisor.rs \
-                  crates/jcode-app-core/src/advisor/evidence.rs \
+                  crates/jcode-app-core/src/advisor/persistence.rs \
+                  crates/jcode-app-core/src/agent.rs \
                   crates/jcode-app-core/src/agent/turn_execution.rs
           git commit -m "$objective"
           git push origin HEAD:feat/phase4-advisor-completion
