@@ -61,6 +61,63 @@ impl DebugOperationConfig {
     }
 }
 
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    #[test]
+    fn validation_boundary_matrix_covers_every_limit_relation_and_timeout() {
+        let minimal = DebugOperationConfig {
+            operation_timeout: Duration::from_nanos(1),
+            max_breakpoint_sources: 1,
+            max_breakpoints_per_source: 1,
+            max_total_breakpoints: 1,
+            max_breakpoint_expression_bytes: 1,
+            max_breakpoint_message_bytes: 1,
+            max_source_path_bytes: 1,
+            max_source_revision_bytes: 1,
+            max_threads: 1,
+            max_thread_name_bytes: 1,
+            max_queued_breakpoint_events: 1,
+        };
+        assert!(minimal.validate().is_ok());
+
+        let mut invalid = Vec::new();
+        macro_rules! zero {
+            ($field:ident) => {{
+                let mut value = minimal.clone();
+                value.$field = 0;
+                invalid.push(value);
+            }};
+        }
+        let mut zero_timeout = minimal.clone();
+        zero_timeout.operation_timeout = Duration::ZERO;
+        invalid.push(zero_timeout);
+        zero!(max_breakpoint_sources);
+        zero!(max_breakpoints_per_source);
+        zero!(max_total_breakpoints);
+        zero!(max_breakpoint_expression_bytes);
+        zero!(max_breakpoint_message_bytes);
+        zero!(max_source_path_bytes);
+        zero!(max_source_revision_bytes);
+        zero!(max_threads);
+        zero!(max_thread_name_bytes);
+        zero!(max_queued_breakpoint_events);
+        let mut relation = minimal.clone();
+        relation.max_breakpoints_per_source = 2;
+        invalid.push(relation);
+        let mut overflow = minimal;
+        overflow.operation_timeout = Duration::MAX;
+        invalid.push(overflow);
+        for config in invalid {
+            assert!(matches!(
+                config.validate(),
+                Err(crate::DapError::InvalidManagerConfiguration { .. })
+            ));
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DebugBreakpointId(pub(crate) u64);
 

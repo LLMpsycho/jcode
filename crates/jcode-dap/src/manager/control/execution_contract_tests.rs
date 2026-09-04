@@ -302,6 +302,114 @@ async fn continued_event_before_response_is_idempotent() {
 }
 
 #[tokio::test]
+async fn malformed_successful_continue_response_conservatively_commits_running() {
+    let mut f = fixture(200, false, None);
+    stop(&mut f, Some(1), true).await;
+    let entry = f.manager.core.entry(f.id).unwrap();
+    let before = lock(&entry.data).execution_revision;
+    let manager = f.manager.clone();
+    let id = f.id;
+    let task = tokio::spawn(async move {
+        manager
+            .continue_execution("owner", id, DebugContinueRequest::default())
+            .await
+    });
+    let request = recv(&mut f.adapter).await;
+    f.adapter
+        .respond_ok(&request, Some(json!({"allThreadsContinued":"invalid"})))
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::InvalidMessage(_))
+    ));
+    let after = f.manager.snapshot("owner", f.id).unwrap();
+    assert_eq!(after.state.kind(), DebugSessionStateKind::Running);
+    assert_eq!(lock(&entry.data).execution_revision, before + 1);
+}
+
+#[tokio::test]
+async fn newer_stopped_event_remains_authoritative_after_malformed_continue_response() {
+    let mut f = fixture(200, false, None);
+    stop(&mut f, Some(1), true).await;
+    let manager = f.manager.clone();
+    let id = f.id;
+    let task = tokio::spawn(async move {
+        manager
+            .continue_execution("owner", id, DebugContinueRequest::default())
+            .await
+    });
+    let request = recv(&mut f.adapter).await;
+    f.adapter
+        .event(
+            "stopped",
+            Some(json!({"reason":"breakpoint","threadId":2,"allThreadsStopped":true})),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if matches!(
+                f.manager.snapshot("owner", f.id).unwrap().state,
+                DebugSessionState::Stopped(ref stopped) if stopped.thread_id == Some(2)
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let authoritative = f.manager.snapshot("owner", f.id).unwrap();
+    f.adapter
+        .respond_ok(&request, Some(json!({"allThreadsContinued":"invalid"})))
+        .await
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert_eq!(f.manager.snapshot("owner", f.id).unwrap(), authoritative);
+}
+
+#[tokio::test]
+async fn output_and_breakpoint_events_do_not_advance_execution_revision() {
+    let mut f = fixture(200, false, None);
+    let entry = f.manager.core.entry(f.id).unwrap();
+    let before = lock(&entry.data).execution_revision;
+    f.adapter
+        .event("output", Some(json!({"category":"stdout","output":"x"})))
+        .await
+        .unwrap();
+    f.adapter
+        .event(
+            "breakpoint",
+            Some(json!({"reason":"changed","breakpoint":{"id":999,"verified":false}})),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if !f
+                .manager
+                .output("owner", f.id, None, 10)
+                .unwrap()
+                .records
+                .is_empty()
+                && f.manager
+                    .breakpoints("owner", f.id)
+                    .unwrap()
+                    .unmatched_adapter_events
+                    == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(lock(&entry.data).execution_revision, before);
+}
+
+#[tokio::test]
 async fn expected_revision_mismatch_and_unsupported_granularity_emit_zero_control_traffic() {
     let mut f = fixture(200, false, Some(json!(false)));
     stop(&mut f, Some(1), true).await;

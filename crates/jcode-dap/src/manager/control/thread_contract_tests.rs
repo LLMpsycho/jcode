@@ -301,6 +301,44 @@ async fn pause_always_verifies_explicit_thread_and_omitted_requires_one() {
     }
 }
 
+#[tokio::test]
+async fn pause_rechecks_revision_after_fresh_threads_lookup_before_dispatch() {
+    let mut f = fixture(4, 16);
+    let manager = f.manager.clone();
+    let id = f.id;
+    let task = tokio::spawn(async move {
+        manager
+            .pause(
+                "owner",
+                id,
+                DebugPauseRequest::default().with_thread_id(DebugThreadId::new(7)),
+            )
+            .await
+    });
+    let lookup = recv(&mut f.adapter).await;
+    assert_eq!(lookup.command, "threads");
+    f.adapter
+        .event(
+            "stopped",
+            Some(json!({"reason":"breakpoint","threadId":9,"allThreadsStopped":true})),
+        )
+        .await
+        .unwrap();
+    wait_for_state(&f.manager, f.id, DebugSessionStateKind::Stopped).await;
+    let stopped = f.manager.snapshot("owner", f.id).unwrap();
+    f.adapter
+        .respond_ok(&lookup, Some(json!({"threads":[{"id":7,"name":"old"}]})))
+        .await
+        .unwrap();
+    assert!(task.await.unwrap().is_err());
+    assert_eq!(f.manager.snapshot("owner", f.id).unwrap(), stopped);
+    assert!(
+        timeout(Duration::from_millis(20), f.adapter.recv())
+            .await
+            .is_err()
+    );
+}
+
 async fn wait_for_state(
     manager: &DebugSessionManager,
     id: DebugSessionId,

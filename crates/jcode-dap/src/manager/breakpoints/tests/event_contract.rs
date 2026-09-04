@@ -152,3 +152,19 @@ fn breakpoint_snapshot_ordering_and_totals_are_deterministic() {
         vec![DebugBreakpointId(2), DebugBreakpointId(4)]
     );
 }
+
+#[test]
+fn unmatched_adapter_event_diagnostic_saturates_without_state_loss() {
+    let (mut registry, _, _) = registry_with_breakpoint();
+    registry.unmatched_events = u64::MAX;
+    let before = registry.snapshot();
+    apply_breakpoint_event(
+        &mut registry,
+        99,
+        json!({"reason":"changed","breakpoint":{"id":999,"verified":false}}),
+        &DebugOperationConfig::default(),
+    );
+    let after = registry.snapshot();
+    assert_eq!(after.unmatched_adapter_events, u64::MAX);
+    assert_eq!(after.sources, before.sources);
+}

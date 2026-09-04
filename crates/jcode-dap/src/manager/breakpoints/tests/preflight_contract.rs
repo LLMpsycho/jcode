@@ -93,6 +93,38 @@ async fn inside_workspace_symlink_resolves_to_canonical_target_path() {
 }
 
 #[tokio::test]
+async fn relative_source_resolves_under_canonical_workspace_and_emits_canonical_wire_path() {
+    let mut f = fixture("owner");
+    let relative = f.source.strip_prefix(&f.root).unwrap().to_path_buf();
+    let task = {
+        let manager = f.manager.clone();
+        let id = f.id;
+        tokio::spawn(async move {
+            manager
+                .set_breakpoint(
+                    "owner",
+                    id,
+                    DebugSetBreakpointRequest::new(relative, DebugSourceBreakpoint::new(1)),
+                )
+                .await
+        })
+    };
+    let set = request(&mut f.adapter).await;
+    assert_eq!(
+        set.arguments.as_ref().unwrap()["source"]["path"],
+        json!(f.source.canonicalize().unwrap())
+    );
+    f.adapter
+        .respond_ok(&set, Some(json!({"breakpoints":[{"verified":true}]})))
+        .await
+        .unwrap();
+    assert_eq!(
+        task.await.unwrap().unwrap().source.source,
+        PathBuf::from("hello world.rs")
+    );
+}
+
+#[tokio::test]
 async fn invalid_source_positions_and_optional_expressions_fail_before_traffic() {
     let mut f = fixture("owner");
     let limit = f.manager.core.operations.max_breakpoint_expression_bytes;
@@ -159,10 +191,21 @@ async fn conditional_hit_conditional_and_logpoint_gates_require_exact_boolean_tr
             "supportsLogPoints",
         ),
     ] {
-        assert!(matches!(
-            check_capabilities(&capabilities, &breakpoint),
-            Err(DapError::UnsupportedDapCapability { capability: actual, .. }) if actual == capability
-        ));
+        for unsupported in [
+            None,
+            Some(Value::Null),
+            Some(json!(false)),
+            Some(json!("true")),
+        ] {
+            let mut advertised = capabilities.clone();
+            if let Some(value) = unsupported {
+                advertised.additional.insert(capability.to_owned(), value);
+            }
+            assert!(matches!(
+                check_capabilities(&advertised, &breakpoint),
+                Err(DapError::UnsupportedDapCapability { capability: actual, .. }) if actual == capability
+            ));
+        }
         let mut advertised = Capabilities::default();
         advertised
             .additional

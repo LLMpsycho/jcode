@@ -438,6 +438,13 @@ pub(crate) fn parse_event(event: Event) -> Result<SessionEvent> {
                     )
                 })?;
             }
+            if let Some(id) = body.thread_id {
+                i32::try_from(id).map_err(|_| {
+                    DapError::InvalidMessage(
+                        "stopped threadId is outside signed 32-bit range".to_owned(),
+                    )
+                })?;
+            }
             Ok(SessionEvent::Stopped(StoppedState {
                 reason: body.reason,
                 description: body.description,

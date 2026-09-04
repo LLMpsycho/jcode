@@ -166,7 +166,21 @@ async fn control_owned(
         .await;
     let timed_out = matches!(response, Err(DapError::RequestTimeout { .. }));
     let all_threads_continued = match response {
-        Ok(response) => parse_control_response(operation, response.body)?,
+        Ok(response) => match parse_control_response(operation, response.body) {
+            Ok(value) => value,
+            Err(error) => {
+                if matches!(
+                    operation,
+                    DebugControlOperation::Continue
+                        | DebugControlOperation::StepOver
+                        | DebugControlOperation::StepIn
+                        | DebugControlOperation::StepOut
+                ) {
+                    commit_running_if_current(&entry, initial_revision);
+                }
+                return Err(error);
+            }
+        },
         Err(error) => {
             if timed_out
                 && matches!(

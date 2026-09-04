@@ -74,6 +74,9 @@ pub(super) fn queue_breakpoint_event(
                 .push_back(QueuedBreakpointEvent { seq, body });
         } else {
             transaction.overflowed = true;
+            for record in data.breakpoints.sources.values_mut() {
+                record.synchronization = DebugBreakpointSynchronization::Indeterminate;
+            }
         }
     } else {
         apply_breakpoint_event(&mut data.breakpoints, seq, body, operations);

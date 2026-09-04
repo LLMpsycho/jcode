@@ -10,6 +10,7 @@ use crate::{DebugSessionManagerConfig, DebugSourceBreakpoint, Message, StoppedSt
 
 mod event_contract;
 mod preflight_contract;
+mod reconciliation_contract;
 mod transaction_contract;
 mod wire_contract;
 
@@ -22,6 +23,16 @@ struct Fixture {
 }
 
 fn fixture(owner: &str) -> Fixture {
+    fixture_with_operations(
+        owner,
+        DebugOperationConfig {
+            operation_timeout: Duration::from_secs(2),
+            ..Default::default()
+        },
+    )
+}
+
+fn fixture_with_operations(owner: &str, operations: DebugOperationConfig) -> Fixture {
     let root = std::env::temp_dir().join(format!(
         "jcode-dap-30e-{}-{}",
         std::process::id(),
@@ -32,10 +43,7 @@ fn fixture(owner: &str) -> Fixture {
     std::fs::write(&source, b"fn main() {\r\n println!(\"hi\");\r\n}\r\n").unwrap();
     let manager = DebugSessionManager::new_with_operation_config(
         DebugSessionManagerConfig::default(),
-        DebugOperationConfig {
-            operation_timeout: Duration::from_secs(2),
-            ..Default::default()
-        },
+        operations,
     )
     .unwrap();
     let (client, adapter) = FakeAdapter::pair(1024 * 1024);
@@ -274,6 +282,16 @@ async fn id_only_higher_sequence_event_is_applied_after_response() {
 #[tokio::test]
 async fn wrong_owner_all_breakpoint_apis_emit_zero_traffic() {
     let mut f = fixture("owner");
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let before = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.breakpoints.snapshot(),
+            data.output.page(None, usize::MAX),
+        )
+    };
     assert!(matches!(
         f.manager.breakpoints("wrong", f.id),
         Err(DapError::SessionAccessDenied { .. })
@@ -283,7 +301,10 @@ async fn wrong_owner_all_breakpoint_apis_emit_zero_traffic() {
             .set_breakpoint(
                 "wrong",
                 f.id,
-                DebugSetBreakpointRequest::new(&f.source, DebugSourceBreakpoint::new(1))
+                DebugSetBreakpointRequest::new(
+                    f.root.join("missing"),
+                    DebugSourceBreakpoint::new(0)
+                )
             )
             .await,
         Err(DapError::SessionAccessDenied { .. })
@@ -303,6 +324,16 @@ async fn wrong_owner_all_breakpoint_apis_emit_zero_traffic() {
             .await
             .is_err()
     );
+    let after = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.breakpoints.snapshot(),
+            data.output.page(None, usize::MAX),
+        )
+    };
+    assert_eq!(after, before);
 }
 
 #[tokio::test]
@@ -403,6 +434,21 @@ async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
     let f = fixture("owner");
     let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
     let mut data = lock(&entry.data);
+    let other = f.root.join("other.rs");
+    data.breakpoints.sources.insert(
+        other.clone(),
+        SourceRecord {
+            original: other.clone(),
+            relative: PathBuf::from("other.rs"),
+            revision: DebugSourceRevision {
+                sha256: [0; 32],
+                byte_len: 0,
+            },
+            generation: 1,
+            synchronization: DebugBreakpointSynchronization::Synchronized,
+            breakpoints: BTreeMap::new(),
+        },
+    );
     data.breakpoints.in_flight = Some(BreakpointTransactionInFlight {
         source: f.source.clone(),
         bounded_events: VecDeque::new(),
@@ -417,6 +463,10 @@ async fn queue_all_events_is_bounded_and_overflow_is_recorded() {
     let transaction = data.breakpoints.in_flight.as_ref().unwrap();
     assert_eq!(transaction.bounded_events.len(), 1);
     assert!(transaction.overflowed);
+    assert_eq!(
+        data.breakpoints.sources[&other].synchronization,
+        DebugBreakpointSynchronization::Indeterminate
+    );
 }
 
 #[tokio::test]

@@ -54,6 +54,38 @@ fn stopped_event_body_is_normalized() {
 }
 
 #[test]
+fn stopped_thread_id_accepts_i32_boundaries_and_rejects_beyond() {
+    for id in [i64::from(i32::MIN), i64::from(i32::MAX)] {
+        assert!(
+            parse_event(Event::new(
+                1,
+                "stopped",
+                Some(json!({"reason":"breakpoint","threadId":id}))
+            ))
+            .is_ok()
+        );
+    }
+    for id in [i64::from(i32::MIN) - 1, i64::from(i32::MAX) + 1] {
+        assert!(matches!(
+            parse_event(Event::new(1, "stopped", Some(json!({"reason":"breakpoint","threadId":id})))),
+            Err(DapError::InvalidMessage(message)) if message.contains("stopped threadId")
+        ));
+    }
+}
+
+#[test]
+fn continued_body_compatibility_and_thread_id_boundaries() {
+    assert!(parse_event(Event::new(1, "continued", None)).is_ok());
+    assert!(parse_event(Event::new(1, "continued", Some(serde_json::Value::Null))).is_ok());
+    for id in [i64::from(i32::MIN), i64::from(i32::MAX)] {
+        assert!(parse_event(Event::new(1, "continued", Some(json!({"threadId":id})))).is_ok());
+    }
+    for id in [i64::from(i32::MIN) - 1, i64::from(i32::MAX) + 1] {
+        assert!(parse_event(Event::new(1, "continued", Some(json!({"threadId":id})))).is_err());
+    }
+}
+
+#[test]
 fn malformed_lifecycle_body_fails_closed() {
     assert!(parse_event(Event::new(1, "stopped", Some(json!({})))).is_err());
     assert!(parse_event(Event::new(1, "continued", Some(json!(1)))).is_err());

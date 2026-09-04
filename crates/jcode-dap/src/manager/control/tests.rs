@@ -236,11 +236,25 @@ async fn pause_and_steps_use_exact_commands_and_response_event_order() {
 async fn stale_revision_and_wrong_owner_emit_zero_control_traffic() {
     let mut f = fixture("owner");
     stop(&mut f, 1, true).await;
+    let entry = f.manager.core.authorized_entry("owner", f.id).unwrap();
+    let before_breakpoints = f.manager.breakpoints("owner", f.id).unwrap();
+    let before = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.output.page(None, usize::MAX),
+        )
+    };
     let current = f.manager.threads("wrong", f.id).await;
     assert!(matches!(current, Err(DapError::SessionAccessDenied { .. })));
     for result in [
         f.manager
-            .continue_execution("wrong", f.id, DebugContinueRequest::default())
+            .continue_execution(
+                "wrong",
+                f.id,
+                DebugContinueRequest::default().with_thread_id(DebugThreadId::new(i32::MIN)),
+            )
             .await,
         f.manager
             .pause("wrong", f.id, DebugPauseRequest::default())
@@ -269,6 +283,19 @@ async fn stale_revision_and_wrong_owner_emit_zero_control_traffic() {
         timeout(Duration::from_millis(20), f.adapter.recv())
             .await
             .is_err()
+    );
+    let after = {
+        let data = lock(&entry.data);
+        (
+            data.state.clone(),
+            data.execution_revision,
+            data.output.page(None, usize::MAX),
+        )
+    };
+    assert_eq!(after, before);
+    assert_eq!(
+        f.manager.breakpoints("owner", f.id).unwrap(),
+        before_breakpoints
     );
 }
 
