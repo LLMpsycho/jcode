@@ -74,6 +74,11 @@ struct TodoInput {
 
 fn parse_todo_input(input: Value) -> Result<TodoInput> {
     let params: TodoInput = serde_json::from_value(normalize_todo_input(input))?;
+    if let Some(criteria) = params.plan.as_ref().and_then(|plan| plan.acceptance_criteria.as_ref())
+        && (criteria.len() > 32 || criteria.iter().any(|criterion| criterion.len() > 1024))
+    {
+        bail!("acceptance_criteria supports at most 32 requirements of 1024 bytes each");
+    }
     if let Some(todo) = params.todos.as_ref().and_then(|todos| {
         todos
             .iter()
@@ -397,6 +402,9 @@ fn merge_plan(stored: &TodoPlan, incoming: Option<TodoPlan>) -> TodoPlan {
     let Some(mut plan) = incoming else {
         return stored.clone();
     };
+    if plan.acceptance_criteria.is_none() {
+        plan.acceptance_criteria = stored.acceptance_criteria.clone();
+    }
     if plan.user_intention.is_none() {
         plan.user_intention = stored.user_intention.clone();
     }
@@ -413,6 +421,9 @@ fn merge_plan(stored: &TodoPlan, incoming: Option<TodoPlan>) -> TodoPlan {
 
 fn plan_change(before: &TodoPlan, after: &TodoPlan) -> Option<TodoPlanChange> {
     let mut fields = Vec::new();
+    if before.acceptance_criteria != after.acceptance_criteria {
+        fields.push(TodoPlanField::AcceptanceCriteria);
+    }
     if before.user_intention != after.user_intention {
         fields.push(TodoPlanField::UserIntention);
     }
@@ -790,6 +801,11 @@ impl Tool for TodoTool {
                     "description": "Plan-level understanding of the request. Send on first write and whenever understanding changes.",
                     "required": ["user_intention", "understands_user_intent"],
                     "properties": {
+                        "acceptance_criteria": {
+                            "type": "array", "maxItems": 32,
+                            "items": {"type": "string", "maxLength": 1024},
+                            "description": "Literal user acceptance requirements, separate from plan steps. Omit to retain; an empty array clears them. These are not verification results."
+                        },
                         "user_intention": {
                             "type": "string",
                             "description": "What the user actually wants: underlying reason and desired end state. Omit later to retain."
@@ -966,7 +982,7 @@ impl Tool for TodoTool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+use super::*;
 
     #[test]
     fn tool_is_named_todo() {
@@ -1410,6 +1426,7 @@ mod tests {
     /// tests observe only closed feedback loop behavior.
     fn aligned_plan() -> TodoPlan {
         TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("understood".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Complete),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Complete],
@@ -1580,6 +1597,7 @@ mod tests {
     #[test]
     fn merge_plan_retains_stored_intent_when_update_omits_fields() {
         let stored = TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("make search feel instant".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Partial),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Partial],
@@ -2085,6 +2103,7 @@ mod tests {
     fn low_intent_is_plan_level_and_independent_of_goals() {
         let todos = vec![open_todo(Some("coverage"))];
         let plan = TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("partially understood".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Partial),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Partial],
@@ -2119,6 +2138,7 @@ mod tests {
     fn severely_low_first_intent_still_nudges_immediately() {
         let todos = vec![open_todo(None)];
         let plan = TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("guessing".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Uncertain),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Uncertain],
@@ -2186,6 +2206,7 @@ mod tests {
     fn both_weak_links_are_recorded_independently() {
         let todos = vec![open_todo(Some("coverage"))];
         let plan = TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("partially understood".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Partial),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Partial],
@@ -2264,6 +2285,7 @@ mod tests {
     #[test]
     fn plan_and_goal_score_histories_are_tool_maintained() {
         let stored = TodoPlan {
+            acceptance_criteria: None,
             user_intention: Some("ship it".to_string()),
             understands_user_intent: Some(crate::todo::IntentUnderstanding::Partial),
             understands_user_intent_history: vec![crate::todo::IntentUnderstanding::Partial],
@@ -2534,3 +2556,7 @@ mod tests {
         assert_eq!(incoming[0].confidence_history, vec![CS::Plausible]);
     }
 }
+
+#[cfg(test)]
+#[path = "todo_advisor_tests.rs"]
+mod advisor_tests;

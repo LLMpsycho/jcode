@@ -116,8 +116,13 @@ impl AdvisorManager {
             Err(_) => "Todo state unavailable.".into(),
         };
         let mut criteria = vec!["Acceptance source: user objective; the following are agent-declared plan/checks, not independently verified outcomes.".to_string()];
-        if let Ok(plan) = crate::todo::load_plan(session) && let Some(intention) = plan.user_intention {
-            push(&mut criteria, format!("Plan intention: {}", clean(&intention)));
+        if let Ok(plan) = crate::todo::load_plan(session) {
+            for criterion in plan.acceptance_criteria.as_deref().unwrap_or_default().iter().take(MAX_ITEMS) {
+                push(&mut criteria, format!("Declared requirement: {}", clean(criterion)));
+            }
+            if let Some(intention) = plan.user_intention {
+                push(&mut criteria, format!("Plan intention: {}", clean(&intention)));
+            }
         }
         if let Ok(goals) = crate::todo::load_goals(session) {
             for goal in goals.iter().take(MAX_ITEMS) {

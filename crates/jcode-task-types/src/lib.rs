@@ -470,6 +470,10 @@ pub struct TodoItem {
 /// faithfully the plan and its feedback loops represent that.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TodoPlan {
+    /// Literal acceptance requirements. Omit to retain, use an empty array to
+    /// clear. Declaring a requirement never marks it verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_criteria: Option<Vec<String>>,
     /// The user's underlying reason and desired outcome for this work, kept
     /// distinct from the agent's steps and validation loops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -499,6 +503,7 @@ pub struct TodoPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TodoPlanField {
+    AcceptanceCriteria,
     UserIntention,
     #[serde(alias = "alignment_score", alias = "user_intention_alignment")]
     UnderstandsUserIntent,
