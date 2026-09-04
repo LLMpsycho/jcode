@@ -706,7 +706,7 @@ impl Agent {
 
         let assign_start = Instant::now();
         let previous_session_id = self.session.id.clone();
-        crate::advisor::advisor_manager().remove(&previous_session_id);
+        crate::advisor::advisor_manager().unload(&previous_session_id);
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;

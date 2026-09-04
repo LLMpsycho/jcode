@@ -920,7 +920,7 @@ impl Agent {
 
     /// Mark this agent session as closed and persist it.
     pub fn mark_closed(&mut self) {
-        crate::advisor::advisor_manager().remove(&self.session.id);
+        crate::advisor::advisor_manager().unload(&self.session.id);
         self.persist_soft_interrupt_snapshot();
         self.session.mark_closed();
         if !self.session.messages.is_empty() {

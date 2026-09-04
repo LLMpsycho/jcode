@@ -5,6 +5,7 @@
 //! delivery. Risky-tool gating and user controls remain separate follow-ups.
 
 mod evidence;
+mod persistence;
 
 use crate::config::{AdvisorConfig, AdvisorMode, AdvisorSeverity};
 use crate::message::{Message, StreamEvent, redact_secrets};
@@ -13,8 +14,8 @@ use crate::provider::Provider;
 use futures::StreamExt;
 use jcode_agent_runtime::{SoftInterruptMessage, SoftInterruptQueue, SoftInterruptSource};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque, hash_map::DefaultHasher};
-use std::hash::{Hash, Hasher};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -195,13 +196,8 @@ impl AdvisorNote {
         text
     }
 
-    fn dedupe_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.severity.hash(&mut hasher);
-        self.summary.hash(&mut hasher);
-        self.recommended_action.hash(&mut hasher);
-        self.evidence.hash(&mut hasher);
-        hasher.finish()
+    fn dedupe_fingerprint(&self) -> String {
+        persistence::note_fingerprint(self)
     }
 }
 
@@ -259,23 +255,101 @@ struct AdvisorRuntime {
     status: AdvisorStatus,
     private_context: Vec<AdvisorTurnInput>,
     notes_emitted: usize,
-    last_note_hash: Option<u64>,
+    last_note_fingerprint: Option<String>,
     last_error: Option<String>,
     active_review_id: u64,
     pending: Option<PendingReview>,
     enabled_override: Option<bool>,
     notes: VecDeque<AdvisorNoteMetadata>,
+    next_note_ordinal: u64,
 }
 
-#[derive(Default)]
 pub struct AdvisorManager {
     sessions: Mutex<HashMap<String, AdvisorRuntime>>,
+    loaded_sessions: Mutex<HashSet<String>>,
     next_review_id: AtomicU64,
-    next_note_id: AtomicU64,
+    persistence_root: Option<PathBuf>,
+}
+
+impl Default for AdvisorManager {
+    fn default() -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            loaded_sessions: Mutex::new(HashSet::new()),
+            next_review_id: AtomicU64::new(0),
+            persistence_root: None,
+        }
+    }
 }
 
 impl AdvisorManager {
+    fn persistent() -> Self {
+        Self {
+            persistence_root: Some(crate::storage::durable_state_dir().join("advisor")),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    fn persistent_at(root: PathBuf) -> Self {
+        Self {
+            persistence_root: Some(root),
+            ..Self::default()
+        }
+    }
+
+    fn ensure_loaded(&self, owner_session_id: &str) {
+        let Some(root) = self.persistence_root.as_deref() else {
+            return;
+        };
+        let Ok(mut loaded_sessions) = self.loaded_sessions.lock() else {
+            return;
+        };
+        if loaded_sessions.contains(owner_session_id) {
+            return;
+        }
+
+        match persistence::load(root, owner_session_id) {
+            Ok(Some(runtime)) => {
+                if let Ok(mut sessions) = self.sessions.lock() {
+                    sessions
+                        .entry(owner_session_id.to_string())
+                        .or_insert(runtime);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                let error = truncate_utf8(redact_secrets(&error.to_string()), 1000);
+                crate::logging::warn(&format!(
+                    "ADVISOR_STATE_LOAD_FAILED session={owner_session_id}: {error}"
+                ));
+            }
+        }
+        loaded_sessions.insert(owner_session_id.to_string());
+    }
+
+    fn persist_runtime(&self, owner_session_id: &str) {
+        let Some(root) = self.persistence_root.as_deref() else {
+            return;
+        };
+        let state = {
+            let Ok(sessions) = self.sessions.lock() else {
+                return;
+            };
+            let Some(runtime) = sessions.get(owner_session_id) else {
+                return;
+            };
+            persistence::capture(owner_session_id, runtime)
+        };
+        if let Err(error) = persistence::save(root, owner_session_id, &state) {
+            let error = truncate_utf8(redact_secrets(&error.to_string()), 1000);
+            crate::logging::warn(&format!(
+                "ADVISOR_STATE_SAVE_FAILED session={owner_session_id}: {error}"
+            ));
+        }
+    }
     pub fn snapshot(&self, owner_session_id: &str) -> Option<AdvisorRuntimeSnapshot> {
+        self.ensure_loaded(owner_session_id);
         let sessions = self.sessions.lock().ok()?;
         let runtime = sessions.get(owner_session_id)?;
         Some(AdvisorRuntimeSnapshot {
@@ -297,6 +371,7 @@ impl AdvisorManager {
     }
 
     pub fn notes(&self, owner_session_id: &str) -> Vec<AdvisorNoteMetadata> {
+        self.ensure_loaded(owner_session_id);
         self.sessions
             .lock()
             .ok()
@@ -309,7 +384,8 @@ impl AdvisorManager {
     }
 
     pub fn set_enabled(&self, owner_session_id: &str, enabled: bool) {
-        if let Ok(mut sessions) = self.sessions.lock() {
+        self.ensure_loaded(owner_session_id);
+        let changed = if let Ok(mut sessions) = self.sessions.lock() {
             let runtime = sessions.entry(owner_session_id.to_string()).or_default();
             runtime.enabled_override = Some(enabled);
             if !enabled {
@@ -320,10 +396,17 @@ impl AdvisorManager {
                     .fetch_add(1, AtomicOrdering::Relaxed)
                     .saturating_add(1);
             }
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.persist_runtime(owner_session_id);
         }
     }
 
     pub fn is_enabled(&self, owner_session_id: &str, configured_default: bool) -> bool {
+        self.ensure_loaded(owner_session_id);
         self.sessions
             .lock()
             .ok()
@@ -341,17 +424,24 @@ impl AdvisorManager {
         id: &str,
         disposition: AdvisorNoteDisposition,
     ) -> bool {
-        let Ok(mut sessions) = self.sessions.lock() else {
-            return false;
+        self.ensure_loaded(owner_session_id);
+        let resolved = {
+            let Ok(mut sessions) = self.sessions.lock() else {
+                return false;
+            };
+            let Some(note) = sessions
+                .get_mut(owner_session_id)
+                .and_then(|runtime| runtime.notes.iter_mut().find(|note| note.id == id))
+            else {
+                return false;
+            };
+            note.disposition = disposition;
+            true
         };
-        let Some(note) = sessions
-            .get_mut(owner_session_id)
-            .and_then(|runtime| runtime.notes.iter_mut().find(|note| note.id == id))
-        else {
-            return false;
-        };
-        note.disposition = disposition;
-        true
+        if resolved {
+            self.persist_runtime(owner_session_id);
+        }
+        resolved
     }
 
     pub fn blocks_tool_call(
@@ -360,6 +450,7 @@ impl AdvisorManager {
         tool_name: &str,
         input: &serde_json::Value,
     ) -> Option<String> {
+        self.ensure_loaded(owner_session_id);
         if !is_risky_tool_call(tool_name, input) {
             return None;
         }
@@ -378,9 +469,29 @@ impl AdvisorManager {
             .map(|note| format!("advisor blocked future risky tool `{tool_name}` until note {} is acknowledged, dismissed, or advisor is disabled", note.id))
     }
 
-    pub fn remove(&self, owner_session_id: &str) {
-        if let Ok(mut sessions) = self.sessions.lock() {
+    /// Unload a session runtime without deleting its restart-resumable state.
+    pub fn unload(&self, owner_session_id: &str) {
+        if let Ok(mut loaded_sessions) = self.loaded_sessions.lock() {
+            loaded_sessions.remove(owner_session_id);
+            if let Ok(mut sessions) = self.sessions.lock() {
+                sessions.remove(owner_session_id);
+            }
+        } else if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(owner_session_id);
+        }
+    }
+
+    /// Reset advisor state because the owning transcript history changed.
+    pub fn remove(&self, owner_session_id: &str) {
+        self.unload(owner_session_id);
+        let Some(root) = self.persistence_root.as_deref() else {
+            return;
+        };
+        if let Err(error) = persistence::delete(root, owner_session_id) {
+            let error = truncate_utf8(redact_secrets(&error.to_string()), 1000);
+            crate::logging::warn(&format!(
+                "ADVISOR_STATE_DELETE_FAILED session={owner_session_id}: {error}"
+            ));
         }
     }
 
@@ -395,10 +506,11 @@ impl AdvisorManager {
         if config.max_notes_per_turn == 0 || config.max_reviews_per_session == 0 {
             return false;
         }
+        self.ensure_loaded(&owner_session_id);
+
         let configured_enabled = config.enabled;
         let cadence = config.review_every_n_turns.max(1) as u64;
         let max_reviews_per_session = config.max_reviews_per_session as u64;
-
         let input = input.bounded(config.redact);
         let pending = PendingReview {
             provider,
@@ -406,11 +518,20 @@ impl AdvisorManager {
             input,
             config,
         };
-        let review_id = self
-            .next_review_id
-            .fetch_add(1, AtomicOrdering::Relaxed)
-            .saturating_add(1);
-        {
+
+        enum ScheduleDecision {
+            Skipped,
+            Queued,
+            Start {
+                review_id: u64,
+                provider: Arc<dyn Provider>,
+                queue: SoftInterruptQueue,
+                input: AdvisorTurnInput,
+                config: AdvisorConfig,
+            },
+        }
+
+        let decision = {
             let Ok(mut sessions) = self.sessions.lock() else {
                 return false;
             };
@@ -426,31 +547,57 @@ impl AdvisorManager {
             if (runtime.turns_observed - 1) % cadence != 0
                 || runtime.cursor >= max_reviews_per_session
             {
-                return false;
-            }
-            if runtime.status == AdvisorStatus::Reviewing {
+                ScheduleDecision::Skipped
+            } else if runtime.status == AdvisorStatus::Reviewing {
                 runtime.pending = Some(pending);
-                return true;
+                ScheduleDecision::Queued
+            } else {
+                let PendingReview {
+                    provider,
+                    queue,
+                    input,
+                    config,
+                } = pending;
+                let review_id = self
+                    .next_review_id
+                    .fetch_add(1, AtomicOrdering::Relaxed)
+                    .saturating_add(1);
+                runtime.cursor = runtime.cursor.saturating_add(1);
+                runtime.status = AdvisorStatus::Reviewing;
+                runtime.notes_emitted = 0;
+                runtime.last_error = None;
+                runtime.active_review_id = review_id;
+                runtime.private_context.push(input.clone());
+                if runtime.private_context.len() > MAX_PRIVATE_CONTEXT {
+                    runtime.private_context.remove(0);
+                }
+                ScheduleDecision::Start {
+                    review_id,
+                    provider,
+                    queue,
+                    input,
+                    config,
+                }
             }
-            let PendingReview {
+        };
+        // Persist the turn/cursor before dispatch. A process crash can lose an
+        // in-flight review, but it cannot replay it or retain its private input.
+        self.persist_runtime(&owner_session_id);
+
+        match decision {
+            ScheduleDecision::Skipped => false,
+            ScheduleDecision::Queued => true,
+            ScheduleDecision::Start {
+                review_id,
                 provider,
                 queue,
                 input,
                 config,
-            } = pending;
-            runtime.cursor = runtime.cursor.saturating_add(1);
-            runtime.status = AdvisorStatus::Reviewing;
-            runtime.notes_emitted = 0;
-            runtime.last_error = None;
-            runtime.active_review_id = review_id;
-            runtime.private_context.push(input.clone());
-            if runtime.private_context.len() > MAX_PRIVATE_CONTEXT {
-                runtime.private_context.remove(0);
+            } => {
+                self.spawn_review(owner_session_id, review_id, provider, queue, input, config);
+                true
             }
-            drop(sessions);
-            self.spawn_review(owner_session_id, review_id, provider, queue, input, config);
         }
-        true
     }
 
     fn spawn_review(
@@ -507,6 +654,7 @@ impl AdvisorManager {
             }
             (review_id, pending)
         };
+        self.persist_runtime(&owner_session_id);
         self.spawn_review(
             owner_session_id,
             next.0,
@@ -634,7 +782,7 @@ impl AdvisorManager {
             }
         };
         let note = note.bounded(&config);
-        let note_hash = note.dedupe_hash();
+        let note_fingerprint = note.dedupe_fingerprint();
         let should_deliver = {
             let Ok(mut sessions) = self.sessions.lock() else {
                 return;
@@ -646,19 +794,17 @@ impl AdvisorManager {
                 return;
             }
             runtime.status = AdvisorStatus::Ready;
-            if runtime.last_note_hash == Some(note_hash)
+            if runtime.last_note_fingerprint.as_deref() == Some(note_fingerprint.as_str())
                 || runtime.notes_emitted >= config.max_notes_per_turn
             {
                 false
             } else {
-                runtime.last_note_hash = Some(note_hash);
+                runtime.last_note_fingerprint = Some(note_fingerprint);
                 runtime.notes_emitted += 1;
-                let note_id = self
-                    .next_note_id
-                    .fetch_add(1, AtomicOrdering::Relaxed)
-                    .saturating_add(1);
+                runtime.next_note_ordinal = runtime.next_note_ordinal.saturating_add(1);
+                let note_id = persistence::note_id(&owner_session_id, runtime.next_note_ordinal);
                 runtime.notes.push_back(AdvisorNoteMetadata {
-                    id: format!("adv-{note_id:016x}"),
+                    id: note_id,
                     severity: note.severity,
                     summary: redact_secrets(&note.summary),
                     evidence: note
@@ -676,6 +822,7 @@ impl AdvisorManager {
                 true
             }
         };
+        self.persist_runtime(&owner_session_id);
 
         if should_deliver && let Ok(mut pending) = queue.lock() {
             pending.push(SoftInterruptMessage {
@@ -695,13 +842,19 @@ impl AdvisorManager {
         crate::logging::warn(&format!(
             "ADVISOR_FAILURE session={owner_session_id}: {error}"
         ));
-        if let Ok(mut sessions) = self.sessions.lock()
+        let changed = if let Ok(mut sessions) = self.sessions.lock()
             && let Some(runtime) = sessions.get_mut(owner_session_id)
             && runtime.active_review_id == review_id
             && runtime.status == AdvisorStatus::Reviewing
         {
             runtime.status = AdvisorStatus::Failed;
             runtime.last_error = Some(truncate_utf8(error, 1000));
+            true
+        } else {
+            false
+        };
+        if changed {
+            self.persist_runtime(owner_session_id);
         }
     }
 }
@@ -719,7 +872,7 @@ fn truncate_utf8(mut value: String, limit: usize) -> String {
 }
 
 static ADVISOR_MANAGER: LazyLock<Arc<AdvisorManager>> =
-    LazyLock::new(|| Arc::new(AdvisorManager::default()));
+    LazyLock::new(|| Arc::new(AdvisorManager::persistent()));
 
 pub fn advisor_manager() -> Arc<AdvisorManager> {
     Arc::clone(&ADVISOR_MANAGER)
@@ -1601,5 +1754,81 @@ mod tests {
         assert!(!manager.is_enabled("disable-in-flight", true));
         assert!(manager.notes("disable-in-flight").is_empty());
         assert!(queue.lock().expect("queue").is_empty());
+    }
+
+    #[tokio::test]
+    async fn redacted_notes_controls_and_cursors_resume_without_private_context() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("advisor-state");
+        let session_id = "restart-resume";
+        let manager = Arc::new(AdvisorManager::persistent_at(root.clone()));
+        manager.set_enabled(session_id, true);
+        assert!(manager.schedule_turn(
+            session_id.to_string(),
+            Arc::new(AdvisorProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+                response: r#"{"severity":"blocker","summary":"OPENAI_API_KEY=sk-test-openai-example","evidence":["private evidence"],"recommended_action":"acknowledge it","blocking":true}"#.to_string(),
+            }),
+            Arc::new(Mutex::new(Vec::new())),
+            AdvisorTurnInput {
+                objective: "private-objective-must-not-persist".to_string(),
+                ..AdvisorTurnInput::default()
+            },
+            AdvisorConfig {
+                enabled: false,
+                redact: false,
+                ..AdvisorConfig::default()
+            },
+        ));
+        wait_for_status(&manager, session_id, AdvisorStatus::Ready).await;
+        let note = manager.notes(session_id).pop().expect("advisor note");
+        assert!(manager.resolve_note(session_id, &note.id, AdvisorNoteDisposition::Acknowledged,));
+        manager.unload(session_id);
+
+        let state_path = persistence::state_path(&root, session_id);
+        let encoded = std::fs::read_to_string(&state_path).expect("persisted advisor state");
+        assert!(!encoded.contains("private-objective-must-not-persist"));
+        assert!(!encoded.contains("sk-test-openai-example"));
+        assert!(!encoded.contains(session_id));
+
+        let restored = AdvisorManager::persistent_at(root.clone());
+        let snapshot = restored.snapshot(session_id).expect("restored snapshot");
+        assert_eq!(snapshot.turns_observed, 1);
+        assert_eq!(snapshot.cursor, 1);
+        assert_eq!(snapshot.private_context_len, 0);
+        assert_eq!(snapshot.unresolved_blocking_notes, 0);
+        assert!(restored.is_enabled(session_id, false));
+        let restored_note = restored.notes(session_id).pop().expect("restored note");
+        assert_eq!(restored_note.id, note.id);
+        assert_eq!(
+            restored_note.disposition,
+            AdvisorNoteDisposition::Acknowledged
+        );
+        assert!(restored_note.summary.contains("[REDACTED_SECRET]"));
+
+        restored.set_enabled(session_id, false);
+        restored.unload(session_id);
+        let after_second_restart = AdvisorManager::persistent_at(root);
+        assert!(!after_second_restart.is_enabled(session_id, true));
+    }
+
+    #[test]
+    fn transcript_reset_deletes_durable_advisor_state() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("advisor-state");
+        let session_id = "history-reset";
+        let manager = AdvisorManager::persistent_at(root.clone());
+        manager.set_enabled(session_id, true);
+        let state_path = persistence::state_path(&root, session_id);
+        assert!(state_path.exists());
+
+        manager.remove(session_id);
+        assert!(!state_path.exists());
+        assert!(!state_path.with_extension("bak").exists());
+        assert!(
+            AdvisorManager::persistent_at(root)
+                .snapshot(session_id)
+                .is_none()
+        );
     }
 }
