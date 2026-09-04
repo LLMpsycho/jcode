@@ -264,7 +264,8 @@ async fn control_owned(
                 | DebugControlOperation::StepOut
         )
     {
-        debug_assert!(entry.advance_execution(&mut data));
+        let advanced = entry.advance_execution(&mut data);
+        debug_assert!(advanced);
         data.state = DebugSessionState::Running;
         notify(&entry, &mut data);
     }
