@@ -127,6 +127,56 @@ fn adapter_path(
         .ok_or_else(|| anyhow!("DAP adapter command not found on PATH: {command}"))
 }
 
+fn configured_adapter(
+    adapters: &BTreeMap<String, jcode_dap::DapAdapterConfig>,
+    adapter_id: &str,
+) -> Result<DebugAdapterConfig> {
+    let configured = adapters
+        .get(adapter_id)
+        .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
+    let path = adapter_path(adapters, adapter_id)?;
+    match configured.kind {
+        jcode_dap::DapAdapterKind::LldbDap => DebugAdapterConfig::lldb_dap(path),
+        jcode_dap::DapAdapterKind::GdbDap => DebugAdapterConfig::gdb_dap(path),
+    }
+    .map_err(Into::into)
+}
+
+fn select_adapter(
+    adapters: &BTreeMap<String, jcode_dap::DapAdapterConfig>,
+    requested: Option<&str>,
+) -> Result<DebugAdapterConfig> {
+    if let Some(adapter_id) = requested {
+        return configured_adapter(adapters, adapter_id).with_context(|| {
+            format!(
+                "configured DAP adapter '{adapter_id}' is unavailable; install it or correct dap.adapters.{adapter_id}.command"
+            )
+        });
+    }
+
+    let mut first_failure = None;
+    if adapters.contains_key("lldb-dap") {
+        match configured_adapter(adapters, "lldb-dap") {
+            Ok(adapter) => return Ok(adapter),
+            Err(error) => first_failure = Some(error),
+        }
+    }
+    for adapter_id in adapters.keys().filter(|id| id.as_str() != "lldb-dap") {
+        match configured_adapter(adapters, adapter_id) {
+            Ok(adapter) => return Ok(adapter),
+            Err(error) => {
+                first_failure.get_or_insert(error);
+            }
+        }
+    }
+    let detail = first_failure
+        .map(|error| format!(": {error}"))
+        .unwrap_or_else(String::new);
+    bail!(
+        "no configured DAP adapter is available{detail}; install one or correct its dap.adapters.<id>.command"
+    )
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Input {
@@ -225,17 +275,7 @@ impl DapTool {
                     .program
                     .as_deref()
                     .ok_or_else(|| anyhow!("program is required"))?;
-                let adapter_id = p.adapter.as_deref().unwrap_or("lldb-dap");
-                let configured = self
-                    .service
-                    .adapters
-                    .get(adapter_id)
-                    .ok_or_else(|| anyhow!("unknown DAP adapter id: {adapter_id}"))?;
-                let path = adapter_path(self.service.adapters.as_ref(), adapter_id)?;
-                let adapter = match configured.kind {
-                    jcode_dap::DapAdapterKind::LldbDap => DebugAdapterConfig::lldb_dap(path),
-                    jcode_dap::DapAdapterKind::GdbDap => DebugAdapterConfig::gdb_dap(path),
-                }?;
+                let adapter = select_adapter(self.service.adapters.as_ref(), p.adapter.as_deref())?;
                 let snapshot = if p.action == "launch" {
                     let mut r = DebugLaunchRequest::new(program)
                         .with_args(p.args.clone())

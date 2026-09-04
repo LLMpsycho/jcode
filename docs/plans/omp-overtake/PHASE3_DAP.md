@@ -13,7 +13,7 @@ Finished work:
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
 - 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
-- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair.
+- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair. Omitted adapter requests select only validated available configured profiles, while explicit unavailable selection fails without fallback.
 - Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
@@ -43,6 +43,7 @@ The remaining items are non-MVP follow-ups listed at the end of this document. T
 - Output retention is bounded by event count and UTF-8 bytes, keeps the newest UTF-8-safe tail, advances monotonic cursors through eviction, and reports ring eviction separately from oversized source loss.
 - Supervisor tasks hold weak manager references, so dropping the final manager synchronously closes transports and leaves process Drop only as the forced-cleanup backstop.
 - Built-in validated `lldb-dap` and native GDB DAP profiles launch only canonical workspace-contained executable files with literal arguments and no shell, environment override, discovery, download, or network behavior. GDB receives only the fixed `--interpreter=dap` adapter argument.
+- Adapter omission checks the configured `lldb-dap` profile first and then configured IDs in deterministic order, selecting only a command that resolves to a validated executable. Explicit adapter selection never falls back when unavailable.
 - Owned attach spawns and retains the target child internally, authorizes only the owned adapter PID with Linux `PR_SET_PTRACER`, and never accepts a caller-supplied PID.
 - Startup uses one checked Tokio deadline across adapter spawn, initialize, launch or attach, initialized, configurationDone, and the start response. Adapter and target ownership enter the cancellation-safe reservation before protocol awaits.
 - Finalization asks the live adapter to disconnect within a bound, closes transport, then cleans the owned target and adapter process groups locally. Windows launch and attach fail closed before reservation or spawn.

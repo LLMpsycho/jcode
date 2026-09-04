@@ -22,6 +22,8 @@ The adapter command must already exist and be executable. Relative commands are 
 
 The supported explicit adapter kinds are `lldb-dap` and GDB's native `gdb-dap` mode. Jcode starts GDB with the fixed `--interpreter=dap` argument. Program and working-directory values are resolved under the `ToolContext` workspace, and user-provided launch arguments are passed literally without a shell. Adapter environment overrides and adapter command arguments are not exposed.
 
+When a DAP tool request omits `adapter`, Jcode selects only from configured adapters whose command currently resolves to a validated executable. It preserves the historical `lldb-dap` preference, then checks the remaining configured IDs in deterministic order. An explicitly requested unavailable adapter never falls back to another profile and returns configuration guidance instead.
+
 ## Evaluation requires two opt-ins
 
 Setting `allow_evaluate = true` only makes the action eligible. Each `evaluate` call must also include its explicit execution acknowledgement. This double opt-in exists because an expression can call functions or otherwise mutate the debuggee.

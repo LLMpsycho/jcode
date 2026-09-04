@@ -1,4 +1,103 @@
 use super::*;
+
+fn missing_adapter_command() -> String {
+    #[cfg(windows)]
+    {
+        r"C:\jcode-definitely-missing\adapter.exe".to_owned()
+    }
+    #[cfg(not(windows))]
+    {
+        "/jcode-definitely-missing/adapter".to_owned()
+    }
+}
+
+fn adapter(kind: jcode_dap::DapAdapterKind, command: String) -> jcode_dap::DapAdapterConfig {
+    jcode_dap::DapAdapterConfig { kind, command }
+}
+
+#[test]
+fn omitted_adapter_selects_the_first_available_configured_profile() {
+    let adapters = BTreeMap::from([
+        (
+            "lldb-dap".to_owned(),
+            adapter(
+                jcode_dap::DapAdapterKind::LldbDap,
+                missing_adapter_command(),
+            ),
+        ),
+        (
+            "gdb".to_owned(),
+            adapter(
+                jcode_dap::DapAdapterKind::GdbDap,
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ),
+    ]);
+
+    let selected = select_adapter(&adapters, None).unwrap();
+    assert_eq!(selected.kind(), jcode_dap::DebugAdapterKind::GdbDap);
+}
+
+#[test]
+fn omitted_adapter_preserves_the_lldb_compatibility_preference() {
+    let command = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let adapters = BTreeMap::from([
+        (
+            "a-gdb".to_owned(),
+            adapter(jcode_dap::DapAdapterKind::GdbDap, command.clone()),
+        ),
+        (
+            "lldb-dap".to_owned(),
+            adapter(jcode_dap::DapAdapterKind::LldbDap, command),
+        ),
+    ]);
+
+    let selected = select_adapter(&adapters, None).unwrap();
+    assert_eq!(selected.kind(), jcode_dap::DebugAdapterKind::LldbDap);
+}
+
+#[test]
+fn omitted_adapter_reports_guidance_when_none_are_configured() {
+    let error = select_adapter(&BTreeMap::new(), None).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("no configured DAP adapter is available")
+    );
+}
+
+#[test]
+fn explicit_unavailable_adapter_never_falls_back() {
+    let adapters = BTreeMap::from([
+        (
+            "lldb-dap".to_owned(),
+            adapter(
+                jcode_dap::DapAdapterKind::LldbDap,
+                missing_adapter_command(),
+            ),
+        ),
+        (
+            "gdb".to_owned(),
+            adapter(
+                jcode_dap::DapAdapterKind::GdbDap,
+                std::env::current_exe()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        ),
+    ]);
+
+    let error = select_adapter(&adapters, Some("lldb-dap")).unwrap_err();
+    assert!(error.to_string().contains("'lldb-dap' is unavailable"));
+}
+
 #[test]
 fn broker_tokens_are_opaque_owner_bound_and_cleaned() {
     let mut b = TokenBroker::new(8);

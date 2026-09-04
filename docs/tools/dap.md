@@ -33,6 +33,8 @@ The tool exposes 18 actions:
 
 Unsupported adapter capabilities produce structured errors rather than raw DAP fallbacks. There is deliberately no `request` action.
 
+The `adapter` field is optional for `launch` and `attach`. If omitted, Jcode chooses the first available configured profile, preferring `lldb-dap` for compatibility. If supplied, that exact configured adapter must be available and Jcode does not fall back to another debugger.
+
 When `step_in_targets` returns one or more opaque target tokens, pass one as
 `target` to `step_in`. Target tokens are scoped to the owner, debug session,
 stack frame, and current execution revision. They expire as soon as execution

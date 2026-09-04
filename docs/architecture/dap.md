@@ -18,6 +18,8 @@ A manager permits one active root debug tree per owner and applies a global sess
 
 The explicit adapter profiles are `kind = "lldb-dap"` and native `kind = "gdb-dap"`. Jcode starts a configured adapter executable with no shell, and the GDB profile adds only the fixed `--interpreter=dap` argument. Programs, working directories, and breakpoint sources must resolve to canonical regular files inside the current workspace.
 
+Omitted adapter selection is availability-gated and deterministic across the configured profiles. Explicit selection is fail-closed, so an unavailable requested adapter cannot silently switch debugger implementations.
+
 `attach` is owned attach, not arbitrary process attachment. Jcode starts the target itself, retains its process identity, and passes only that owned PID to the adapter. The tool schema has no PID input.
 
 Adapter and target processes run in owned process groups with a controlled environment. Jcode does not discover or download adapters, execute raw DAP requests, persist debug sessions, or provide an interactive adapter terminal.
