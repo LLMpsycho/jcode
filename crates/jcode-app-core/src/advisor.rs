@@ -4,6 +4,7 @@
 //! enforcement. Provider context and in-flight reviews are never persisted.
 
 mod persistence;
+mod routing;
 
 use crate::config::{AdvisorConfig, AdvisorMode, AdvisorSeverity};
 use crate::message::{Message, StreamEvent, redact_secrets};
@@ -581,14 +582,8 @@ impl AdvisorManager {
         input: AdvisorTurnInput,
         config: AdvisorConfig,
     ) {
-        if let Some(model) = config.model.as_deref()
-            && let Err(error) = provider.set_model(model)
-        {
-            self.fail(
-                &owner_session_id,
-                review_id,
-                format!("advisor model selection failed: {error}"),
-            );
+        if let Err(error) = routing::apply(provider.as_ref(), &config) {
+            self.fail(&owner_session_id, review_id, format!("advisor model selection failed: {error}"));
             return;
         }
 
