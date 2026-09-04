@@ -2,7 +2,7 @@ name: Advisor acceptance
 
 on:
   push:
-    branches: [feat/phase4-advisor-completion]
+    branches: [feat/phase4-advisor-completion-codex-20260904]
   pull_request:
     branches: [master]
     paths:
@@ -31,10 +31,21 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Formatting
         id: formatting
         continue-on-error: true
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all
+          git diff --binary > "$RUNNER_TEMP/advisor-format.patch"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: steps.formatting.outcome == 'failure'
+        with:
+          name: advisor-format-patch
+          path: ${{ runner.temp }}/advisor-format.patch
+          retention-days: 1
       - name: Advisor runtime and capability regressions
         run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor
       - name: Advisor configuration
