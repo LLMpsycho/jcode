@@ -139,6 +139,7 @@ async fn expression_and_canonical_source_path_limits_accept_boundary_and_reject_
             crate::session::next_manager_id().unwrap()
         ));
         std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
         let source = root.join("source.rs");
         std::fs::write(&source, b"x").unwrap();
         let canonical = source.canonicalize().unwrap();
