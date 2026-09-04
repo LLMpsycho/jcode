@@ -8,7 +8,9 @@ use super::*;
 use crate::testing::FakeAdapter;
 use crate::{DebugSessionManagerConfig, DebugSourceBreakpoint, Message, StoppedState};
 
+mod deadline_contract;
 mod event_contract;
+mod limits_contract;
 mod preflight_contract;
 mod reconciliation_contract;
 mod transaction_contract;

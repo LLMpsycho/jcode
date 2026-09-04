@@ -131,6 +131,28 @@ async fn malformed_thread_matrix_fails_without_partial_cache_and_recovers() {
 }
 
 #[tokio::test]
+async fn thread_count_and_name_limits_accept_boundary_and_reject_plus_one_without_partial_state() {
+    let mut f = fixture(2, 4);
+    let accepted = threads_round_trip(
+        &mut f,
+        json!({"threads":[{"id":1,"name":"1234"},{"id":2,"name":"éé"}]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted.threads.len(), 2);
+    for invalid in [
+        json!({"threads":[{"id":1,"name":"a"},{"id":2,"name":"b"},{"id":3,"name":"c"}]}),
+        json!({"threads":[{"id":1,"name":"12345"}]}),
+    ] {
+        assert!(threads_round_trip(&mut f, invalid).await.is_err());
+    }
+    let recovered = threads_round_trip(&mut f, json!({"threads":[{"id":9,"name":"okay"}]}))
+        .await
+        .unwrap();
+    assert_eq!(recovered.threads.len(), 1);
+}
+
+#[tokio::test]
 async fn missing_focus_single_thread_selects_but_multiple_threads_are_ambiguous_without_control() {
     for (threads, should_continue) in [
         (json!([{"id":4,"name":"only"}]), true),

@@ -158,6 +158,70 @@ async fn explicit_adapter_rejection_preserves_synchronized_registry_and_retry_su
 }
 
 #[tokio::test]
+async fn two_source_adapter_id_collision_rejects_and_id_only_events_mutate_neither_source() {
+    let mut f = fixture("owner");
+    set_one(&mut f, 1, 21).await;
+    let second = f.root.join("second.rs");
+    std::fs::write(&second, b"fn second() {}\n").unwrap();
+    let manager = f.manager.clone();
+    let id = f.id;
+    let task = tokio::spawn(async move {
+        manager
+            .set_breakpoint(
+                "owner",
+                id,
+                DebugSetBreakpointRequest::new(second, DebugSourceBreakpoint::new(1)),
+            )
+            .await
+    });
+    let request = request(&mut f.adapter).await;
+    f.adapter
+        .respond_ok(
+            &request,
+            Some(json!({"breakpoints":[{"id":21,"verified":true}]})),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        task.await.unwrap(),
+        Err(DapError::InvalidSetBreakpointsResponse { .. })
+    ));
+    let before = f.manager.breakpoints("owner", f.id).unwrap();
+    f.adapter
+        .event(
+            "breakpoint",
+            Some(json!({"reason":"changed","breakpoint":{"id":21,"verified":false}})),
+        )
+        .await
+        .unwrap();
+    f.adapter
+        .event(
+            "breakpoint",
+            Some(json!({"reason":"removed","breakpoint":{"id":21}})),
+        )
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if f.manager
+                .breakpoints("owner", f.id)
+                .unwrap()
+                .unmatched_adapter_events
+                == before.unmatched_adapter_events + 2
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = f.manager.breakpoints("owner", f.id).unwrap();
+    assert_eq!(after.sources, before.sources);
+    assert_eq!(after.total_breakpoints, before.total_breakpoints);
+}
+
+#[tokio::test]
 async fn malformed_success_marks_indeterminate_and_next_mutation_resets_without_source_modified() {
     let mut f = fixture("owner");
     let malformed = {

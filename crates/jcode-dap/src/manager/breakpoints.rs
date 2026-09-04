@@ -336,6 +336,25 @@ async fn transact(
             }
         }
     }
+    #[cfg(test)]
+    let _predispatch = match tokio::time::timeout_at(
+        deadline,
+        Arc::clone(&entry.breakpoint_test_gates.0).acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            clear_transaction(&entry, &operations);
+            return Err(DapError::TransportClosed);
+        }
+        Err(_) => {
+            clear_transaction(&entry, &operations);
+            return Err(DapError::RequestTimeout {
+                command: "source revision".to_owned(),
+            });
+        }
+    };
     let before = match resolve_source(
         &entry.workspace,
         &entry,
@@ -369,6 +388,25 @@ async fn transact(
                 finish_ambiguous(&entry, &source, &desired, &operations);
             }
             return Err(error);
+        }
+    };
+    #[cfg(test)]
+    let _response_validation = match tokio::time::timeout_at(
+        deadline,
+        Arc::clone(&entry.breakpoint_test_gates.1).acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            clear_transaction(&entry, &operations);
+            return Err(DapError::TransportClosed);
+        }
+        Err(_) => {
+            finish_ambiguous(&entry, &source, &desired, &operations);
+            return Err(DapError::RequestTimeout {
+                command: "setBreakpoints response validation".to_owned(),
+            });
         }
     };
     let parsed = match parse_breakpoints_response(

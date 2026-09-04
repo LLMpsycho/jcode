@@ -432,6 +432,59 @@ async fn expected_revision_mismatch_and_unsupported_granularity_emit_zero_contro
 }
 
 #[tokio::test]
+async fn stepping_granularity_capability_requires_exact_boolean_true() {
+    for unsupported in [
+        None,
+        Some(Value::Null),
+        Some(json!(false)),
+        Some(json!("true")),
+        Some(json!(1)),
+        Some(json!({})),
+        Some(json!([])),
+    ] {
+        let mut f = fixture(200, false, unsupported);
+        stop(&mut f, Some(1), true).await;
+        assert!(matches!(
+            f.manager
+                .step_over(
+                    "owner",
+                    f.id,
+                    DebugStepRequest::default().with_granularity(DebugSteppingGranularity::Line),
+                )
+                .await,
+            Err(DapError::UnsupportedDapCapability { .. })
+        ));
+        assert!(
+            timeout(Duration::from_millis(20), f.adapter.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    let mut f = fixture(200, false, Some(json!(true)));
+    stop(&mut f, Some(1), true).await;
+    let manager = f.manager.clone();
+    let id = f.id;
+    let task = tokio::spawn(async move {
+        manager
+            .step_over(
+                "owner",
+                id,
+                DebugStepRequest::default().with_granularity(DebugSteppingGranularity::Line),
+            )
+            .await
+    });
+    let request = recv(&mut f.adapter).await;
+    assert_eq!(request.command, "next");
+    assert_eq!(
+        request.arguments,
+        Some(json!({"threadId":1,"granularity":"line"}))
+    );
+    f.adapter.respond_ok(&request, None).await.unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn continue_and_step_timeouts_leave_running_and_later_stop_recovers() {
     for operation in [
         DebugControlOperation::Continue,

@@ -174,6 +174,54 @@ async fn expected_source_revision_mismatch_fails_before_traffic() {
 }
 
 #[tokio::test]
+async fn source_byte_limit_boundary_accepts_and_boundary_plus_one_rejects_without_partial_state() {
+    const SOURCE_LEN: u64 = b"fn main() {\r\n println!(\"hi\");\r\n}\r\n".len() as u64;
+    let mut f = fixture_with_operations(
+        "owner",
+        DebugOperationConfig {
+            operation_timeout: Duration::from_secs(2),
+            max_source_revision_bytes: SOURCE_LEN,
+            ..Default::default()
+        },
+    );
+    let len = std::fs::metadata(&f.source).unwrap().len();
+    assert_eq!(len, SOURCE_LEN);
+    let manager = f.manager.clone();
+    let id = f.id;
+    let source = f.source.clone();
+    let accepted = tokio::spawn(async move {
+        manager
+            .set_breakpoint(
+                "owner",
+                id,
+                DebugSetBreakpointRequest::new(source, DebugSourceBreakpoint::new(1)),
+            )
+            .await
+    });
+    let request = request(&mut f.adapter).await;
+    f.adapter
+        .respond_ok(&request, Some(json!({"breakpoints":[{"verified":true}]})))
+        .await
+        .unwrap();
+    accepted.await.unwrap().unwrap();
+
+    std::fs::write(&f.source, vec![b'x'; len as usize + 1]).unwrap();
+    let before = f.manager.breakpoints("owner", f.id).unwrap();
+    assert!(matches!(
+        f.manager
+            .set_breakpoint(
+                "owner",
+                f.id,
+                DebugSetBreakpointRequest::new(&f.source, DebugSourceBreakpoint::new(2)),
+            )
+            .await,
+        Err(DapError::DebugSourceTooLarge { observed, limit, .. }) if observed == len + 1 && limit == len
+    ));
+    assert_eq!(f.manager.breakpoints("owner", f.id).unwrap(), before);
+    assert_no_traffic(&mut f.adapter).await;
+}
+
+#[tokio::test]
 async fn conditional_hit_conditional_and_logpoint_gates_require_exact_boolean_true() {
     let _fixture = fixture("owner");
     let capabilities = Capabilities::default();

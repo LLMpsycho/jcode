@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 use super::*;
 use crate::testing::FakeAdapter;
@@ -72,16 +72,24 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
     let state_before_drop = entry.snapshot().unwrap();
-    drop(entry);
     drop(manager);
     timeout(Duration::from_secs(1), async {
         while weak_core.upgrade().is_some() {
-            sleep(Duration::from_millis(1)).await;
+            tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
     assert!(weak_core.upgrade().is_none());
+    let _ = adapter
+        .respond_ok(&request, Some(serde_json::json!({})))
+        .await;
+    let _ = adapter
+        .event(
+            "stopped",
+            Some(serde_json::json!({"reason":"late","threadId":9})),
+        )
+        .await;
     assert!(
         timeout(Duration::from_secs(1), adapter.recv())
             .await
@@ -92,5 +100,6 @@ async fn manager_drop_closes_transport_with_detached_operation_and_releases_core
         state_before_drop.state.kind(),
         DebugSessionStateKind::Stopped
     );
+    assert_eq!(entry.snapshot().unwrap(), state_before_drop);
     let _ = std::fs::remove_dir_all(root);
 }

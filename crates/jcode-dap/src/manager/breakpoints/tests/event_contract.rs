@@ -168,3 +168,45 @@ fn unmatched_adapter_event_diagnostic_saturates_without_state_loss() {
     assert_eq!(after.unmatched_adapter_events, u64::MAX);
     assert_eq!(after.sources, before.sources);
 }
+
+#[test]
+fn adapter_message_limit_accepts_boundary_and_truncates_boundary_plus_one() {
+    let (mut registry, _, id) = registry_with_breakpoint();
+    let adapter_id = registry.sources.values().next().unwrap().breakpoints[&id]
+        .adapter_id
+        .unwrap();
+    let config = DebugOperationConfig {
+        max_breakpoint_message_bytes: 4,
+        ..DebugOperationConfig::default()
+    };
+    apply_breakpoint_event(
+        &mut registry,
+        1,
+        json!({"reason":"changed","breakpoint":{"id":adapter_id,"message":"1234"}}),
+        &config,
+    );
+    let boundary = registry.snapshot();
+    assert_eq!(
+        boundary.sources[0].breakpoints[0].message.as_deref(),
+        Some("1234")
+    );
+    assert_eq!(
+        boundary.sources[0].breakpoints[0].message_truncated_prefix_bytes,
+        0
+    );
+    apply_breakpoint_event(
+        &mut registry,
+        2,
+        json!({"reason":"changed","breakpoint":{"id":adapter_id,"message":"12345"}}),
+        &config,
+    );
+    let plus_one = registry.snapshot();
+    assert_eq!(
+        plus_one.sources[0].breakpoints[0].message.as_deref(),
+        Some("2345")
+    );
+    assert_eq!(
+        plus_one.sources[0].breakpoints[0].message_truncated_prefix_bytes,
+        1
+    );
+}

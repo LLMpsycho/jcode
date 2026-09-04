@@ -122,6 +122,14 @@ pub(super) async fn resolve_source(
 
 fn hash_file(path: &Path, limit: u64, cancelled: &AtomicBool) -> Result<DebugSourceRevision> {
     let mut file = std::fs::File::open(path)?;
+    let metadata_len = file.metadata()?.len();
+    if metadata_len > limit {
+        return Err(DapError::DebugSourceTooLarge {
+            path: path.to_path_buf(),
+            observed: metadata_len,
+            limit,
+        });
+    }
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -224,6 +232,33 @@ mod tests {
             Err(DapError::DebugSourceTooLarge {
                 observed: 5,
                 limit: 4,
+                ..
+            })
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opened_file_metadata_length_accepts_boundary_and_rejects_boundary_plus_one() {
+        let root = std::env::temp_dir().join(format!(
+            "jcode-dap-source-metadata-{}-{}",
+            std::process::id(),
+            crate::session::next_manager_id().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("source.rs");
+        std::fs::write(&path, b"1234").unwrap();
+        assert_eq!(
+            hash_file(&path, 4, &AtomicBool::new(false))
+                .unwrap()
+                .byte_len,
+            4
+        );
+        assert!(matches!(
+            hash_file(&path, 3, &AtomicBool::new(false)),
+            Err(DapError::DebugSourceTooLarge {
+                observed: 4,
+                limit: 3,
                 ..
             })
         ));

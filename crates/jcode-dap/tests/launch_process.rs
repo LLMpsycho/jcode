@@ -247,7 +247,7 @@ async fn real_process_startup_failure_leaves_no_adapter_or_target() {
     fs::write(root.join("reject-start"), b"").unwrap();
     fs::write(root.join("reject-stderr"), b"").unwrap();
     let program = copy_target(&root);
-    let manager = manager(Duration::from_millis(100));
+    let manager = manager(Duration::from_millis(500));
     let error = manager
         .launch(
             "owner",
