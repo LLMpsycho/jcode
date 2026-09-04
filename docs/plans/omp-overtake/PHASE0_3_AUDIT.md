@@ -31,7 +31,8 @@ floor. No locked evaluator file, fixture, threshold, or baseline hash was change
   integration. Existing real-server tests conditionally depend on installed
   language servers; deterministic success is not a new live Go result.
 - Phase 3: `crates/jcode-dap`, `crates/jcode-dap-types`,
-  `crates/jcode-app-core/src/dap_service`, `tool/dap.rs`, lifecycle wiring, and
+  `crates/jcode-app-core/src/tool/dap.rs` (the shared `DapService` and tool),
+  lifecycle wiring, and
   the architecture/configuration/tool/troubleshooting documents linked from
   `PHASE3_DAP.md`.
 

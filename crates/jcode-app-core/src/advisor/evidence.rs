@@ -371,7 +371,7 @@ async fn bounded_diff(root: Option<&Path>) -> String {
         match filters.code() {
             Some(1) => {}
             Some(0) => {
-                return Some("Working-tree diff unavailable: configured Git clean/process filters require execution.".into());
+                return Some("Diff unavailable: configured Git filters require execution.".into());
             }
             _ => return None,
         }
@@ -522,7 +522,11 @@ mod tests {
         std::fs::write(dir.path().join(".gitattributes"), "file filter=advisor\n")
             .expect("attributes");
         for key in ["filter.advisor.clean", "filter.advisor.process"] {
-            assert!(git(&["config", key, "echo executed > filter-marker; cat"]).status.success());
+            assert!(
+                git(&["config", key, "echo executed > filter-marker; cat"])
+                    .status
+                    .success()
+            );
             let summary = bounded_diff(Some(dir.path())).await;
             assert!(summary.contains("unavailable") && summary.contains("filters"));
             assert!(!dir.path().join("filter-marker").exists());
