@@ -1432,21 +1432,18 @@ pub(super) async fn handle_client(
                 let message = match request {
                     AdvisorRequest::Status => {
                         let configured = crate::advisor::config_for_current_session().enabled;
+                        let enabled = manager.is_enabled(&session_id, configured);
                         match manager.snapshot(&session_id) {
                             Some(snapshot) => format!(
                                 "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s)",
-                                if configured && snapshot.enabled {
-                                    "on"
-                                } else {
-                                    "off"
-                                },
+                                if enabled { "on" } else { "off" },
                                 snapshot.status,
                                 snapshot.unresolved_blocking_notes,
                                 manager.notes(&session_id).len()
                             ),
                             None => format!(
                                 "Advisor: {} (idle); no retained notes",
-                                if configured { "on" } else { "off" }
+                                if enabled { "on" } else { "off" }
                             ),
                         }
                     }
