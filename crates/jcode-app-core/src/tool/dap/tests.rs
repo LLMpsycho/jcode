@@ -150,6 +150,61 @@ fn output_is_bounded() {
 }
 
 #[tokio::test]
+async fn explicit_frame_resolution_skips_current_frame_lookup() {
+    let frame = resolve_frame_or_current(
+        Some("frame-token"),
+        Some(DebugThreadId::new(7)),
+        |token| {
+            assert_eq!(token, "frame-token");
+            Ok(41)
+        },
+        |_| async { panic!("explicit frame tokens must not issue stackTrace") },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(frame, 41);
+}
+
+#[tokio::test]
+async fn current_frame_resolution_is_bounded_and_thread_scoped() {
+    let frame = resolve_frame_or_current(
+        None,
+        Some(DebugThreadId::new(7)),
+        |_| panic!("omitted frame tokens must not use the token broker"),
+        |request| async move {
+            assert_eq!(request.thread_id, Some(DebugThreadId::new(7)));
+            assert_eq!(request.start_frame, 0);
+            assert_eq!(request.levels, 1);
+            assert_eq!(request.expected_execution_revision, None);
+            Ok(Some(41))
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(frame, 41);
+}
+
+#[tokio::test]
+async fn missing_current_frame_requires_an_explicit_token() {
+    let error = resolve_frame_or_current::<(), _, _, _>(
+        None,
+        None,
+        |_| panic!("omitted frame tokens must not use the token broker"),
+        |request| async move {
+            assert_eq!(request.thread_id, None);
+            assert_eq!(request.levels, 1);
+            Ok(None)
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("supply a frame token"));
+}
+
+#[tokio::test]
 async fn lifecycle_gate_serializes_cleanup_and_reconnect() {
     let service = DapService::from_config(&jcode_dap::DapConfig::default()).unwrap();
     let first = service.lock_lifecycle_transition().await;

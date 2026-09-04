@@ -26,8 +26,8 @@ The tool exposes 18 actions:
 | `step_in` | Step into on an authorized stopped thread. |
 | `step_out` | Step out on an authorized stopped thread. |
 | `stack_trace` | Read a bounded page of frames and receive opaque frame tokens. |
-| `step_in_targets` | Discover bounded adapter-provided targets for an opaque frame token. |
-| `scopes` | Read bounded scopes for an opaque frame token. |
+| `step_in_targets` | Discover bounded adapter-provided targets for an opaque frame token, or the unambiguous current frame when omitted. |
+| `scopes` | Read bounded scopes for an opaque frame token, or the unambiguous current frame when omitted. |
 | `variables` | Read a bounded page from an opaque variable token. |
 | `evaluate` | Evaluate an expression after global and per-call opt-in. |
 
@@ -38,7 +38,9 @@ The `adapter` field is optional for `launch` and `attach`. If omitted, Jcode cho
 When `step_in_targets` returns one or more opaque target tokens, pass one as
 `target` to `step_in`. Target tokens are scoped to the owner, debug session,
 stack frame, and current execution revision. They expire as soon as execution
-advances or debugger state is refreshed at a later stop.
+advances or debugger state is refreshed at a later stop. If `frame` is omitted,
+Jcode requests one frame from the stopped thread and proceeds only when the
+thread choice is unambiguous.
 
 ## Launch example
 

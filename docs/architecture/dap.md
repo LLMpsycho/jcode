@@ -28,6 +28,8 @@ Adapter and target processes run in owned process groups with a controlled envir
 
 DAP traffic uses bounded `Content-Length` framing. Incoming and outgoing JSON payloads are limited to 16 MiB. Pending requests, event queues, reverse-request responses, adapter stderr, retained output, stack frames, scopes, variables, strings, and evaluation results all have explicit limits.
 
+Read-only stack and scope policy defaults to the stopped thread and top frame only when the manager can identify them unambiguously. `stepInTargets` uses the same bounded current-frame policy when no opaque frame token is supplied.
+
 Output is retained as a newest-first-safe UTF-8 tail with monotonic cursors. Pages report both ring eviction and source loss. Oversized output is dropped and counted. Loss of a non-output lifecycle event fails the session closed because state can no longer be trusted.
 
 ## Lifecycle

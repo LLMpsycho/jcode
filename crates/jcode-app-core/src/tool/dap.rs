@@ -6,13 +6,14 @@ use jcode_dap::{
     DebugEvaluateOutcome, DebugEvaluateRequest, DebugEvaluateTarget, DebugLaunchRequest,
     DebugOwnedAttachRequest, DebugPauseRequest, DebugRemoveBreakpointRequest, DebugScopesRequest,
     DebugSessionId, DebugSessionManager, DebugSetBreakpointRequest, DebugSourceBreakpoint,
-    DebugStackTraceRequest, DebugStepInTargetsRequest, DebugStepRequest, DebugSteppingGranularity,
-    DebugTargetedStepInRequest, DebugThreadId, DebugVariableFilter, DebugVariablesRequest,
-    DebugWorkspaceKey,
+    DebugStackFrameHandle, DebugStackTraceRequest, DebugStepInTargetsRequest, DebugStepRequest,
+    DebugSteppingGranularity, DebugTargetedStepInRequest, DebugThreadId, DebugVariableFilter,
+    DebugVariablesRequest, DebugWorkspaceKey,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +26,27 @@ use tokens::TokenKind;
 const MAX_OUTPUT_CHARS: usize = 24_000;
 const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
+
+async fn resolve_frame_or_current<T, ResolveToken, ResolveCurrent, ResolveCurrentFuture>(
+    frame_token: Option<&str>,
+    thread_id: Option<DebugThreadId>,
+    resolve_token: ResolveToken,
+    resolve_current: ResolveCurrent,
+) -> Result<T>
+where
+    ResolveToken: FnOnce(&str) -> Result<T>,
+    ResolveCurrent: FnOnce(DebugStackTraceRequest) -> ResolveCurrentFuture,
+    ResolveCurrentFuture: Future<Output = Result<Option<T>>>,
+{
+    if let Some(frame_token) = frame_token {
+        return resolve_token(frame_token);
+    }
+    let mut request = DebugStackTraceRequest::new(1);
+    request.thread_id = thread_id;
+    resolve_current(request)
+        .await?
+        .ok_or_else(|| anyhow!("no current stack frame is available; supply a frame token"))
+}
 
 #[derive(Clone)]
 pub(crate) struct DapService {
@@ -260,6 +282,38 @@ impl DapTool {
             bail!("count must be between 1 and {MAX_PAGE_SIZE}");
         }
         Ok(count)
+    }
+
+    async fn frame_or_current(
+        &self,
+        owner: &str,
+        id: DebugSessionId,
+        frame_token: Option<&str>,
+        thread_id: Option<DebugThreadId>,
+    ) -> Result<DebugStackFrameHandle> {
+        resolve_frame_or_current(
+            frame_token,
+            thread_id,
+            |frame_token| {
+                self.service
+                    .tokens
+                    .lock()
+                    .unwrap_or_else(|x| x.into_inner())
+                    .frame(owner, id, frame_token)
+            },
+            |request| async move {
+                Ok(self
+                    .service
+                    .manager
+                    .stack_trace(owner, id, request)
+                    .await?
+                    .frames
+                    .into_iter()
+                    .next()
+                    .map(|frame| frame.handle))
+            },
+        )
+        .await
     }
 
     async fn execute_action(
@@ -543,16 +597,9 @@ impl DapTool {
                 }))
             }
             "step_in_targets" => {
-                let frame_token = p
-                    .frame
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("frame is required"))?;
                 let frame = self
-                    .service
-                    .tokens
-                    .lock()
-                    .unwrap_or_else(|x| x.into_inner())
-                    .frame(owner, id, frame_token)?;
+                    .frame_or_current(owner, id, p.frame.as_deref(), thread())
+                    .await?;
                 let expected_execution_revision = p
                     .execution_revision
                     .as_deref()
@@ -605,25 +652,9 @@ impl DapTool {
                 Ok(json!({"execution_revision": revision, "targets": targets}))
             }
             "scopes" => {
-                let frame = if let Some(frame_token) = p.frame.as_deref() {
-                    self.service
-                        .tokens
-                        .lock()
-                        .unwrap_or_else(|x| x.into_inner())
-                        .frame(owner, id, frame_token)?
-                } else {
-                    let mut request = DebugStackTraceRequest::new(1);
-                    request.thread_id = thread();
-                    let stack = m.stack_trace(owner, id, request).await?;
-                    stack
-                        .frames
-                        .into_iter()
-                        .next()
-                        .map(|frame| frame.handle)
-                        .ok_or_else(|| {
-                            anyhow!("no current stack frame is available; supply a frame token")
-                        })?
-                };
+                let frame = self
+                    .frame_or_current(owner, id, p.frame.as_deref(), thread())
+                    .await?;
                 let expected_execution_revision = p
                     .execution_revision
                     .as_deref()

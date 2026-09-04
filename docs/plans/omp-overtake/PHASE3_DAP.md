@@ -13,7 +13,7 @@ Finished work:
 - 30E: source breakpoints, thread discovery, execution control, capability checks, revision checks, reconciliation, and lifecycle supervision.
 - 30F: bounded stack traces, scopes, variables, evaluation, opaque revision-scoped handles, publication fencing, and admission/termination race closure.
 - 30G: opt-in configuration, one server-owned DAP service, the exact 17-action agent tool, owner cleanup and reconnect preservation, bounded `jcode.dap.v1` output, TUI rendering, and Rust and TypeScript SDK propagation.
-- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair. Omitted adapter requests select only validated available configured profiles, while explicit unavailable selection fails without fallback.
+- Post-MVP: bounded `stepInTargets` discovery and opaque revision-scoped targeted `stepIn` are available through the manager, agent tool, and TUI. Target discovery defaults to the unambiguous current frame when no frame token is supplied. Deterministic competitive-eval fixtures cover debugger-led Rust crash localization and targeted step-in repair. Omitted adapter requests select only validated available configured profiles, while explicit unavailable selection fails without fallback.
 - Acceptance: focused package, lifecycle, protocol, TUI, SDK, TypeScript, dependency-boundary, binary-build, and isolated runtime-smoke checks pass. The frozen reviewed-v22 Phase 30F gate and two final Phase 30G reviews returned `ADVANCE`.
 
 The remaining items are non-MVP follow-ups listed at the end of this document. The next core OMP roadmap milestone is Phase 4, advisor and independent verification.
@@ -52,6 +52,7 @@ The remaining items are non-MVP follow-ups listed at the end of this document. T
 - Every breakpoint event is queued in one bounded per-session queue while a transaction is in flight. Response sequence ordering installs adapter IDs before applying higher-sequence ID-only events, while overflow and ambiguous outcomes cannot claim synchronized state.
 - Per-entry operation gates serialize breakpoint mutation, ephemeral thread lookup, and execution control without holding synchronous state locks across I/O. Detached operations own the session entry and immutable operation config, never `Arc<ManagerCore>`; terminal closure prevents post-cleanup commits.
 - Ephemeral `threads`, `continue`, `pause`, `next`, `stepIn`, and `stepOut` operations enforce owner, state, thread, capability, deadline, and execution-revision checks. Bounded stack traces, scopes, variables, and evaluation use manager-issued revision-scoped handles that expire when execution advances.
+- Stack traces, scopes, and step-in target discovery resolve an omitted thread or frame only through the manager's bounded unambiguous stopped-state policy; ambiguous state remains an error.
 
 ## Verified behavior
 
