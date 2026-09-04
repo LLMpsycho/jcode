@@ -48,6 +48,8 @@ jobs:
           retention-days: 1
       - name: Advisor runtime and capability regressions
         run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor
+      - name: Client completion and stream ordering
+        run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib server::client_lifecycle
       - name: Advisor configuration
         run: scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
       - name: Tool contracts

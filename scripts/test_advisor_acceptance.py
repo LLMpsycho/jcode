@@ -126,7 +126,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 class Client:
-    def __init__(self, path, session_id, workspace):
+    def __init__(self, path, session_id, workspace, fixture=False):
+        self.fixture = fixture
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket.settimeout(30)
         self.socket.connect(str(path))
@@ -160,6 +161,8 @@ class Client:
             event = json.loads(line)
             if event.get("type") == "error":
                 # Provider failures may contain private data in live mode.
+                if self.fixture:
+                    raise AssertionError(f"fixture daemon error: {event.get('message')}")
                 raise AssertionError("daemon reported an error; inspect its private local log")
             if predicate(event):
                 return event
@@ -224,6 +227,7 @@ class Daemon:
             'max_reviews_per_session = 6\nhandled_note_immunity_turns = 2\nredact = true\n'
         )
         self.model = model
+        self.fixture = bool(fixture)
 
     def start(self, session_id=None):
         self.process = subprocess.Popen([
@@ -238,7 +242,7 @@ class Daemon:
         while time.monotonic() < deadline:
             assert self.process.poll() is None, "isolated daemon exited during startup/reload"
             try:
-                return Client(self.path, session_id, self.workspace)
+                return Client(self.path, session_id, self.workspace, self.fixture)
             except (FileNotFoundError, ConnectionRefusedError, ConnectionResetError, EOFError):
                 time.sleep(0.1)
         raise TimeoutError("isolated daemon socket unavailable")

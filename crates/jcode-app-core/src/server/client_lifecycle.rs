@@ -1,4 +1,7 @@
 use super::available_models_dedup::available_models_dedup_key;
+#[path = "processing_completion.rs"]
+mod processing_completion;
+use processing_completion::ProcessingCompletion;
 use super::client_actions::{
     AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
     handle_notify_session, handle_rename_session, handle_run_subagent, handle_set_feature,
@@ -487,7 +490,7 @@ pub(super) async fn handle_client(
     let mut client_is_processing = false;
     let mut crash_on_disconnect = false;
     let (processing_done_tx, mut processing_done_rx) =
-        mpsc::unbounded_channel::<(u64, Result<()>, Option<String>)>();
+        mpsc::unbounded_channel::<ProcessingCompletion>();
     let mut processing_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut processing_message_id: Option<u64> = None;
     let mut processing_session_id: Option<String> = None;
@@ -735,7 +738,7 @@ pub(super) async fn handle_client(
                 }
             }
             done = processing_done_rx.recv() => {
-                if let Some((done_id, result, completion_report)) = done {
+                if let Some((done_id, result, completion_report, ready)) = done {
                     if Some(done_id) != processing_message_id {
                         crate::logging::warn(&format!(
                             "Done event id={} doesn't match processing_message_id={:?}, dropping",
@@ -812,6 +815,7 @@ pub(super) async fn handle_client(
                             }
                         }
                     }
+                    let _ = ready.send(());
                 } else {
                     break;
                 }
@@ -2981,7 +2985,7 @@ async fn start_processing_message(
     state: &mut ProcessingState<'_>,
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>, Option<String>)>,
+    processing_done_tx: &mpsc::UnboundedSender<ProcessingCompletion>,
     client_terminal_env: Vec<(String, String)>,
     swarm: &SwarmStatusRefs<'_>,
 ) {
@@ -3120,8 +3124,15 @@ async fn start_processing_message(
                     .and_then(|stream_error| stream_error.retry_after_secs),
             },
         };
-        let _ = tx.send(terminal_event);
-        let _ = done_tx.send((id, result, completion_report));
+        processing_completion::publish(
+            id,
+            result,
+            completion_report,
+            terminal_event,
+            &tx,
+            &done_tx,
+        )
+        .await;
     }));
 }
 
