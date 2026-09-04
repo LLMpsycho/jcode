@@ -59,6 +59,17 @@ foundation from the full advisor product.
   cannot receive stale notes.
 - Provider and parser failures are redacted before logging or runtime storage.
 
+### Mode contracts
+
+- Interactive mode requests a single concise note only when it materially helps
+  the user and avoids unnecessary blocker severity.
+- Self-development guardian mode is explicitly tool-less and read-only, and
+  checks evaluator integrity, promotion and release claims, scope, safety,
+  rollback readiness, and benchmark validity using supplied evidence only.
+- Final-review mode requests an independent evidence-referencing verdict against
+  the objective and acceptance criteria, and treats missing verification as
+  missing rather than inferring success from implementation.
+
 ## Validation completed for this slice
 
 Focused tests exercise:
@@ -78,6 +89,7 @@ Focused tests exercise:
 - stale completion fencing across runtime recreation;
 - advisor reset on rewind, rewind undo, and compaction application;
 - severity-derived urgency and safe-boundary soft-interrupt delivery;
+- distinct tool-less contracts for all three configured advisor modes;
 - compilation of streaming and non-streaming turn lifecycle integration.
 
 The focused test and compile commands are recorded in the implementing commit.
@@ -109,10 +121,6 @@ features below.
 
 ### Mode-specific behavior
 
-- Make interactive notes visible without unnecessary interruption.
-- Enforce the read-only self-development guardian contract and evaluator,
-  promotion, scope, safety, rollback, and benchmark-integrity checks.
-- Implement final-review mode with an evidence-referencing independent verdict.
 - Complete policy-aware advisor routing across provider permissions and model
   roles.
 

@@ -22,7 +22,22 @@ const MAX_TOOLS: usize = 12;
 const MAX_EVIDENCE: usize = 8;
 const MAX_PRIVATE_CONTEXT: usize = 8;
 const ADVISOR_REVIEW_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-const ADVISOR_SYSTEM_PROMPT: &str = "You are Jcode's independent advisor. Review the bounded evidence from the completed primary turn. Return exactly one JSON object with severity (nit, concern, or blocker), summary, evidence (an array of concise strings), recommended_action, and blocking. Do not include markdown or hidden reasoning. A blocker is reserved for unsafe actions, data-integrity risks, or an unmet hard acceptance criterion.";
+const ADVISOR_SYSTEM_PROMPT: &str = "You are Jcode's independent advisor. Review only the bounded evidence from the completed primary turn. You have no tools and must not request actions or additional context. Return exactly one JSON object with severity (nit, concern, or blocker), summary, evidence (an array of concise strings), recommended_action, and blocking. Do not include markdown or hidden reasoning. A blocker is reserved for unsafe actions, data-integrity risks, or an unmet hard acceptance criterion.";
+
+fn advisor_system_prompt(mode: AdvisorMode) -> String {
+    let mode_contract = match mode {
+        AdvisorMode::Interactive => {
+            "Interactive mode: surface one concise, actionable note only when it materially helps the user. Prefer nit or concern unless work is unsafe."
+        }
+        AdvisorMode::SelfdevGuardian => {
+            "Self-development guardian mode: remain strictly read-only. Check evaluator integrity, promotion and release claims, scope drift, safety, rollback readiness, and benchmark validity. Cite supplied evidence for every finding and never perform or propose an unverified mutation as completed."
+        }
+        AdvisorMode::FinalReview => {
+            "Final-review mode: give an independent evidence-referencing verdict on whether the stated objective and acceptance criteria are satisfied. Identify any missing verification explicitly and do not infer success from implementation alone."
+        }
+    };
+    format!("{ADVISOR_SYSTEM_PROMPT}\n\n{mode_contract}")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvisorToolInput {
@@ -434,8 +449,9 @@ impl AdvisorManager {
                 return;
             }
         };
+        let system_prompt = advisor_system_prompt(config.mode);
         let mut stream = match provider
-            .complete(&[Message::user(&prompt)], &[], ADVISOR_SYSTEM_PROMPT, None)
+            .complete(&[Message::user(&prompt)], &[], &system_prompt, None)
             .await
         {
             Ok(stream) => stream,
@@ -584,6 +600,10 @@ mod tests {
         response: String,
     }
 
+    struct ModeCaptureProvider {
+        systems: Arc<Mutex<Vec<String>>>,
+    }
+
     #[async_trait]
     impl Provider for AdvisorProvider {
         async fn complete(
@@ -611,6 +631,41 @@ mod tests {
             Arc::new(Self {
                 calls: Arc::clone(&self.calls),
                 response: self.response.clone(),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl Provider for ModeCaptureProvider {
+        async fn complete(
+            &self,
+            _messages: &[Message],
+            tools: &[crate::message::ToolDefinition],
+            system: &str,
+            _resume_session_id: Option<&str>,
+        ) -> Result<crate::provider::EventStream> {
+            assert!(tools.is_empty());
+            self.systems
+                .lock()
+                .expect("systems")
+                .push(system.to_string());
+            Ok(Box::pin(stream::iter(vec![
+                Ok(StreamEvent::TextDelta(
+                    r#"{"severity":"nit","summary":"ok","evidence":[],"recommended_action":"continue","blocking":false}"#.to_string(),
+                )),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".to_string()),
+                }),
+            ])))
+        }
+
+        fn name(&self) -> &str {
+            "advisor-mode-capture"
+        }
+
+        fn fork(&self) -> Arc<dyn Provider> {
+            Arc::new(Self {
+                systems: Arc::clone(&self.systems),
             })
         }
     }
@@ -1055,6 +1110,62 @@ mod tests {
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(manager.snapshot("zero-budget").is_none());
+    }
+
+    #[test]
+    fn advisor_modes_have_distinct_toolless_evidence_contracts() {
+        let interactive = advisor_system_prompt(AdvisorMode::Interactive);
+        let guardian = advisor_system_prompt(AdvisorMode::SelfdevGuardian);
+        let final_review = advisor_system_prompt(AdvisorMode::FinalReview);
+
+        for prompt in [&interactive, &guardian, &final_review] {
+            assert!(prompt.contains("You have no tools"));
+            assert!(prompt.contains("Return exactly one JSON object"));
+            assert!(prompt.contains("Do not include markdown or hidden reasoning"));
+        }
+        assert!(interactive.contains("materially helps the user"));
+        assert!(guardian.contains("strictly read-only"));
+        assert!(guardian.contains("benchmark validity"));
+        assert!(final_review.contains("independent evidence-referencing verdict"));
+        assert!(final_review.contains("do not infer success from implementation alone"));
+        assert_ne!(interactive, guardian);
+        assert_ne!(guardian, final_review);
+    }
+
+    #[tokio::test]
+    async fn configured_mode_contract_reaches_the_forked_provider() {
+        let manager = Arc::new(AdvisorManager::default());
+        let systems = Arc::new(Mutex::new(Vec::new()));
+        for (index, mode) in [
+            AdvisorMode::Interactive,
+            AdvisorMode::SelfdevGuardian,
+            AdvisorMode::FinalReview,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let session_id = format!("mode-{index}");
+            assert!(manager.schedule_turn(
+                session_id.clone(),
+                Arc::new(ModeCaptureProvider {
+                    systems: Arc::clone(&systems),
+                }),
+                Arc::new(Mutex::new(Vec::new())),
+                AdvisorTurnInput::default(),
+                AdvisorConfig {
+                    enabled: true,
+                    mode,
+                    ..AdvisorConfig::default()
+                },
+            ));
+            wait_for_status(&manager, &session_id, AdvisorStatus::Ready).await;
+        }
+
+        let systems = systems.lock().expect("systems");
+        assert_eq!(systems.len(), 3);
+        assert!(systems[0].contains("Interactive mode"));
+        assert!(systems[1].contains("Self-development guardian mode"));
+        assert!(systems[2].contains("Final-review mode"));
     }
 
     #[test]
