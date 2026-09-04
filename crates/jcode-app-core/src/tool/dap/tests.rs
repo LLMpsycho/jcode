@@ -22,8 +22,8 @@ fn broker_compacts_stale_order_records() {
 #[test]
 fn broker_refuses_a_response_larger_than_owner_capacity() {
     let mut broker = TokenBroker::new(2);
-    assert!(broker.reserve_capacity("owner", 3).is_err());
-    assert!(broker.reserve_capacity("owner", 2).is_ok());
+    assert!(broker.reserve_capacity("owner", 3, true).is_err());
+    assert!(broker.reserve_capacity("owner", 2, true).is_ok());
 }
 
 #[test]

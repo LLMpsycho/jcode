@@ -242,7 +242,12 @@ impl TokenBroker {
             }
         }
     }
-    fn reserve_capacity(&mut self, owner: &str, count: usize) -> Result<()> {
+    fn reserve_capacity(
+        &mut self,
+        owner: &str,
+        count: usize,
+        preserve_sessions: bool,
+    ) -> Result<()> {
         if count > self.max_per_owner {
             bail!(
                 "DAP response requires {count} opaque handles but the per-owner capacity is {}",
@@ -254,7 +259,10 @@ impl TokenBroker {
             let Some(index) = self
                 .order
                 .iter()
-                .position(|key| self.token_owner(key) == Some(owner))
+                .position(|key| {
+                    self.token_owner(key) == Some(owner)
+                        && (!preserve_sessions || !matches!(key.kind, TokenKind::Session))
+                })
             else {
                 bail!("unable to reserve DAP opaque-handle capacity");
             };
@@ -690,7 +698,7 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
-                b.reserve_capacity(owner, snapshots.len())?;
+                b.reserve_capacity(owner, snapshots.len(), false)?;
                 Ok(Value::Array(snapshots.into_iter().map(|s|json!({"session":b.put_session(owner,s.id),"state":output::session_state(s.state.kind()),"adapter":s.adapter_id})).collect()))
             }
             action => {
@@ -735,6 +743,7 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
+                b.reserve_capacity(owner, 1, true)?;
                 Ok(
                     json!({"execution_revision":b.put_revision(owner, id,r.execution_revision),"state":output::session_state(r.state),"threads":r.threads.into_iter().map(|t|json!({"id":t.id.get(),"name":t.name})).collect::<Vec<_>>() }),
                 )
@@ -786,6 +795,7 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
+                b.reserve_capacity(owner, 1, true)?;
                 let revision = b.put_revision(owner, id, r.execution_revision);
                 Ok(
                     json!({"operation":output::control_operation(r.operation),"thread_id":r.thread_id.get(),"execution_revision":revision,"state":output::session_state(r.state.kind())}),
@@ -818,12 +828,13 @@ impl DapTool {
                     | DebugBreakpointMutation::Existing { breakpoint_id } => breakpoint_id,
                     _ => bail!("unexpected breakpoint mutation"),
                 };
-                let token = self
+                let mut broker = self
                     .service
                     .tokens
                     .lock()
-                    .unwrap_or_else(|x| x.into_inner())
-                    .put_breakpoint(owner, id, bid);
+                    .unwrap_or_else(|x| x.into_inner());
+                broker.reserve_capacity(owner, 1, true)?;
+                let token = broker.put_breakpoint(owner, id, bid);
                 Ok(
                     json!({"breakpoint":token,"verified":r.source.breakpoints.iter().find(|b|b.id==bid).map(|b|b.verified)}),
                 )
@@ -859,7 +870,7 @@ impl DapTool {
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
                 let execution_revision = r.execution_revision;
-                b.reserve_capacity(owner, r.frames.len().saturating_add(1))?;
+                b.reserve_capacity(owner, r.frames.len().saturating_add(1), true)?;
                 let revision = b.put_revision(owner, id, execution_revision);
                 let frames = r
                     .frames
@@ -928,7 +939,7 @@ impl DapTool {
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
                 let execution_revision = r.execution_revision;
-                b.reserve_capacity(owner, r.scopes.len().saturating_add(1))?;
+                b.reserve_capacity(owner, r.scopes.len().saturating_add(1), true)?;
                 let revision = b.put_revision(owner, id, execution_revision);
                 let scopes = r
                     .scopes
@@ -1002,7 +1013,7 @@ impl DapTool {
                     .filter(|variable| variable.variables.is_expandable())
                     .count()
                     .saturating_add(1);
-                b.reserve_capacity(owner, handle_count)?;
+                b.reserve_capacity(owner, handle_count, true)?;
                 let revision = b.put_revision(owner, id, execution_revision);
                 let variables = r
                     .variables
@@ -1087,7 +1098,7 @@ impl DapTool {
                             .unwrap_or_else(|x| x.into_inner());
                         let execution_revision = v.execution_revision;
                         let handle_count = usize::from(v.variables.is_expandable()).saturating_add(1);
-                        b.reserve_capacity(owner, handle_count)?;
+                        b.reserve_capacity(owner, handle_count, true)?;
                         let revision = b.put_revision(owner, id, execution_revision);
                         let variables = v
                             .variables
@@ -1124,6 +1135,7 @@ impl DapTool {
                     .tokens
                     .lock()
                     .unwrap_or_else(|x| x.into_inner());
+                b.reserve_capacity(owner, 1, true)?;
                 Ok(
                     json!({"records":page.records.into_iter().map(|r|json!({"category":output::output_category(r.category),"output":r.output,"truncated_prefix_bytes":r.truncated_prefix_bytes})).collect::<Vec<_>>(),"cursor":b.put_cursor(owner, id,page.status.next_cursor),"retained_events":page.status.retained_events,"retained_bytes":page.status.retained_bytes,"requested_history_was_evicted":page.requested_history_was_evicted}),
                 )
