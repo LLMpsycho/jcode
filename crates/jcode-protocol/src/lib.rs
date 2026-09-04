@@ -39,6 +39,22 @@ pub enum TranscriptMode {
     Send,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "action", content = "note_id")]
+pub enum AdvisorRequest {
+    Status,
+    Inspect,
+    Dismiss(String),
+    Acknowledge(String),
+    Enable,
+    Disable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdvisorControlResult {
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommDeliveryMode {
@@ -575,7 +591,7 @@ impl Request {
             Request::Rewind { id, .. } => *id,
             Request::RewindUndo { id } => *id,
             Request::Ping { id } => *id,
-            Request::GetState { id } => *id,
+            Request::GetState { id } | Request::Advisor { id, .. } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
             Request::ClientDebugResponse { id, .. } => *id,
