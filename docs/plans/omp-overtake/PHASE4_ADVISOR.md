@@ -148,6 +148,36 @@ all three modes and restart controls without giving the advisor tools:
 python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode --live --model gpt-5
 ```
 
+The harness also accepts `--report <path>` to retain a bounded, owner-only JSON
+report with the requested model, binary SHA-256, timestamp, inspected independent
+verdict for each mode, and explicit restart/reload/immunity coverage flags. It
+redacts the caller's exact credential and recognized OpenAI tokens before writing
+or printing. No success report is created by an unsuccessful run. Five Python
+regressions cover report bounds, redaction, file permissions, missing-credential
+preflight, provenance and failure behavior.
+
+### Completing the live gate through GitHub Actions
+
+`.github/workflows/advisor-live-acceptance.yml` runs for this owned completion PR
+and fails before checkout/build when the dedicated credential is absent. It never
+falls back to the local provider fixture. To finish the pending gate:
+
+1. Add repository Actions secret `ADVISOR_ACCEPTANCE_OPENAI_API_KEY` using an
+   existing OpenAI API credential. Do not put the key in a PR, commit or chat.
+2. Optionally set repository Actions variable `ADVISOR_ACCEPTANCE_MODEL`; the
+   default is `gpt-5`.
+3. Rerun the failed **Advisor live acceptance** job. It builds its own selfdev
+   binary and runs all three modes with isolated state and read tools available
+   to the primary agent; the advisor stays tool-less.
+4. Inspect the seven-day `advisor-live-report` artifact, review each verdict, and
+   record the successful run and model in PR #10 before closing this gate.
+
+The credential is scoped to the preflight and live test steps. It is absent from
+the build and artifact steps. Automatic billable execution is restricted to this
+owned PR; manual dispatch is available after the workflow reaches the default
+branch. The separate deterministic workflow saves `advisor-fixture-report`,
+explicitly labelled `local-http-fixture`.
+
 This invokes billable provider calls. The key is read only from the caller's
 existing environment and is not printed or copied into the acceptance report.
 No live-model success, competitive OMP win, or resource-regression floor is
