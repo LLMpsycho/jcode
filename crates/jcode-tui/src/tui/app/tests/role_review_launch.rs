@@ -58,7 +58,8 @@ fn test_review_role_split_snapshots_selected_model_route_and_effort() {
             // change the model chosen for that already-queued child.
             Config::set_agent_model_selection(role, None, None, None)
                 .expect("clear future role default");
-            let mut child = crate::session::Session::create(Some(parent_id.clone()), None);
+            let mut child =
+                crate::session::Session::create(Some(parent_id.clone()), Some(label.to_string()));
             child.save().expect("save split child");
             crate::tui::app::commands::prepare_review_spawned_session(
                 &child.id,
@@ -118,8 +119,8 @@ fn test_review_role_inherit_does_not_prefer_an_available_oauth_account() {
             "review".to_string(),
         )
         .expect("queue inherited review");
-        let child = crate::session::Session::create(Some(parent_id), None);
-        let mut child = child;
+        let mut child =
+            crate::session::Session::create(Some(parent_id), Some("Review".to_string()));
         child.model = Some("chosen-main-model".to_string());
         child.provider_key = Some("claude-oauth".to_string());
         child.route_api_method = Some("claude-oauth".to_string());
