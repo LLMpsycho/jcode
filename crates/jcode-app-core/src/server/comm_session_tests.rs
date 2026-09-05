@@ -661,6 +661,15 @@ async fn coordinator_identity_falls_back_to_persisted_session_when_agent_busy() 
     session.model = Some("claude-opus-4-6".to_string());
     session.provider_key = Some("claude-api".to_string());
     session.route_api_method = Some("claude-api".to_string());
+    session.subagent_model = Some("claude-oauth:claude-opus-4-6".to_string());
+    session.reasoning_effort = Some("high".to_string());
+    session.add_message(
+        crate::message::Role::User,
+        vec![crate::message::ContentBlock::Text {
+            text: "Inspect the worker's selected route before continuing.".to_string(),
+            cache_control: None,
+        }],
+    );
     session.save().expect("persist coordinator session");
 
     // Hold the agent lock to simulate a coordinator mid-turn: the spawn path
@@ -676,6 +685,11 @@ async fn coordinator_identity_falls_back_to_persisted_session_when_agent_busy() 
     assert_eq!(identity.model.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(identity.provider_key.as_deref(), Some("claude-api"));
     assert_eq!(identity.route_api_method.as_deref(), Some("claude-api"));
+    assert_eq!(
+        identity.subagent_model.as_deref(),
+        Some("claude-oauth:claude-opus-4-6")
+    );
+    assert_eq!(identity.reasoning_effort.as_deref(), Some("high"));
 
     crate::env::remove_var("JCODE_HOME");
 }

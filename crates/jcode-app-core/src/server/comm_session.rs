@@ -79,7 +79,10 @@ fn create_visible_spawn_session(
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let mut session = Session::create(None, None);
+    // This session must exist before the headed client resumes it. A blank,
+    // untitled panel is intentionally skipped by Session::save; a prepared
+    // worker is an explicit durable session even before its first prompt.
+    let mut session = Session::create(None, Some("Swarm worker".to_string()));
     session.working_dir = Some(cwd.display().to_string());
     if let Some(model) = model_override {
         session.model = Some(model.to_string());
