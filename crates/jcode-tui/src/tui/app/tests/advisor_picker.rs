@@ -746,17 +746,17 @@ fn advisor_picker_timeout_explains_reload_and_ignores_late_error() {
 fn advisor_commands_reach_server_from_enter_and_generic_submission_while_busy() {
     with_temp_jcode_home(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            for generic_submission in [false, true] {
-                for busy in [false, true] {
-                    for (command, action) in
-                        [("/advisor", "model_options"), ("/advisor status", "status")]
-                    {
-                        let mut app = create_test_app();
-                        app.is_remote = true;
-                        app.is_processing = busy;
-                        app.current_message_id = busy.then_some(42);
-                        app.active_skill = Some("existing-skill".into());
+        for generic_submission in [false, true] {
+            for busy in [false, true] {
+                for (command, action) in
+                    [("/advisor", "model_options"), ("/advisor status", "status")]
+                {
+                    let mut app = create_test_app();
+                    app.is_remote = true;
+                    app.is_processing = busy;
+                    app.current_message_id = busy.then_some(42);
+                    app.active_skill = Some("existing-skill".into());
+                    rt.block_on(async {
                         let mut remote = crate::tui::backend::RemoteConnection::dummy();
                         let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
                         let mut reader = tokio::io::BufReader::new(peer);
@@ -801,10 +801,10 @@ fn advisor_commands_reach_server_from_enter_and_generic_submission_while_busy() 
                                     .is_advisor_picker()
                             );
                         }
-                    }
+                    });
                 }
             }
-        });
+        }
     });
 }
 
@@ -812,11 +812,11 @@ fn advisor_commands_reach_server_from_enter_and_generic_submission_while_busy() 
 fn advisor_generic_submission_invalid_control_shows_usage_without_sending_a_turn() {
     with_temp_jcode_home(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.is_processing = true;
+        app.current_message_id = Some(42);
         rt.block_on(async {
-            let mut app = create_test_app();
-            app.is_remote = true;
-            app.is_processing = true;
-            app.current_message_id = Some(42);
             let mut remote = crate::tui::backend::RemoteConnection::dummy();
             let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
             let mut reader = tokio::io::BufReader::new(peer);
