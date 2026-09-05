@@ -1,8 +1,9 @@
 # Phase 4: ongoing investigative advisor
 
-Status: implementation in progress. This plan is the approved behavioral
-correction to the earlier completed-turn reviewer design. Validation results and
-remaining limitations must be recorded before this branch is ready to merge.
+Status: implementation complete on `feat/advisor-agent-parity`. This is the
+approved behavioral correction to the earlier completed-turn reviewer design.
+Validation and merge readiness are tracked in [PR #18](https://github.com/LLMpsycho/jcode/pull/18);
+the deterministic acceptance workflow must pass before this branch is ready.
 
 Base: `LLMpsycho/jcode` master `3e747d3722fe6f809500957d7d55350c40a4fec3`.
 Behavioral reference: `LLMpsycho/oh-my-pi`
@@ -169,6 +170,31 @@ commits. Any ship-blocking defect in touched code is fixed with its regression.
 
 ## 9. Completion record
 
-Implementation commits, exact commands/results, runtime acceptance evidence,
-remaining limitations and final PR checks will be entered here after validation.
-Do not mark a source inspection or an HTTP mock as real-provider acceptance.
+All implementation objectives above have code and regression coverage. The
+conventional commit sequence separates provider tool/auth isolation, named-role
+configuration, investigation, retained conversation, live correction, controls,
+transport acceptance and focused review fixes. See the requirement-to-file/test
+mapping and exact published commits in [PR #18](https://github.com/LLMpsycho/jcode/pull/18).
+
+Development validation includes a successful selfdev build, 103 passing advisor
+tests at an earlier runtime checkpoint, and successful real-runtime no-network
+OpenAI/Anthropic authentication-isolation and explicit-tool tests. The full
+TypeScript SDK typecheck/build/transport suite passed in the PR workflow.
+Module resolution and dependency-boundary checks pass. Later implementation
+fixes require the PR's final-head checks; earlier counts are not substituted.
+
+Local Unix socket creation/connect is denied with `EPERM`. Consequently the
+mandatory isolated daemon/socket matrix runs in the PR's **Advisor acceptance**
+workflow, which also rebuilds selfdev, runs Rust/TUI/SDK/provider regressions and
+rechecks the bounded Phase 0–3 audit suites. Its uploaded fixture report is the
+authoritative deterministic acceptance evidence. Do not infer socket success
+from compilation or source inspection.
+
+Live-model quality, subscription-provider comparison and performance floors
+remain separate unclaimed gates. The workspace read boundary assumes a trusted
+workspace and is not a hostile-filesystem sandbox. Providers with autonomous
+tools that cannot be disabled are rejected; named Anthropic profile routes that
+require process-wide activation fail visibly. Repository-wide size and error
+ratchets already fail on the base; necessary touched-file growth is disclosed
+in the PR without rebaselining. The issue-link gate conflicts with disabled
+Issues. No unrelated gate/configuration changes or Phases 5–7 were included.
