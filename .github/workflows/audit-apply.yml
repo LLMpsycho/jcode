@@ -83,6 +83,7 @@ jobs:
           git apply "$RUNNER_TEMP/audit.patch"
           python3 .github/audit-followup.py
           python3 .github/audit-finalize.py
+          sed -i 's/{App, Instant, ProcessingStatus}/{App, DisplayMessage, Instant, ProcessingStatus}/' crates/jcode-tui/src/tui/app/tui_reload_restore.rs
           cargo fmt --all
           git rm .github/audit-patch.b64 .github/audit-followup.py .github/audit-finalize.py .github/workflows/audit-apply.yml
           git add .github/workflows crates/jcode-tui scripts/test_workflow_yaml.py
@@ -110,11 +111,15 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          failed=0
           for test in post_merge_review review_role queue_autojudge_remote prepare_review_spawned_session advisor remote_; do
-            scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/patched-$test.log"
+            if ! scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/patched-$test.log"; then
+              failed=1
+            fi
           done
           python3 scripts/check_module_files.py
           python3 scripts/check_dependency_boundaries.py
+          exit "$failed"
       - name: Workflow and evaluation regressions
         shell: bash
         run: |
