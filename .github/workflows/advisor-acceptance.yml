@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 45
     env:
       JCODE_CI: '1'
+      JCODE_NO_TELEMETRY: '1'
+      DO_NOT_TRACK: '1'
       JCODE_DEV_FEATURE_PROFILE: minimal
       CARGO_BUILD_JOBS: '2'
       RUSTUP_TOOLCHAIN: stable
@@ -36,6 +38,11 @@ jobs:
           components: rustfmt, rust-analyzer, rust-src
       - name: Verify real LSP audit dependency
         run: rust-analyzer --version
+      - name: Install bounded investigation search dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ripgrep
+          rg --version
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
