@@ -1,3 +1,4 @@
+mod advisor;
 mod agentgrep;
 pub mod ambient;
 mod anchored_edit;

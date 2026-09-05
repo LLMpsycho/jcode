@@ -16,6 +16,41 @@ fn make_ctx(working_dir: std::path::PathBuf) -> ToolContext {
     }
 }
 
+#[tokio::test]
+async fn advisor_text_reader_caps_actual_bytes_and_refuses_media_helpers() {
+    let dir = tempfile::tempdir().expect("workspace");
+    let tool = ReadTool::for_advisor(16);
+    let context = make_ctx(dir.path().to_path_buf());
+    std::fs::write(dir.path().join("small.rs"), "valid code").expect("small");
+    assert!(
+        tool.execute(json!({"file_path":"small.rs"}), context.clone())
+            .await
+            .expect("small read")
+            .output
+            .contains("valid code")
+    );
+    // Exercise the byte reader directly: callers' earlier metadata checks are
+    // deliberately absent, as with a file that grows between stat and open.
+    std::fs::write(dir.path().join("grew.rs"), "x".repeat(1000)).expect("grew");
+    assert!(
+        tool.execute(json!({"file_path":"grew.rs"}), context.clone())
+            .await
+            .expect_err("bounded bytes")
+            .to_string()
+            .contains("byte limit")
+    );
+    for path in ["image.png", "report.pdf", "icon.ico"] {
+        std::fs::write(dir.path().join(path), "media").expect("media");
+        assert!(
+            tool.execute(json!({"file_path":path}), context.clone())
+                .await
+                .expect_err("no media processing")
+                .to_string()
+                .contains("text files only")
+        );
+    }
+}
+
 #[test]
 fn normalize_read_range_supports_start_and_end_lines() {
     let params: ReadInput = serde_json::from_value(json!({

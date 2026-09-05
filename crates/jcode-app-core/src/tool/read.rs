@@ -18,18 +18,30 @@ const MAX_LINE_LEN: usize = 2000;
 
 pub struct ReadTool {
     file_snapshots: Option<FileSnapshotLedger>,
+    max_text_bytes: Option<usize>,
 }
 
 impl ReadTool {
     pub fn new() -> Self {
         Self {
             file_snapshots: None,
+            max_text_bytes: None,
+        }
+    }
+
+    /// Autonomous investigators share text formatting, but cannot invoke media
+    /// helpers or read unbounded bytes if a file grows after its metadata check.
+    pub(super) fn for_advisor(max_text_bytes: usize) -> Self {
+        Self {
+            file_snapshots: None,
+            max_text_bytes: Some(max_text_bytes),
         }
     }
 
     pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
         Self {
             file_snapshots: Some(file_snapshots),
+            max_text_bytes: None,
         }
     }
 }
@@ -187,6 +199,13 @@ impl Tool for ReadTool {
             }
         }
 
+        if self.max_text_bytes.is_some() {
+            anyhow::ensure!(
+                !is_image_file(&path) && !is_pdf_file(&path),
+                "Advisor investigation reads text files only"
+            );
+        }
+
         // Check for image files and display in terminal if supported
         if is_image_file(&path) {
             return handle_image_file(&path, &params.file_path);
@@ -206,7 +225,19 @@ impl Tool for ReadTool {
         }
 
         // Read file
-        let content = tokio::fs::read_to_string(&path).await?;
+        let content = if let Some(limit) = self.max_text_bytes {
+            use tokio::io::AsyncReadExt;
+            let file = tokio::fs::File::open(&path).await?;
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1).read_to_end(&mut bytes).await?;
+            anyhow::ensure!(
+                bytes.len() <= limit,
+                "Advisor text read exceeded its byte limit; narrow the file"
+            );
+            String::from_utf8(bytes)?
+        } else {
+            tokio::fs::read_to_string(&path).await?
+        };
 
         // Single-pass: count lines while building output
         let mut output = String::with_capacity(range.limit.min(2000) * 80);

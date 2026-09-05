@@ -4,6 +4,7 @@
 //! enforcement. Provider context and in-flight reviews are never persisted.
 
 mod evidence;
+pub mod investigation;
 mod model_selection;
 mod persistence;
 mod routing;
