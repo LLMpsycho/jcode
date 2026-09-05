@@ -2077,7 +2077,9 @@ async fn handle_remote_key_internal(
                             app.queue_advisor_request(request);
                             app.forward_pending_advisor_request(remote).await;
                         }
-                        Err(usage) => app.push_display_message(DisplayMessage::error(usage.to_string())),
+                        Err(usage) => {
+                            app.push_display_message(DisplayMessage::error(usage.to_string()))
+                        }
                     }
                     return Ok(());
                 }

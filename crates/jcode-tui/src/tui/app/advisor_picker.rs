@@ -28,8 +28,12 @@ pub(super) fn command(input: &str) -> Option<Result<AdvisorRequest, &'static str
         Some("inspect") => AdvisorRequest::Inspect,
         Some("on") => AdvisorRequest::Enable,
         Some("off") => AdvisorRequest::Disable,
-        Some("dismiss") => AdvisorRequest::Dismiss { note_id: words.next().unwrap_or("").into() },
-        Some("ack") => AdvisorRequest::Acknowledge { note_id: words.next().unwrap_or("").into() },
+        Some("dismiss") => AdvisorRequest::Dismiss {
+            note_id: words.next().unwrap_or("").into(),
+        },
+        Some("ack") => AdvisorRequest::Acknowledge {
+            note_id: words.next().unwrap_or("").into(),
+        },
         _ => return Some(Err(usage())),
     };
     if words.next().is_some()
@@ -44,7 +48,14 @@ fn usage() -> &'static str {
     "Usage: /advisor (model + effort), /advisor inherit|status|inspect|dismiss <id>|ack <id>|on|off"
 }
 
-fn entry(name: String, provider: String, method: String, detail: String, request: Option<AdvisorRequest>, current: bool) -> PickerEntry {
+fn entry(
+    name: String,
+    provider: String,
+    method: String,
+    detail: String,
+    request: Option<AdvisorRequest>,
+    current: bool,
+) -> PickerEntry {
     PickerEntry {
         name,
         options: vec![PickerOption {
@@ -71,13 +82,20 @@ fn entry(name: String, provider: String, method: String, detail: String, request
 impl App {
     pub(super) fn cancel_advisor_picker(&mut self) {
         self.advisor_picker = AdvisorPickerState::default();
-        if self.inline_interactive_state.as_ref().is_some_and(|picker| picker.is_advisor_picker()) {
+        if self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(|picker| picker.is_advisor_picker())
+        {
             self.inline_interactive_state = None;
         }
     }
 
     fn show_advisor_entries(&mut self, entries: Vec<PickerEntry>) {
-        let selected = entries.iter().position(|entry| entry.is_current).unwrap_or(0);
+        let selected = entries
+            .iter()
+            .position(|entry| entry.is_current)
+            .unwrap_or(0);
         self.inline_view_state = None;
         self.pending_model_picker_load = None;
         self.inline_interactive_state = Some(InlineInteractiveState {
@@ -112,7 +130,9 @@ impl App {
     }
 
     pub(super) async fn forward_pending_advisor_request(&mut self, remote: &mut RemoteConnection) {
-        let Some(request) = self.advisor_picker.pending.take() else { return };
+        let Some(request) = self.advisor_picker.pending.take() else {
+            return;
+        };
         if self.advisor_picker.session_id != self.remote_session_id {
             return;
         }
@@ -120,14 +140,18 @@ impl App {
         match remote.advisor(request).await {
             Ok(id) => {
                 self.advisor_picker.request_id = opens_picker.then_some(id);
-                self.advisor_picker.in_flight.insert(id, self.remote_session_id.clone());
+                self.advisor_picker
+                    .in_flight
+                    .insert(id, self.remote_session_id.clone());
                 while self.advisor_picker.in_flight.len() > 64 {
                     self.advisor_picker.in_flight.pop_first();
                 }
             }
             Err(error) => {
                 self.inline_interactive_state = None;
-                self.push_display_message(DisplayMessage::error(format!("Advisor request failed: {error}")));
+                self.push_display_message(DisplayMessage::error(format!(
+                    "Advisor request failed: {error}"
+                )));
             }
         }
     }
@@ -139,7 +163,10 @@ impl App {
             return;
         }
         let expected = self.advisor_picker.request_id == Some(id);
-        let picker_open = self.inline_interactive_state.as_ref().is_some_and(|picker| picker.is_advisor_picker());
+        let picker_open = self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(|picker| picker.is_advisor_picker());
         let same_session = self.advisor_picker.session_id == self.remote_session_id;
         if expected {
             self.advisor_picker.request_id = None;
@@ -151,8 +178,14 @@ impl App {
             self.push_display_message(DisplayMessage::error(error));
         } else if let Some(options) = result.model_options {
             if expected && picker_open && same_session {
-                let follows_primary = result.model_settings.as_ref().is_some_and(|settings| settings.follows_primary);
-                let current = result.model_settings.as_ref().and_then(|settings| settings.selection.as_ref());
+                let follows_primary = result
+                    .model_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.follows_primary);
+                let current = result
+                    .model_settings
+                    .as_ref()
+                    .and_then(|settings| settings.selection.as_ref());
                 self.show_advisor_options(options, current, follows_primary);
             }
         } else if !result.message.is_empty() {
@@ -160,25 +193,39 @@ impl App {
         }
     }
 
-    fn show_advisor_options(&mut self, options: AdvisorModelOptions, current: Option<&RouteSelection>, follows_primary: bool) {
+    fn show_advisor_options(
+        &mut self,
+        options: AdvisorModelOptions,
+        current: Option<&RouteSelection>,
+        follows_primary: bool,
+    ) {
         let entries = if let Some(selection) = options.selection {
-            let mut efforts = options.available_efforts.into_iter()
+            let mut efforts = options
+                .available_efforts
+                .into_iter()
                 .filter(|effort| !matches!(effort.as_str(), "swarm" | "swarm-deep"))
-                .map(Some).collect::<Vec<_>>();
+                .map(Some)
+                .collect::<Vec<_>>();
             if efforts.is_empty() {
                 efforts.push(None);
             }
-            efforts.into_iter().map(|effort| {
-                let label = effort.as_deref().unwrap_or("no effort setting");
-                entry(
-                    format!("{} · {}", selection.model, label),
-                    selection.provider_label.clone(),
-                    selection.api_method.clone(),
-                    "Enable advisor with this model and effort".into(),
-                    Some(AdvisorRequest::SelectModel { selection: selection.clone(), reasoning_effort: effort.clone() }),
-                    effort == options.reasoning_effort,
-                )
-            }).collect()
+            efforts
+                .into_iter()
+                .map(|effort| {
+                    let label = effort.as_deref().unwrap_or("no effort setting");
+                    entry(
+                        format!("{} · {}", selection.model, label),
+                        selection.provider_label.clone(),
+                        selection.api_method.clone(),
+                        "Enable advisor with this model and effort".into(),
+                        Some(AdvisorRequest::SelectModel {
+                            selection: selection.clone(),
+                            reasoning_effort: effort.clone(),
+                        }),
+                        effort == options.reasoning_effort,
+                    )
+                })
+                .collect()
         } else {
             let mut entries = vec![entry(
                 "Follow main model and effort".into(),
@@ -189,20 +236,35 @@ impl App {
                 follows_primary,
             )];
             let mut routes = options.available_routes;
-            routes.sort_by(|a, b| (&a.model, &a.provider, &a.api_method).cmp(&(&b.model, &b.provider, &b.api_method)));
-            entries.extend(routes.into_iter().filter(|route| route.available).map(|route| {
-                let mut selection = RouteSelection::from_model_route(&route);
-                selection.detail.clear();
-                let selected = !follows_primary && current.is_some_and(|current| {
-                    current.model == selection.model && current.runtime_key == selection.runtime_key
-                        && current.api_method == selection.api_method && current.provider_label == selection.provider_label
-                });
-                entry(
-                    route.model, route.provider, route.api_method,
-                    "Choose reasoning effort next".into(),
-                    Some(AdvisorRequest::ModelOptions { selection: Some(selection) }), selected,
-                )
-            }));
+            routes.sort_by(|a, b| {
+                (&a.model, &a.provider, &a.api_method).cmp(&(&b.model, &b.provider, &b.api_method))
+            });
+            entries.extend(
+                routes
+                    .into_iter()
+                    .filter(|route| route.available)
+                    .map(|route| {
+                        let mut selection = RouteSelection::from_model_route(&route);
+                        selection.detail.clear();
+                        let selected = !follows_primary
+                            && current.is_some_and(|current| {
+                                current.model == selection.model
+                                    && current.runtime_key == selection.runtime_key
+                                    && current.api_method == selection.api_method
+                                    && current.provider_label == selection.provider_label
+                            });
+                        entry(
+                            route.model,
+                            route.provider,
+                            route.api_method,
+                            "Choose reasoning effort next".into(),
+                            Some(AdvisorRequest::ModelOptions {
+                                selection: Some(selection),
+                            }),
+                            selected,
+                        )
+                    }),
+            );
             entries
         };
         self.show_advisor_entries(entries);

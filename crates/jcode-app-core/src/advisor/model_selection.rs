@@ -16,34 +16,63 @@ pub(super) enum AdvisorModelOverride {
 }
 
 impl AdvisorManager {
-    pub fn saved_model_settings(&self, session: &str, config: &AdvisorConfig) -> AdvisorModelSettings {
+    pub fn saved_model_settings(
+        &self,
+        session: &str,
+        config: &AdvisorConfig,
+    ) -> AdvisorModelSettings {
         let selected = self.model_override(session);
         let follows_primary = matches!(selected, Some(AdvisorModelOverride::Primary))
             || (selected.is_none() && routing::role_request(config).is_none());
         let (selection, reasoning_effort) = match selected {
-            Some(AdvisorModelOverride::Selected { selection, reasoning_effort }) => (Some(selection), reasoning_effort),
+            Some(AdvisorModelOverride::Selected {
+                selection,
+                reasoning_effort,
+            }) => (Some(selection), reasoning_effort),
             _ => (None, None),
         };
-        AdvisorModelSettings { enabled: self.is_enabled(session, config.enabled), selection, reasoning_effort, follows_primary }
+        AdvisorModelSettings {
+            enabled: self.is_enabled(session, config.enabled),
+            selection,
+            reasoning_effort,
+            follows_primary,
+        }
     }
 
     pub fn model_summary(&self, session: &str, config: &AdvisorConfig) -> String {
         match self.model_override(session) {
-            Some(AdvisorModelOverride::Selected { selection, reasoning_effort }) => format!(
-                "model {} via {} ({}); effort {}", selection.model, selection.provider_label,
-                selection.api_method, reasoning_effort.as_deref().unwrap_or("provider default")
+            Some(AdvisorModelOverride::Selected {
+                selection,
+                reasoning_effort,
+            }) => format!(
+                "model {} via {} ({}); effort {}",
+                selection.model,
+                selection.provider_label,
+                selection.api_method,
+                reasoning_effort.as_deref().unwrap_or("provider default")
             ),
             Some(AdvisorModelOverride::Primary) => "model and effort follow primary".into(),
-            None => routing::role_request(config).map(|model| {
-                format!("configured model {}", truncate_utf8(redact_secrets(model), 256))
-            }).unwrap_or_else(|| "model and effort follow primary".into()),
+            None => routing::role_request(config)
+                .map(|model| {
+                    format!(
+                        "configured model {}",
+                        truncate_utf8(redact_secrets(model), 256)
+                    )
+                })
+                .unwrap_or_else(|| "model and effort follow primary".into()),
         }
     }
 
     pub fn begin_model_selection(&self, session: &str) -> u64 {
-        let id = self.next_review_id.fetch_add(1, AtomicOrdering::Relaxed).saturating_add(1);
+        let id = self
+            .next_review_id
+            .fetch_add(1, AtomicOrdering::Relaxed)
+            .saturating_add(1);
         if let Ok(mut sessions) = self.sessions.lock() {
-            sessions.entry(session.to_string()).or_default().model_selection_id = id;
+            sessions
+                .entry(session.to_string())
+                .or_default()
+                .model_selection_id = id;
         }
         id
     }
@@ -87,7 +116,9 @@ impl AdvisorManager {
         }
         let fork = provider.fork();
         let resolved = routing::apply_override(fork.as_ref(), config, selected.as_ref()).is_ok();
-        let selection = resolved.then(|| current_selection(fork.as_ref(), config)).flatten();
+        let selection = resolved
+            .then(|| current_selection(fork.as_ref(), config))
+            .flatten();
         AdvisorModelSettings {
             enabled,
             selection,
@@ -126,10 +157,14 @@ impl AdvisorManager {
         fork.set_route_selection(&canonical)?;
         let available_efforts = routing::efforts(fork.as_ref());
         let saved_effort = match self.model_override(session) {
-            Some(AdvisorModelOverride::Selected { selection, reasoning_effort }) if selection == canonical => reasoning_effort,
+            Some(AdvisorModelOverride::Selected {
+                selection,
+                reasoning_effort,
+            }) if selection == canonical => reasoning_effort,
             _ => None,
         };
-        let reasoning_effort = saved_effort.or_else(|| fork.reasoning_effort())
+        let reasoning_effort = saved_effort
+            .or_else(|| fork.reasoning_effort())
             .filter(|effort| available_efforts.contains(effort));
         Ok(AdvisorModelOptions {
             selection: Some(canonical),
@@ -150,7 +185,10 @@ impl AdvisorManager {
     ) -> Result<AdvisorModelSettings> {
         let selection = routing::canonical_selection(provider, config, &selection)?;
         let reasoning_effort = reasoning_effort.map(|effort| effort.trim().to_lowercase());
-        if reasoning_effort.as_ref().is_some_and(|effort| effort.len() > 32) {
+        if reasoning_effort
+            .as_ref()
+            .is_some_and(|effort| effort.len() > 32)
+        {
             bail!("reasoning effort is invalid");
         }
         let selected = AdvisorModelOverride::Selected {
@@ -179,7 +217,12 @@ impl AdvisorManager {
         Ok(self.model_settings(session, provider, config))
     }
 
-    fn store_model_override(&self, session: &str, selected: AdvisorModelOverride, request_id: u64) -> Result<()> {
+    fn store_model_override(
+        &self,
+        session: &str,
+        selected: AdvisorModelOverride,
+        request_id: u64,
+    ) -> Result<()> {
         let mut sessions = self
             .sessions
             .lock()

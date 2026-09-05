@@ -1,5 +1,5 @@
-mod advisor_picker_schema;
 pub mod account_picker;
+mod advisor_picker_schema;
 pub(crate) mod app;
 
 #[derive(Clone)]

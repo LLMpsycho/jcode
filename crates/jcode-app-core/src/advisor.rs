@@ -319,7 +319,10 @@ impl AdvisorManager {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
             let runtime = sessions.entry(owner_session_id.to_string()).or_default();
-            runtime.model_selection_id = self.next_review_id.fetch_add(1, AtomicOrdering::Relaxed).saturating_add(1);
+            runtime.model_selection_id = self
+                .next_review_id
+                .fetch_add(1, AtomicOrdering::Relaxed)
+                .saturating_add(1);
             runtime.enabled_override = Some(enabled);
             if !enabled {
                 clear_queued_notes(runtime);
@@ -546,12 +549,7 @@ impl AdvisorManager {
         self.spawn_review(owner_session_id, next.0, next.1);
     }
 
-    async fn run_review(
-        &self,
-        owner_session_id: String,
-        review_id: u64,
-        pending: PendingReview,
-    ) {
+    async fn run_review(&self, owner_session_id: String, review_id: u64, pending: PendingReview) {
         if tokio::time::timeout(
             ADVISOR_REVIEW_TIMEOUT,
             self.run_review_inner(owner_session_id.clone(), review_id, pending),
@@ -573,13 +571,23 @@ impl AdvisorManager {
         review_id: u64,
         pending: PendingReview,
     ) {
-        let PendingReview { provider, queue, input, config, model_override } = pending;
+        let PendingReview {
+            provider,
+            queue,
+            input,
+            config,
+            model_override,
+        } = pending;
         if !self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions.get(&owner_session_id).is_some_and(|runtime| runtime.active_review_id == review_id)
+            sessions
+                .get(&owner_session_id)
+                .is_some_and(|runtime| runtime.active_review_id == review_id)
         }) {
             return;
         }
-        if let Err(error) = routing::apply_override(provider.as_ref(), &config, model_override.as_ref()) {
+        if let Err(error) =
+            routing::apply_override(provider.as_ref(), &config, model_override.as_ref())
+        {
             self.fail(
                 &owner_session_id,
                 review_id,

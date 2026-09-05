@@ -1,4 +1,6 @@
-use super::{InlineInteractiveLayout, InlineInteractiveSchema, InlineInteractiveState, PickerAction};
+use super::{
+    InlineInteractiveLayout, InlineInteractiveSchema, InlineInteractiveState, PickerAction,
+};
 use crate::protocol::AdvisorRequest;
 
 pub(super) fn schema() -> InlineInteractiveSchema {
@@ -18,18 +20,32 @@ pub(super) fn schema() -> InlineInteractiveSchema {
 impl InlineInteractiveState {
     pub fn is_advisor_picker(&self) -> bool {
         !self.entries.is_empty()
-            && self.entries.iter().all(|entry| matches!(entry.action, PickerAction::Advisor(_)))
+            && self
+                .entries
+                .iter()
+                .all(|entry| matches!(entry.action, PickerAction::Advisor(_)))
     }
 }
 
 pub(super) fn request_bytes(request: Option<&AdvisorRequest>) -> usize {
     let (selection, effort) = match request {
-        Some(AdvisorRequest::SelectModel { selection, reasoning_effort }) => (Some(selection), reasoning_effort.as_ref()),
+        Some(AdvisorRequest::SelectModel {
+            selection,
+            reasoning_effort,
+        }) => (Some(selection), reasoning_effort.as_ref()),
         Some(AdvisorRequest::ModelOptions { selection }) => (selection.as_ref(), None),
-        Some(AdvisorRequest::Dismiss { note_id } | AdvisorRequest::Acknowledge { note_id }) => return note_id.capacity(),
+        Some(AdvisorRequest::Dismiss { note_id } | AdvisorRequest::Acknowledge { note_id }) => {
+            return note_id.capacity();
+        }
         _ => return 0,
     };
-    selection.map(|selection| selection.model.capacity() + selection.provider_label.capacity()
-        + selection.api_method.capacity() + selection.detail.capacity()).unwrap_or(0)
+    selection
+        .map(|selection| {
+            selection.model.capacity()
+                + selection.provider_label.capacity()
+                + selection.api_method.capacity()
+                + selection.detail.capacity()
+        })
+        .unwrap_or(0)
         + effort.map(|effort| effort.capacity()).unwrap_or(0)
 }

@@ -70,9 +70,7 @@ pub(super) fn validate_persisted_selection(selection: &RouteSelection) -> Result
         runtime.as_str(),
     ];
     if fields.iter().any(|value| {
-        value.len() > 256
-            || value.chars().any(char::is_control)
-            || redact_secrets(value) != *value
+        value.len() > 256 || value.chars().any(char::is_control) || redact_secrets(value) != *value
     }) || !selection.detail.is_empty()
     {
         bail!("advisor model route metadata is invalid");
@@ -118,7 +116,11 @@ pub(super) fn apply_override(
         }
         None => apply(provider, config),
     }?;
-    if provider.reasoning_effort().as_deref().is_some_and(|effort| matches!(effort, "swarm" | "swarm-deep")) {
+    if provider
+        .reasoning_effort()
+        .as_deref()
+        .is_some_and(|effort| matches!(effort, "swarm" | "swarm-deep"))
+    {
         bail!("advisor requires a single-model reasoning effort; choose an effort in /advisor");
     }
     Ok(())

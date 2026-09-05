@@ -155,10 +155,16 @@ fn load(path: &Path) -> Result<Option<Checkpoint>> {
     if checkpoint.version != 1 || checkpoint.notes.len() > MAX_NOTE_METADATA {
         bail!("unsupported advisor checkpoint");
     }
-    if let Some(model_selection::AdvisorModelOverride::Selected { selection, reasoning_effort }) = &checkpoint.model_override {
+    if let Some(model_selection::AdvisorModelOverride::Selected {
+        selection,
+        reasoning_effort,
+    }) = &checkpoint.model_override
+    {
         routing::validate_persisted_selection(selection)?;
         if reasoning_effort.as_ref().is_some_and(|effort| {
-            effort.len() > 32 || effort.chars().any(char::is_control) || redact_secrets(effort) != *effort
+            effort.len() > 32
+                || effort.chars().any(char::is_control)
+                || redact_secrets(effort) != *effort
         }) {
             bail!("invalid advisor reasoning effort");
         }

@@ -44,8 +44,12 @@ pub enum TranscriptMode {
 pub enum AdvisorRequest {
     Status,
     Inspect,
-    Dismiss { note_id: String },
-    Acknowledge { note_id: String },
+    Dismiss {
+        note_id: String,
+    },
+    Acknowledge {
+        note_id: String,
+    },
     Enable,
     Disable,
     SelectModel {
