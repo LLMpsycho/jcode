@@ -84,6 +84,9 @@ fn assert_advisor_fork_preserves_effort(active: ActiveProvider, prefix: &str) {
         let model = match active {
             ActiveProvider::OpenAI => ALL_OPENAI_MODELS[0],
             ActiveProvider::Claude => {
+                if prefix == "anthropic-api" {
+                    crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-advisor");
+                }
                 *provider.openai.write().unwrap() = None;
                 *provider.anthropic.write().unwrap() = Some(test_anthropic_runtime());
                 anthropic::AVAILABLE_MODELS[0]
