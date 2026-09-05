@@ -101,23 +101,20 @@ pub fn entry(config: &AdvisorConfig, name: &str) -> Result<ResolvedAdvisorEntry>
 
 /// Include inactive or recently removed entries so /advisor off still works
 /// after the project configuration becomes invalid or changes its roster.
-pub fn known_runtime_keys(manager: &AdvisorManager, owner: &str) -> Vec<String> {
+pub fn known_runtime_keys(manager: &AdvisorManager, owner: &str) -> Result<Vec<String>> {
     let prefix = format!("advisor-roster:{}:{owner}:", owner.len());
-    manager
-        .sessions
-        .lock()
-        .map(|sessions| {
-            sessions
-                .iter()
-                .filter(|(key, runtime)| {
-                    key.as_str() == owner
-                        || runtime.owner_session_id == owner
-                        || key.strip_prefix(&prefix).is_some_and(valid_name)
-                })
-                .map(|(key, _)| key.clone())
-                .collect()
+    let sessions = manager.sessions.lock().map_err(|_| {
+        anyhow::anyhow!("advisor state unavailable; disable could not be confirmed")
+    })?;
+    Ok(sessions
+        .iter()
+        .filter(|(key, runtime)| {
+            key.as_str() == owner
+                || runtime.owner_session_id == owner
+                || key.strip_prefix(&prefix).is_some_and(valid_name)
         })
-        .unwrap_or_default()
+        .map(|(key, _)| key.clone())
+        .collect())
 }
 
 fn owner_control_key(owner: &str) -> String {
@@ -135,7 +132,7 @@ pub fn enable_owner(manager: &AdvisorManager, owner: &str) -> Result<()> {
 }
 
 pub fn disable_all(manager: &AdvisorManager, owner: &str, config: &AdvisorConfig) -> Result<()> {
-    let mut keys = known_runtime_keys(manager, owner);
+    let mut keys = known_runtime_keys(manager, owner)?;
     keys.push(owner.into());
     keys.push(owner_control_key(owner));
     if let Ok(entries) = entries(config) {
@@ -165,11 +162,13 @@ pub fn is_enabled(
     global: &AdvisorConfig,
     working_dir: Option<&std::path::Path>,
 ) -> bool {
-    let Ok(config) = config_for_owner(owner, global, working_dir) else {
-        return false;
-    };
-    let Ok(entries) = entries(&config) else {
-        return false;
+    let resolved = config_for_owner(owner, global, working_dir).and_then(|config| entries(&config));
+    let entries = match resolved {
+        Ok(entries) => entries,
+        Err(error) => {
+            configuration_failed(manager, owner, &error.to_string());
+            return false;
+        }
     };
     let owner_enabled = owner_enabled(manager, owner);
     entries.into_iter().any(|entry| {

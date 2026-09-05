@@ -244,3 +244,47 @@ fn named_model_effort_and_disable_resume_without_enabling_siblings_or_replaying(
     assert_eq!(provider.model(), "primary");
     assert_eq!(provider.reasoning_effort().as_deref(), Some("low"));
 }
+
+#[test]
+fn invalid_roster_pauses_with_visible_error_and_cancels_previous_advisor() {
+    let manager = AdvisorManager::default();
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    manager.sessions.lock().unwrap().insert(
+        runtime_session_key("invalid-roster", "security"),
+        crate::advisor::AdvisorRuntime {
+            owner_session_id: "invalid-roster".into(),
+            status: AdvisorStatus::Reviewing,
+            cancellation: Some(cancellation.clone()),
+            ..Default::default()
+        },
+    );
+    let invalid = AdvisorConfig {
+        enabled: true,
+        roster: vec![AdvisorRosterEntry {
+            name: "../invalid".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert!(!is_enabled(&manager, "invalid-roster", &invalid, None));
+    assert!(cancellation.is_cancelled());
+    let snapshot = manager.snapshot("invalid-roster").unwrap();
+    assert_eq!(snapshot.status, AdvisorStatus::Failed);
+    assert!(snapshot.last_error.unwrap().contains("advisor name must"));
+}
+
+#[test]
+fn poisoned_roster_state_reports_disable_failure_instead_of_empty_success() {
+    let manager = Arc::new(AdvisorManager::default());
+    let poisoned = Arc::clone(&manager);
+    assert!(
+        std::thread::spawn(move || {
+            let _held = poisoned.sessions.lock().unwrap();
+            panic!("fixture poisons advisor state");
+        })
+        .join()
+        .is_err()
+    );
+    let error = disable_all(&manager, "poisoned", &AdvisorConfig::default()).unwrap_err();
+    assert!(error.to_string().contains("state unavailable"));
+}
