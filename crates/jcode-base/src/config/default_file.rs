@@ -482,6 +482,9 @@ wake_mode = "internal"
 # session that spawned them. Set a concrete model only to pin every worker to it.
 # Env override: JCODE_SWARM_MODEL
 # swarm_model = "inherit"
+# /agents (also /config agents) selects a model, authenticated route, and effort.
+# The picker saves swarm_route alongside the legacy model string:
+# swarm_route = { model = "claude-opus-5", api_method = "claude-oauth", provider_label = "Anthropic" }
 #
 # Default reasoning effort for spawned swarm workers when the spawn call does
 # not pass an explicit `effort` ("low", "medium", "high", ...). Leave unset so
@@ -521,6 +524,9 @@ swarm_max_concurrent_agents = 32
 # (OpenAI defaults to gpt-5.6-luna with reasoning effort "none").
 # Env override: JCODE_MEMORY_MODEL
 # memory_model = "gpt-5.6-luna"
+# The picker preserves the exact route in memory_route.
+# Optional reasoning effort; Env override: JCODE_MEMORY_EFFORT
+# memory_effort = "none"
 #
 # Whether the memory sidecar (LLM precision judge) handles relevance/extraction.
 # Default true: the LLM precision-judge path is the only reliably productive
@@ -666,6 +672,22 @@ swarm_max_concurrent_agents = 32
 # JCODE_HOOK_ERROR.
 # post_tool = ""
 
+[autoreview]
+# Choose the reviewer model and effort with /agents review.
+enabled = false
+# model = "claude-oauth:claude-opus-5"
+# effort = "high"
+# The picker saves the exact authenticated catalog route in route.
+# Env overrides: JCODE_AUTOREVIEW_MODEL, JCODE_AUTOREVIEW_EFFORT
+
+[autojudge]
+# Choose the execution judge model and effort with /agents judge.
+enabled = false
+# model = "openai-oauth:gpt-5.6-astra"
+# effort = "high"
+# The picker saves the exact authenticated catalog route in route.
+# Env overrides: JCODE_AUTOJUDGE_MODEL, JCODE_AUTOJUDGE_EFFORT
+
 [advisor]
 # Internal second-model review after a primary turn. Disabled by default, so it
 # has no provider or runtime cost until explicitly enabled.
@@ -705,6 +727,9 @@ enabled = false
 # provider = "claude"
 # Model override (default: provider's strongest)
 # model = "claude-sonnet-4-20250514"
+# Use /agents ambient to save the exact authenticated route in route.
+# Optional reasoning effort; Env override: JCODE_AMBIENT_EFFORT
+# effort = "high"
 # Allow API key usage (default: false, only OAuth to avoid surprise costs)
 allow_api_keys = false
 # Daily token budget when using API keys (optional)

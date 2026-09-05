@@ -36,3 +36,5 @@ impl Drop for EnvVarGuard {
 
 #[path = "cases.rs"]
 mod cases;
+
+mod role_model;

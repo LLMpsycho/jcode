@@ -4,9 +4,10 @@
 //! Environment variables override config file settings.
 
 pub use jcode_config_types::{
-    AdvisorConfig, AdvisorMode, AdvisorSeverity, AgentsConfig, AmbientConfig, AuthConfig,
-    AutoJudgeConfig, AutoReviewConfig, CompactionConfig, CompactionMode, CrossProviderFailoverMode,
-    DiagramDisplayMode, DiagramPanePosition, DiffDisplayMode, DisplayConfig, FeatureConfig,
+    AdvisorConfig, AdvisorMode, AdvisorSeverity, AgentModelRole, AgentsConfig, AmbientConfig,
+    AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig, CompactionMode,
+    ConfigModelRoute, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
+    DiffDisplayMode, DisplayConfig, FeatureConfig,
     GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
     LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, NamedProviderAuth,
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
@@ -37,6 +38,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_AMBIENT_MAX_INTERVAL",
     "JCODE_AMBIENT_MIN_INTERVAL",
     "JCODE_AMBIENT_MODEL",
+    "JCODE_AMBIENT_EFFORT",
     "JCODE_AMBIENT_PROACTIVE",
     "JCODE_AMBIENT_PROVIDER",
     "JCODE_AMBIENT_VISIBLE",
@@ -44,8 +46,10 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_AUTO_POKE",
     "JCODE_AUTOJUDGE_ENABLED",
     "JCODE_AUTOJUDGE_MODEL",
+    "JCODE_AUTOJUDGE_EFFORT",
     "JCODE_AUTOREVIEW_ENABLED",
     "JCODE_AUTOREVIEW_MODEL",
+    "JCODE_AUTOREVIEW_EFFORT",
     "JCODE_AUTO_POKE",
     "JCODE_AUTO_SERVER_RELOAD",
     "JCODE_CHECK_UPDATES",
@@ -115,6 +119,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_MEMORY_ENABLED",
     "JCODE_ENABLE_MERMAID",
     "JCODE_MEMORY_MODEL",
+    "JCODE_MEMORY_EFFORT",
     "JCODE_MEMORY_SIDECAR_ENABLED",
     "JCODE_PERSIST_MEMORY_INJECTIONS",
     "JCODE_MESSAGE_TIMESTAMPS",
@@ -867,6 +872,7 @@ impl Default for DictationConfig {
 }
 
 pub mod change_report;
+mod agent_models;
 mod config_file;
 mod default_file;
 mod display_summary;

@@ -372,8 +372,22 @@ impl Config {
             self.features.update_channel = channel;
         }
 
+        if let Ok(value) = std::env::var("JCODE_MEMORY_EFFORT") {
+            self.agents.memory_effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+        }
+        if let Ok(value) = std::env::var("JCODE_AUTOREVIEW_EFFORT") {
+            self.autoreview.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+        }
+        if let Ok(value) = std::env::var("JCODE_AUTOJUDGE_EFFORT") {
+            self.autojudge.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+        }
+        if let Ok(value) = std::env::var("JCODE_AMBIENT_EFFORT") {
+            self.ambient.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+        }
+
         // Agents (spawned helper sessions)
         if let Ok(v) = std::env::var("JCODE_SWARM_MODEL") {
+            self.agents.swarm_route = None;
             let trimmed = v.trim();
             self.agents.swarm_model = if trimmed.is_empty() {
                 None
@@ -405,6 +419,7 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("JCODE_MEMORY_MODEL") {
+            self.agents.memory_route = None;
             let trimmed = v.trim();
             self.agents.memory_model = if trimmed.is_empty() {
                 None
@@ -559,6 +574,7 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("JCODE_AUTOREVIEW_MODEL") {
+            self.autoreview.route = None;
             let trimmed = v.trim();
             self.autoreview.model = if trimmed.is_empty() {
                 None
@@ -574,6 +590,7 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("JCODE_AUTOJUDGE_MODEL") {
+            self.autojudge.route = None;
             let trimmed = v.trim();
             self.autojudge.model = if trimmed.is_empty() {
                 None
@@ -589,9 +606,11 @@ impl Config {
             }
         }
         if let Ok(v) = std::env::var("JCODE_AMBIENT_PROVIDER") {
+            self.ambient.route = None;
             self.ambient.provider = Some(v);
         }
         if let Ok(v) = std::env::var("JCODE_AMBIENT_MODEL") {
+            self.ambient.route = None;
             self.ambient.model = Some(v);
         }
         if let Ok(v) = std::env::var("JCODE_AMBIENT_MIN_INTERVAL") {

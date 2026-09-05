@@ -96,6 +96,7 @@ impl Config {
 - Cross-provider failover: {}
 
 **Agent models:**
+Choose models and effort with `/agents` or `/config agents`; use `/advisor` for this session’s advisor.
 - Swarm / subagent: {}
 - Swarm spawn mode: {}
 - Spawn hook: {}
@@ -275,36 +276,46 @@ impl Config {
             self.provider.openai_native_compaction_mode.as_str(),
             self.provider.openai_native_compaction_threshold_tokens,
             self.provider.cross_provider_failover.as_str(),
-            self.agents
-                .swarm_model
-                .as_deref()
-                .unwrap_or("(inherit current session)"),
+            agent_model_summary(
+                self.agents.swarm_model.as_deref(),
+                self.agents.swarm_route.as_ref(),
+                self.agents.swarm_effort.as_deref(),
+                "(inherit current session)",
+            ),
             self.agents.swarm_spawn_mode.as_str(),
             self.terminal
                 .spawn_hook
                 .as_deref()
                 .unwrap_or("(built-in terminal detection)"),
-            self.autoreview
-                .model
-                .as_deref()
-                .unwrap_or("(inherit current session)"),
-            self.autojudge
-                .model
-                .as_deref()
-                .unwrap_or("(inherit current session)"),
-            self.agents
-                .memory_model
-                .as_deref()
-                .unwrap_or("(sidecar auto-select)"),
+            agent_model_summary(
+                self.autoreview.model.as_deref(),
+                self.autoreview.route.as_ref(),
+                self.autoreview.effort.as_deref(),
+                "(inherit current session)",
+            ),
+            agent_model_summary(
+                self.autojudge.model.as_deref(),
+                self.autojudge.route.as_ref(),
+                self.autojudge.effort.as_deref(),
+                "(inherit current session)",
+            ),
+            agent_model_summary(
+                self.agents.memory_model.as_deref(),
+                self.agents.memory_route.as_ref(),
+                self.agents.memory_effort.as_deref(),
+                "(sidecar auto-select)",
+            ),
             if self.agents.memory_sidecar_enabled {
                 "enabled"
             } else {
                 "disabled"
             },
-            self.ambient
-                .model
-                .as_deref()
-                .unwrap_or("(provider default)"),
+            agent_model_summary(
+                self.ambient.model.as_deref(),
+                self.ambient.route.as_ref(),
+                self.ambient.effort.as_deref(),
+                "(provider default)",
+            ),
             self.gateway.enabled,
             self.gateway.bind_addr,
             self.gateway.port,
@@ -374,4 +385,17 @@ impl Config {
             },
         )
     }
+}
+
+fn agent_model_summary(
+    model: Option<&str>,
+    route: Option<&ConfigModelRoute>,
+    effort: Option<&str>,
+    fallback: &str,
+) -> String {
+    let model = match route {
+        Some(route) => format!("{} ({} · {})", route.model, route.provider_label, route.api_method),
+        None => model.unwrap_or(fallback).to_string(),
+    };
+    format!("{} · effort: {}", model, effort.unwrap_or("default"))
 }
