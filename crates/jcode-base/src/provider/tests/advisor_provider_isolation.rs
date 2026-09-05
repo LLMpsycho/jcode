@@ -168,6 +168,51 @@ fn advisor_fork_preserves_jcode_subscription_effort() {
     });
 }
 
+#[test]
+fn advisor_subscription_route_stays_managed_after_auth_refresh_and_fork() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _runtime_guard = runtime.enter();
+        crate::env::set_var("JCODE_OPENROUTER_MODEL_CATALOG", "0");
+        crate::provider_catalog::save_env_value_to_env_file(
+            crate::subscription_catalog::JCODE_API_KEY_ENV,
+            crate::subscription_catalog::JCODE_ENV_FILE,
+            Some("test-managed-subscription-token"),
+        )
+        .unwrap();
+        assert!(std::env::var_os("OPENROUTER_API_KEY").is_none());
+        let executions = Arc::new(std::sync::Mutex::new(Vec::<Arc<dyn Provider>>::new()));
+        let captured = executions.clone();
+        external::register_openrouter_factory(move |spec| {
+            assert!(matches!(spec, external::OpenRouterRuntimeSpec::Default));
+            let runtime: Arc<dyn Provider> =
+                Arc::new(jcode_provider_openrouter_runtime::OpenRouterProvider::new()?);
+            let (_, api_method, _) = runtime.direct_openai_compatible_route_parts().unwrap();
+            assert_eq!(api_method, "jcode-subscription");
+            captured.lock().unwrap().push(runtime.clone());
+            Ok(runtime)
+        });
+
+        let provider = jcode::JcodeProvider::new();
+        provider.set_model("gpt-5.5").unwrap();
+        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        provider.set_reasoning_effort("high").unwrap();
+        provider.on_auth_changed();
+        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+        let advisor = provider.fork();
+        assert_eq!(advisor.model(), "gpt-5.5");
+        assert_eq!(advisor.reasoning_effort().as_deref(), Some("high"));
+        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        advisor.set_model("gpt-5.6-sol").unwrap();
+        assert_eq!(
+            executions.lock().unwrap().last().unwrap().model(),
+            "gpt-5.6-sol"
+        );
+        assert_eq!(provider.model(), "gpt-5.5");
+    });
+}
+
 fn advisor_primary_on_custom_endpoint() -> MultiProvider {
     save_test_openai_compatible_login_config("gpt-5.5");
     let provider = test_multi_provider_with_cursor();
