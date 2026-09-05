@@ -2058,9 +2058,7 @@ async fn stream_response(
     // OAuth keeps its fixed production endpoint. Unit tests can exercise its
     // retry policy with a local HTTP fixture and dummy credentials only.
     #[cfg(test)]
-    let url = if is_oauth
-        && let Some(fixture_url) = &direct_transport.oauth_fixture_url
-    {
+    let url = if is_oauth && let Some(fixture_url) = &direct_transport.oauth_fixture_url {
         let parsed = reqwest::Url::parse(fixture_url)?;
         anyhow::ensure!(
             parsed.scheme() == "http" && parsed.host_str() == Some("127.0.0.1"),
