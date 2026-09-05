@@ -113,7 +113,10 @@ fn advisor_picker_selects_oauth_route_and_effort_without_switching_main() {
             app.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::NONE)
                 .unwrap();
             let (id, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
-            assert_eq!(request["selection"]["runtime_key"]["kind"], "openai-oauth");
+            assert_eq!(
+                request["selection"]["runtime_key"],
+                serde_json::to_value(crate::provider::RuntimeKey::OpenAIOAuth).unwrap()
+            );
             let mut route = crate::provider::RouteSelection::from_model_route(&advisor_test_route(
                 "openai-oauth",
                 true,
@@ -129,7 +132,10 @@ fn advisor_picker_selects_oauth_route_and_effort_without_switching_main() {
             let (_, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
             assert_eq!(request["action"], "select_model");
             assert_eq!(request["reasoning_effort"], "high");
-            assert_eq!(request["selection"]["runtime_key"]["kind"], "openai-oauth");
+            assert_eq!(
+                request["selection"]["runtime_key"],
+                serde_json::to_value(crate::provider::RuntimeKey::OpenAIOAuth).unwrap()
+            );
             assert!(app.pending_model_switch.is_none());
             assert!(app.pending_route_selection.is_none());
             assert!(app.pending_reasoning_effort.is_none());
