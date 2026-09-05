@@ -115,6 +115,40 @@ pub(super) fn coalesce(
     latest.bounded(redact)
 }
 
+/// Provider replies become input again on the next step/update. Redact their
+/// visible content before retaining it, independently of publication filtering.
+/// Keep native reasoning/signatures and call IDs intact for provider continuity;
+/// original call arguments still drive this step's validated tool execution.
+fn retained_block(block: ContentBlock) -> ContentBlock {
+    match block {
+        ContentBlock::Text {
+            text,
+            cache_control,
+        } => ContentBlock::Text {
+            text: investigation::bounded_excerpt(&text, MAX_INPUT_BYTES),
+            cache_control,
+        },
+        ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            thought_signature,
+        } => {
+            let redacted = investigation::bounded_json_excerpt(&input, MAX_INPUT_BYTES);
+            let input = serde_json::from_str(&redacted).unwrap_or_else(
+                |_| json!({"redacted": "Tool arguments omitted after bounded redaction"}),
+            );
+            ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                thought_signature,
+            }
+        }
+        native => native,
+    }
+}
+
 pub(super) async fn execute(
     provider: Arc<dyn Provider>,
     input: &AdvisorTurnInput,
@@ -174,7 +208,7 @@ pub(super) async fn execute(
         .await?;
         let assistant = Message {
             role: Role::Assistant,
-            content: response.blocks,
+            content: response.blocks.into_iter().map(retained_block).collect(),
             timestamp: None,
             tool_duration_ms: None,
         };

@@ -133,6 +133,68 @@ async fn silence_and_private_commentary_keep_real_history_without_publishing() {
 }
 
 #[tokio::test]
+async fn retained_advice_and_private_prose_are_redacted_before_provider_replay() {
+    use crate::message::ContentBlock;
+    let manager = Arc::new(AdvisorManager::default());
+    let secret = "fixture-inline-private-value";
+    let opaque_json_secret = "opaque-json-password-value";
+    let provider = Scripted::new(vec![
+        tool(
+            "advise",
+            json!({
+                "concern_id": "replayed-advice", "severity": "concern",
+                "summary": format!("Acceptance drift OPENAI_API_KEY={secret}"),
+                "evidence": [], "recommended_action": "Verify the change",
+            }),
+        ),
+        text(&format!(
+            "Private observation OPENAI_API_KEY={secret} and {{\"password\":\"{opaque_json_secret}\"}}"
+        )),
+        text(r#"{"silence":true}"#),
+    ]);
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    run(&manager, &provider, &queue, "Inspect the change").await;
+    run(&manager, &provider, &queue, "Continue investigation").await;
+    run(&manager, &provider, &queue, "Verify final result").await;
+    let received = provider.received.lock().unwrap();
+    for request in &received[1..] {
+        let encoded = serde_json::to_string(request).unwrap();
+        assert!(
+            !encoded.contains(secret),
+            "provider reply secret was replayed"
+        );
+        assert!(
+            !encoded.contains(opaque_json_secret),
+            "private prose credential was replayed"
+        );
+    }
+    assert!(
+        serde_json::to_string(&received[2])
+            .unwrap()
+            .contains("Private observation")
+    );
+    let mut open = std::collections::HashSet::new();
+    let mut paired = 0;
+    for message in &received[1] {
+        for block in &message.content {
+            match block {
+                ContentBlock::ToolUse { id, .. } => {
+                    assert!(open.insert(id.clone()));
+                }
+                ContentBlock::ToolResult { tool_use_id, .. } => {
+                    assert!(open.remove(tool_use_id));
+                    paired += 1;
+                }
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(paired, 1);
+    assert!(open.is_empty());
+    assert!(!manager.notes("live")[0].summary.contains(secret));
+}
+
+#[tokio::test]
 async fn inherited_model_and_provider_changes_drop_incompatible_native_reasoning_history() {
     let manager = Arc::new(AdvisorManager::default());
     let mut initial = text(r#"{"silence":true}"#);
