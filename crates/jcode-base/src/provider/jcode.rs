@@ -270,7 +270,15 @@ impl Provider for JcodeProvider {
         self.ensure_runtime_mode();
         let forked = Self::new();
         let selected_model = self.model();
-        let _ = forked.set_model(&selected_model);
+        if forked.set_model(&selected_model).is_ok()
+            && let Some(effort) = self.reasoning_effort()
+            && forked.available_efforts().contains(&effort.as_str())
+            && let Err(error) = forked.set_reasoning_effort(&effort)
+        {
+            crate::logging::warn(&format!(
+                "Failed to preserve reasoning effort for forked subscription provider: {error}"
+            ));
+        }
         Arc::new(forked)
     }
 

@@ -140,3 +140,30 @@ fn advisor_fork_preserves_claude_oauth_effort() {
 fn advisor_fork_preserves_anthropic_api_effort() {
     assert_advisor_fork_preserves_effort(ActiveProvider::Claude, "claude-api");
 }
+
+#[test]
+fn advisor_fork_preserves_jcode_subscription_effort() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _runtime_guard = runtime.enter();
+        crate::provider_catalog::save_env_value_to_env_file(
+            crate::subscription_catalog::JCODE_API_KEY_ENV,
+            crate::subscription_catalog::JCODE_ENV_FILE,
+            Some("test-managed-subscription-token"),
+        )
+        .expect("save isolated subscription credential");
+        let provider = jcode::JcodeProvider::new();
+        provider.set_model("gpt-5.5").unwrap();
+        provider.set_reasoning_effort("high").unwrap();
+
+        let advisor = provider.fork();
+        assert_eq!(advisor.model(), "gpt-5.5");
+        assert_eq!(advisor.reasoning_effort().as_deref(), Some("high"));
+        advisor.set_reasoning_effort("low").unwrap();
+        advisor.set_model("gpt-5.6-sol").unwrap();
+        assert_eq!(provider.model(), "gpt-5.5");
+        assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+        provider.set_reasoning_effort("medium").unwrap();
+        assert_eq!(advisor.reasoning_effort().as_deref(), Some("low"));
+    });
+}
