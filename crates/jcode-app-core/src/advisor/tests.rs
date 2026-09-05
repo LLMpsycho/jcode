@@ -295,7 +295,9 @@ impl Provider for BlockingAdvisorProvider {
     }
 
     fn name(&self) -> &str {
-        "advisor-blocking-test"
+        // The delayed and immediate fixtures represent the same selected route.
+        // A genuinely different provider must cancel the old review instead.
+        "advisor-test"
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
@@ -486,6 +488,21 @@ async fn review_finishing_while_another_turn_completes_runs_latest_pending_revie
         enabled_config(),
     ));
 
+    {
+        let sessions = manager.sessions.lock().expect("sessions");
+        let active = &sessions["coalesce"];
+        assert_eq!(active.cursor, 1, "same-route update must stay coalesced");
+        assert_eq!(active.status, AdvisorStatus::Reviewing);
+        assert_eq!(
+            active
+                .pending
+                .as_ref()
+                .expect("pending update")
+                .input
+                .objective,
+            "latest"
+        );
+    }
     release.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
