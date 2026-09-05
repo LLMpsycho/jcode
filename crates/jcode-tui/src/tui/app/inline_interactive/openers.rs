@@ -110,5 +110,4 @@ impl App {
         self.input.clear();
         self.cursor_pos = 0;
     }
-
 }

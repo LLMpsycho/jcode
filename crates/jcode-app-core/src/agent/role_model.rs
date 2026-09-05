@@ -12,10 +12,18 @@ impl Agent {
         allowed_tools: Option<HashSet<String>>,
     ) -> Result<Self> {
         let Some(route) = session.role_model_selection.clone() else {
-            return Ok(Self::new_with_session(provider, registry, session, allowed_tools));
+            return Ok(Self::new_with_session(
+                provider,
+                registry,
+                session,
+                allowed_tools,
+            ));
         };
         let provider = fork_for_agent_role(
-            provider.as_ref(), Some(&route), None, session.reasoning_effort.as_deref(),
+            provider.as_ref(),
+            Some(&route),
+            None,
+            session.reasoning_effort.as_deref(),
         )?;
         // The selected fork already holds exact auth/model/effort. Do not
         // repeat the legacy best-effort string restoration in the constructor.

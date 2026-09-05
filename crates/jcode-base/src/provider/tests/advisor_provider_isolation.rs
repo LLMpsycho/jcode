@@ -753,7 +753,11 @@ fn agent_role_pinned_missing_runtime_never_uses_another_provider() {
                 .await
                 .err()
                 .expect("missing selected runtime must fail");
-            assert!(error.to_string().contains("Claude credentials not available"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Claude credentials not available")
+            );
             assert!(calls.lock().unwrap().is_empty());
             assert_eq!(provider.active_provider(), ActiveProvider::Claude);
 

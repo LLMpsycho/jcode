@@ -1105,18 +1105,32 @@ impl App {
         if let Some(previous) = previous {
             if let Some(target) = picker_agent_target(&previous) {
                 // Cached, synchronous and loading rebuilds must retain the role.
-                if self.inline_interactive_state.as_ref().and_then(picker_agent_target).is_none() {
+                if self
+                    .inline_interactive_state
+                    .as_ref()
+                    .and_then(picker_agent_target)
+                    .is_none()
+                {
                     self.configure_agent_model_picker(target);
                 }
             }
             if let Some(picker) = self.inline_interactive_state.as_mut() {
-                if previous.entries.iter().any(|entry| matches!(entry.action, PickerAction::SubagentModelChoice { .. })) {
-                    Self::configure_subagent_model_picker(picker, self.session.subagent_model.as_deref());
+                if previous
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry.action, PickerAction::SubagentModelChoice { .. }))
+                {
+                    Self::configure_subagent_model_picker(
+                        picker,
+                        self.session.subagent_model.as_deref(),
+                    );
                 }
                 picker.preview = previous.preview;
                 picker.filter = previous.filter;
                 Self::apply_inline_interactive_filter(picker);
-                picker.selected = previous.selected.min(picker.filtered.len().saturating_sub(1));
+                picker.selected = previous
+                    .selected
+                    .min(picker.filtered.len().saturating_sub(1));
                 picker.column = previous.column.min(picker.max_navigable_column());
             }
         }
@@ -1417,7 +1431,11 @@ impl App {
     }
 
     pub(super) fn poll_model_picker_load(&mut self) -> bool {
-        if !self.inline_interactive_state.as_ref().is_some_and(picker_uses_model_catalog) {
+        if !self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(picker_uses_model_catalog)
+        {
             self.pending_model_picker_load = None;
             return false;
         }
@@ -1958,7 +1976,10 @@ impl App {
             );
         }
 
-        let previous_role = self.inline_interactive_state.as_ref().and_then(picker_agent_target);
+        let previous_role = self
+            .inline_interactive_state
+            .as_ref()
+            .and_then(picker_agent_target);
         let previous_picker = self.inline_interactive_state.as_ref().and_then(|picker| {
             if picker.kind == PickerKind::Model {
                 Some((
@@ -3526,7 +3547,10 @@ impl App {
                     PickerAction::AgentTarget(target) => {
                         self.open_agent_model_picker(target);
                     }
-                    PickerAction::AgentModelChoice { target, clear_override } => {
+                    PickerAction::AgentModelChoice {
+                        target,
+                        clear_override,
+                    } => {
                         self.apply_agent_model_choice(target, clear_override, &entry);
                     }
                     PickerAction::SubagentModelChoice { inherit } => {

@@ -125,7 +125,10 @@ async fn explicit_memory_route_and_effort_are_used_without_changing_the_primary(
         Some(primary.clone()),
     );
 
-    assert_eq!(sidecar.complete("system", "user").await.unwrap(), "gpt-5.4:high");
+    assert_eq!(
+        sidecar.complete("system", "user").await.unwrap(),
+        "gpt-5.4:high"
+    );
     assert_eq!(sidecar.model_name(), "gpt-5.4");
     assert_eq!(primary.model(), "main-model");
     assert_eq!(primary.reasoning_effort().as_deref(), Some("low"));
@@ -157,13 +160,20 @@ async fn unavailable_memory_selection_never_falls_back_or_retries_permanently() 
     for sidecar in [
         Sidecar::with_role_provider(Some(&unavailable), None, None, Some(primary.clone())),
         Sidecar::with_role_provider(
-            Some(&selected_route()), None, Some("swarm"), Some(primary.clone()),
+            Some(&selected_route()),
+            None,
+            Some("swarm"),
+            Some(primary.clone()),
         ),
         Sidecar::with_role_provider(Some(&selected_route()), None, None, None),
     ] {
         let error = sidecar.complete("system", "user").await.unwrap_err();
         assert_eq!(classify_error(&error), SidecarErrorKind::Permanent);
-        assert!(error.to_string().contains("Memory sidecar model configuration"));
+        assert!(
+            error
+                .to_string()
+                .contains("Memory sidecar model configuration")
+        );
     }
     assert_eq!(primary.calls.load(Ordering::SeqCst), 0);
     assert_eq!(primary.model(), "main-model");
@@ -172,9 +182,14 @@ async fn unavailable_memory_selection_never_falls_back_or_retries_permanently() 
 #[tokio::test]
 async fn memory_rejects_providers_that_cannot_disable_hosted_tools() {
     let primary = Arc::new(RoleProvider::new(false));
-    let sidecar = Sidecar::with_role_provider(Some(&selected_route()), None, None, Some(primary.clone()));
+    let sidecar =
+        Sidecar::with_role_provider(Some(&selected_route()), None, None, Some(primary.clone()));
     let error = sidecar.complete("system", "user").await.unwrap_err();
-    assert!(error.to_string().contains("cannot disable its built-in tools"));
+    assert!(
+        error
+            .to_string()
+            .contains("cannot disable its built-in tools")
+    );
     assert_eq!(classify_error(&error), SidecarErrorKind::Permanent);
     assert_eq!(primary.calls.load(Ordering::SeqCst), 0);
 }

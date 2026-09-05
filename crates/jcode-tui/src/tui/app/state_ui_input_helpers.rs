@@ -48,7 +48,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::hidden("/model-status", "Alias for /provider-test-coverage"),
     RegisteredCommand::public("/refresh-model-list", "Refresh provider model catalogs"),
-    RegisteredCommand::public("/agents", "Choose models and reasoning effort by agent role"),
+    RegisteredCommand::public(
+        "/agents",
+        "Choose models and reasoning effort by agent role",
+    ),
     RegisteredCommand::public(
         "/swarm-prompt",
         "Open the active swarm routing prompt in your editor",
@@ -1095,7 +1098,10 @@ impl App {
             return self.rank_suggestions(
                 input,
                 vec![
-                    ("/config agents".into(), "Choose models and effort by agent role"),
+                    (
+                        "/config agents".into(),
+                        "Choose models and effort by agent role",
+                    ),
                     ("/config models".into(), "Alias for /config agents"),
                     ("/config init".into(), "Create a default config file"),
                     ("/config create".into(), "Alias for /config init"),

@@ -18,8 +18,8 @@ pub(super) use super::commands_review::{
     handle_autojudge_command_local, handle_autoreview_command_local, handle_judge_command_local,
     handle_observe_command, handle_review_command_local, launch_forked_session_local,
     launch_prompt_in_new_session_local, maybe_trigger_autojudge_local,
-    maybe_trigger_autoreview_local,
-    prepare_review_spawned_session, queue_review_spawn_remote, reset_current_session,
+    maybe_trigger_autoreview_local, prepare_review_spawned_session, queue_review_spawn_remote,
+    reset_current_session,
 };
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, LocalRewindUndoSnapshot, ProcessingStatus};
@@ -3190,7 +3190,8 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(target) = parse_agents_target(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents or /config models [main|swarm|advisor|review|judge|memory|ambient]".to_string(),
+            "Usage: /agents or /config models [main|swarm|advisor|review|judge|memory|ambient]"
+                .to_string(),
         ));
         return true;
     };

@@ -1,7 +1,7 @@
 mod accessors;
 mod account_failover;
-mod agent_roles;
 pub mod activation;
+mod agent_roles;
 pub mod anthropic;
 pub mod antigravity;
 pub mod bedrock;
@@ -46,13 +46,13 @@ use registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
+pub use agent_roles::{configured_role_route, fork_for_agent_role};
 pub use catalog_routes::{
     append_simplified_anthropic_model_routes, remote_current_openai_compatible_route_for_model,
     remote_model_is_server_copilot_only, remote_model_routes_fallback,
     remote_model_routes_lightweight_fallback, remote_model_should_offer_copilot_route,
     remote_openai_compatible_route_for_model, simplified_model_routes_for_picker,
 };
-pub use agent_roles::{configured_role_route, fork_for_agent_role};
 pub use jcode_provider_core::attempt_tracker;
 pub use jcode_provider_core::cli_provider_arg_for_session_key;
 pub use jcode_provider_core::{

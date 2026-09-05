@@ -251,7 +251,10 @@ impl Provider for SessionCatalogProvider {
         &self,
         selection: &crate::provider::RouteSelection,
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(selection.model == self.0, "route belongs to another session");
+        anyhow::ensure!(
+            selection.model == self.0,
+            "route belongs to another session"
+        );
         Ok(())
     }
 
@@ -300,7 +303,12 @@ async fn advisor_busy_catalog_and_effort_preview_use_exact_attached_session_prov
 
     for (id, session, agent, expected_model) in [
         (1, "advisor_catalog_first", &first, "first-account-model"),
-        (2, "advisor_catalog_attached", &attached, "attached-account-model"),
+        (
+            2,
+            "advisor_catalog_attached",
+            &attached,
+            "attached-account-model",
+        ),
     ] {
         handle_with_manager(
             id,
@@ -312,7 +320,9 @@ async fn advisor_busy_catalog_and_effort_preview_use_exact_attached_session_prov
         );
         let result = next_result(&mut receiver, id).await;
         assert!(result.error.is_none());
-        let options = result.model_options.expect("catalog while turn remains locked");
+        let options = result
+            .model_options
+            .expect("catalog while turn remains locked");
         assert_eq!(options.available_selections.len(), 1);
         let selection = options.available_selections[0].clone();
         assert_eq!(selection.model, expected_model);
@@ -328,8 +338,13 @@ async fn advisor_busy_catalog_and_effort_preview_use_exact_attached_session_prov
         );
         let preview = next_result(&mut receiver, id + 10).await;
         assert!(preview.error.is_none());
-        let preview = preview.model_options.expect("efforts while turn remains locked");
-        assert_eq!(preview.selection.expect("exact route").model, expected_model);
+        let preview = preview
+            .model_options
+            .expect("efforts while turn remains locked");
+        assert_eq!(
+            preview.selection.expect("exact route").model,
+            expected_model
+        );
         assert_eq!(preview.available_efforts, vec!["low", "high"]);
         assert_eq!(preview.reasoning_effort.as_deref(), Some("low"));
     }
@@ -389,7 +404,12 @@ async fn advisor_unregistered_busy_session_returns_actionable_error_without_wait
         Arc::new(AdvisorManager::default()),
     );
     let result = next_result(&mut receiver, 1).await;
-    assert!(result.error.expect("explicit error").contains("retry /advisor"));
+    assert!(
+        result
+            .error
+            .expect("explicit error")
+            .contains("retry /advisor")
+    );
     assert!(result.model_options.is_none());
 }
 

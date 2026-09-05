@@ -1520,7 +1520,8 @@ async fn run_ambient_visible() -> Result<()> {
     })?;
 
     let provider =
-        super::provider_init::init_provider(&super::provider_init::ProviderChoice::Auto, None).await?;
+        super::provider_init::init_provider(&super::provider_init::ProviderChoice::Auto, None)
+            .await?;
     let ambient = &crate::config::config().ambient;
     let provider = crate::ambient::runner::fork_ambient_provider(provider.as_ref(), ambient)?;
     let registry = crate::tool::Registry::new(provider.clone()).await;

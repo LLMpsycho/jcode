@@ -554,20 +554,31 @@ fn advisor_picker_typing_opens_and_filters_before_enter() {
             }
             let picker = app.inline_interactive_state.as_ref().unwrap();
             assert_eq!(picker.filter, "gpt");
-            assert!(!picker.filtered.is_empty(), "loading remains visible while filtering");
+            assert!(
+                !picker.filtered.is_empty(),
+                "loading remains visible while filtering"
+            );
             app.forward_pending_advisor_request(&mut remote).await;
             use tokio::io::AsyncBufReadExt;
             let mut extra = String::new();
-            assert!(tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                reader.read_line(&mut extra)
-            ).await.is_err(), "filtering must not repeatedly request the catalog");
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    reader.read_line(&mut extra)
+                )
+                .await
+                .is_err(),
+                "filtering must not repeatedly request the catalog"
+            );
             app.handle_advisor_result(id, advisor_test_result(None));
             let picker = app.inline_interactive_state.as_ref().unwrap();
             assert!(picker.preview);
             assert_eq!(app.input, "/advisor gpt");
             assert_eq!(picker.filtered.len(), 1);
-            assert_eq!(picker.entries[picker.filtered[0]].options[0].api_method, "openai-oauth");
+            assert_eq!(
+                picker.entries[picker.filtered[0]].options[0].api_method,
+                "openai-oauth"
+            );
             app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
                 .await
                 .unwrap();
@@ -607,10 +618,15 @@ fn advisor_picker_bare_preview_enter_focuses_without_enabling_or_closing_loading
                 app.forward_pending_advisor_request(&mut remote).await;
                 use tokio::io::AsyncBufReadExt;
                 let mut line = String::new();
-                assert!(tokio::time::timeout(
-                    std::time::Duration::from_millis(20),
-                    reader.read_line(&mut line)
-                ).await.is_err(), "opening /advisor must not enable it");
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(20),
+                        reader.read_line(&mut line)
+                    )
+                    .await
+                    .is_err(),
+                    "opening /advisor must not enable it"
+                );
                 if !ready {
                     // A second Enter while the server is still loading must
                     // not dismiss the only visible progress indication.
@@ -619,7 +635,12 @@ fn advisor_picker_bare_preview_enter_focuses_without_enabling_or_closing_loading
                         .unwrap();
                     assert!(app.inline_interactive_state.is_some());
                     app.handle_advisor_result(id, advisor_test_result(None));
-                    assert!(app.inline_interactive_state.as_ref().unwrap().is_advisor_picker());
+                    assert!(
+                        app.inline_interactive_state
+                            .as_ref()
+                            .unwrap()
+                            .is_advisor_picker()
+                    );
                 }
             });
         }
@@ -645,7 +666,11 @@ fn advisor_picker_preview_control_input_and_escape_cancel_pending_catalog() {
                 app.cursor_pos = app.input.len();
                 app.sync_model_picker_preview_from_input();
                 app.handle_advisor_result(id, advisor_test_result(None));
-                assert!(!app.inline_interactive_state.as_ref().is_some_and(|picker| picker.is_advisor_picker()));
+                assert!(
+                    !app.inline_interactive_state
+                        .as_ref()
+                        .is_some_and(|picker| picker.is_advisor_picker())
+                );
             }
             app.input = "/advisor".into();
             app.cursor_pos = app.input.len();
@@ -657,10 +682,15 @@ fn advisor_picker_preview_control_input_and_escape_cancel_pending_catalog() {
             assert!(app.inline_interactive_state.is_none());
             use tokio::io::AsyncBufReadExt;
             let mut line = String::new();
-            assert!(tokio::time::timeout(
-                std::time::Duration::from_millis(20),
-                reader.read_line(&mut line)
-            ).await.is_err(), "Escape must cancel the unsent catalog request");
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    reader.read_line(&mut line)
+                )
+                .await
+                .is_err(),
+                "Escape must cancel the unsent catalog request"
+            );
         });
     });
 }
@@ -675,13 +705,21 @@ fn advisor_picker_timeout_explains_reload_and_ignores_late_error() {
             let mut remote = crate::tui::backend::RemoteConnection::dummy();
             let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
             let mut reader = tokio::io::BufReader::new(peer);
-            app.queue_advisor_request(crate::protocol::AdvisorRequest::ModelOptions { selection: None });
+            app.queue_advisor_request(crate::protocol::AdvisorRequest::ModelOptions {
+                selection: None,
+            });
             let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
             let now = std::time::Instant::now();
             assert!(!app.expire_advisor_requests(now));
             assert!(app.expire_advisor_requests(now + std::time::Duration::from_secs(31)));
             assert!(app.inline_interactive_state.is_none());
-            assert!(app.display_messages.last().unwrap().content.contains("/reload"));
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("/reload")
+            );
             let messages = app.display_messages.len();
             assert!(!app.expire_advisor_requests(now + std::time::Duration::from_secs(60)));
             app.is_processing = true;
@@ -690,8 +728,16 @@ fn advisor_picker_timeout_explains_reload_and_ignores_late_error() {
             assert_eq!(app.display_messages.len(), messages);
             app.queue_advisor_request(crate::protocol::AdvisorRequest::Disable);
             let (_, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
-            assert!(app.expire_advisor_requests(std::time::Instant::now() + std::time::Duration::from_secs(31)));
-            assert!(app.display_messages.last().unwrap().content.contains("saved outcome is unknown"));
+            assert!(app.expire_advisor_requests(
+                std::time::Instant::now() + std::time::Duration::from_secs(31)
+            ));
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("saved outcome is unknown")
+            );
         });
     });
 }
@@ -703,8 +749,7 @@ fn advisor_picker_local_and_disconnected_commands_explain_connection_requirement
         for is_remote in [false, true] {
             app.is_remote = is_remote;
             assert!(crate::tui::app::commands_dispatch::dispatch_local_command(
-                &mut app,
-                "/advisor"
+                &mut app, "/advisor"
             ));
             assert!(!app.is_processing);
             assert!(!app.pending_turn);
@@ -730,7 +775,10 @@ fn advisor_picker_config_aliases_open_roles_and_route_advisor_selection() {
             app.cursor_pos = app.input.len();
             app.submit_input();
             let picker = app.inline_interactive_state.as_ref().unwrap();
-            for target in [crate::tui::AgentModelTarget::Main, crate::tui::AgentModelTarget::Advisor] {
+            for target in [
+                crate::tui::AgentModelTarget::Main,
+                crate::tui::AgentModelTarget::Advisor,
+            ] {
                 assert!(picker.entries.iter().any(|entry| matches!(
                     entry.action,
                     crate::tui::PickerAction::AgentTarget(found) if found == target
@@ -738,18 +786,33 @@ fn advisor_picker_config_aliases_open_roles_and_route_advisor_selection() {
             }
             assert!(!app.is_processing);
         }
-        for command in ["/agents advisor", "/config agents advisor", "/config models advisor"] {
+        for command in [
+            "/agents advisor",
+            "/config agents advisor",
+            "/config models advisor",
+        ] {
             let mut app = create_test_app();
             app.is_remote = true;
             app.input = command.into();
             app.cursor_pos = app.input.len();
             app.submit_input();
-            assert!(app.inline_interactive_state.as_ref().unwrap().is_advisor_picker());
+            assert!(
+                app.inline_interactive_state
+                    .as_ref()
+                    .unwrap()
+                    .is_advisor_picker()
+            );
             assert!(!app.is_processing);
             assert!(app.pending_model_switch.is_none());
         }
         let mut app = create_test_app();
-        assert!(!crate::tui::app::commands::handle_agents_command(&mut app, "/agents-extra"));
-        assert!(!crate::tui::app::commands::handle_agents_command(&mut app, "/config models-extra"));
+        assert!(!crate::tui::app::commands::handle_agents_command(
+            &mut app,
+            "/agents-extra"
+        ));
+        assert!(!crate::tui::app::commands::handle_agents_command(
+            &mut app,
+            "/config models-extra"
+        ));
     });
 }

@@ -1440,7 +1440,12 @@ impl InlineInteractiveState {
                 shows_default_shortcut_hint: false,
                 preview_activation_column: 2,
             }
-        } else if self.kind == PickerKind::Model && self.entries.iter().any(|entry| matches!(entry.action, PickerAction::AgentModelChoice { .. })) {
+        } else if self.kind == PickerKind::Model
+            && self
+                .entries
+                .iter()
+                .any(|entry| matches!(entry.action, PickerAction::AgentModelChoice { .. }))
+        {
             InlineInteractiveSchema {
                 shows_default_shortcut_hint: false,
                 ..self.kind.schema()

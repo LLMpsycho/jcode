@@ -36,7 +36,10 @@ fn review_role_explicit_route_wins_over_legacy_model_and_main_effort() {
         provider_label: "Anthropic".into(),
     };
     let choice = ReviewModelSelection::from_settings(
-        &parent, Some(&route), Some("stale-legacy-model"), Some("max"),
+        &parent,
+        Some(&route),
+        Some("stale-legacy-model"),
+        Some("max"),
     );
     let mut child = Session::create(None, None);
     choice.apply(&mut child);
@@ -72,16 +75,35 @@ fn review_role_fixed_model_does_not_inherit_incompatible_parent_effort() {
 #[test]
 fn review_role_persists_custom_endpoint_and_openrouter_provider_pin() {
     for (api, provider, model, expected, restore) in [
-        ("openai-compatible:local", "Local", "worker", "worker", "local:worker"),
-        ("openrouter", "Anthropic", "anthropic/worker", "anthropic/worker@Anthropic", "openrouter:anthropic/worker@Anthropic"),
-        ("jcode-subscription", "Jcode", "managed-worker", "managed-worker", "managed-worker"),
+        (
+            "openai-compatible:local",
+            "Local",
+            "worker",
+            "worker",
+            "local:worker",
+        ),
+        (
+            "openrouter",
+            "Anthropic",
+            "anthropic/worker",
+            "anthropic/worker@Anthropic",
+            "openrouter:anthropic/worker@Anthropic",
+        ),
+        (
+            "jcode-subscription",
+            "Jcode",
+            "managed-worker",
+            "managed-worker",
+            "managed-worker",
+        ),
     ] {
         let route = ConfigModelRoute {
             model: model.into(),
             api_method: api.into(),
             provider_label: provider.into(),
         };
-        let choice = ReviewModelSelection::from_settings(&parent(), Some(&route), None, Some("low"));
+        let choice =
+            ReviewModelSelection::from_settings(&parent(), Some(&route), None, Some("low"));
         let mut child = Session::create(None, None);
         choice.apply(&mut child);
         assert_eq!(child.model.as_deref(), Some(expected));

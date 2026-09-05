@@ -373,13 +373,16 @@ impl Config {
         }
 
         if let Ok(value) = std::env::var("JCODE_MEMORY_EFFORT") {
-            self.agents.memory_effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+            self.agents.memory_effort =
+                Some(value.trim().to_string()).filter(|value| !value.is_empty());
         }
         if let Ok(value) = std::env::var("JCODE_AUTOREVIEW_EFFORT") {
-            self.autoreview.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+            self.autoreview.effort =
+                Some(value.trim().to_string()).filter(|value| !value.is_empty());
         }
         if let Ok(value) = std::env::var("JCODE_AUTOJUDGE_EFFORT") {
-            self.autojudge.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());
+            self.autojudge.effort =
+                Some(value.trim().to_string()).filter(|value| !value.is_empty());
         }
         if let Ok(value) = std::env::var("JCODE_AMBIENT_EFFORT") {
             self.ambient.effort = Some(value.trim().to_string()).filter(|value| !value.is_empty());

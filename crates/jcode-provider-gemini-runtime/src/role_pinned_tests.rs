@@ -19,7 +19,9 @@ fn rejection_fixture(requests: usize) -> (String, std::thread::JoinHandle<Vec<St
                 }
                 Err(error) => panic!("fixture accept: {error}"),
             };
-            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
             let mut bytes = Vec::new();
             let body_start = loop {
                 let mut buf = [0; 4096];
@@ -30,19 +32,39 @@ fn rejection_fixture(requests: usize) -> (String, std::thread::JoinHandle<Vec<St
                     break index + 4;
                 }
             };
-            let length: usize = String::from_utf8_lossy(&bytes[..body_start]).lines()
-                .find_map(|line| line.to_ascii_lowercase().strip_prefix("content-length:").map(|length| length.trim().parse().unwrap())).unwrap();
+            let length: usize = String::from_utf8_lossy(&bytes[..body_start])
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|length| length.trim().parse().unwrap())
+                })
+                .unwrap();
             while bytes.len() < body_start + length {
                 let mut buf = [0; 4096];
                 let n = stream.read(&mut buf).unwrap();
                 assert_ne!(n, 0);
                 bytes.extend_from_slice(&buf[..n]);
             }
-            bodies.push(String::from_utf8_lossy(&bytes[..body_start]).lines().next().unwrap().to_string());
+            bodies.push(
+                String::from_utf8_lossy(&bytes[..body_start])
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_string(),
+            );
             let (status, content_type, body) = if bodies.len() == 1 {
-                ("404 Not Found", "application/json", r#"{"error":{"status":"NOT_FOUND","message":"Requested entity was not found."}}"#)
+                (
+                    "404 Not Found",
+                    "application/json",
+                    r#"{"error":{"status":"NOT_FOUND","message":"Requested entity was not found."}}"#,
+                )
             } else {
-                ("200 OK", "application/json", r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#)
+                (
+                    "200 OK",
+                    "application/json",
+                    r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}"#,
+                )
             };
             write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
         }
@@ -83,9 +105,15 @@ fn role_pinned_gemini_rejects_model_fallback_after_stream_creation() {
         provider.client = reqwest::Client::builder().no_proxy().build().unwrap();
         provider.set_model("gemini-2.5-flash").unwrap();
         provider.set_route_pinned(pinned);
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let failed = runtime.block_on(async {
-            let mut events = provider.complete(&[Message::user("fixture")], &[], "system", None).await.unwrap();
+            let mut events = provider
+                .complete(&[Message::user("fixture")], &[], "system", None)
+                .await
+                .unwrap();
             // MultiProvider may release its pin once it has the stream. The
             // deferred generator must retain the original per-request policy.
             provider.set_route_pinned(false);
@@ -94,7 +122,9 @@ fn role_pinned_gemini_rejects_model_fallback_after_stream_creation() {
                 while let Some(event) = events.next().await {
                     failed |= event.is_err();
                 }
-            }).await.unwrap();
+            })
+            .await
+            .unwrap();
             failed
         });
         let requests = server.join().unwrap();

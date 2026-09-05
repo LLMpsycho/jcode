@@ -59,7 +59,10 @@ fn preview_filter(input: &str) -> Option<String> {
     }
     let rest = rest.trim_start();
     let first = rest.split_whitespace().next().unwrap_or_default();
-    if matches!(first, "inherit" | "status" | "inspect" | "on" | "off" | "dismiss" | "ack") {
+    if matches!(
+        first,
+        "inherit" | "status" | "inspect" | "on" | "off" | "dismiss" | "ack"
+    ) {
         return None;
     }
     if matches!(first, "model" | "models") {
@@ -110,10 +113,12 @@ impl App {
         };
         let message = match request {
             Err(usage) => usage,
-            Ok(_) if self.is_remote =>
-                "Advisor controls require a live server connection. Reconnect, then use /advisor to choose a model or /advisor status to inspect saved settings.",
-            Ok(_) =>
-                "Advisor controls are available in a regular jcode server session. Open jcode and use /advisor to choose its model and effort.",
+            Ok(_) if self.is_remote => {
+                "Advisor controls require a live server connection. Reconnect, then use /advisor to choose a model or /advisor status to inspect saved settings."
+            }
+            Ok(_) => {
+                "Advisor controls are available in a regular jcode server session. Open jcode and use /advisor to choose its model and effort."
+            }
         };
         self.push_display_message(DisplayMessage::system(message));
         true
@@ -126,7 +131,10 @@ impl App {
             .inline_interactive_state
             .as_ref()
             .is_some_and(|picker| picker.preview && picker.is_advisor_picker());
-        let filter = self.is_remote.then(|| preview_filter(&self.input)).flatten();
+        let filter = self
+            .is_remote
+            .then(|| preview_filter(&self.input))
+            .flatten();
         let Some(filter) = filter else {
             if advisor_preview {
                 self.cancel_advisor_picker();
@@ -143,8 +151,8 @@ impl App {
             self.input = input;
             self.cursor_pos = cursor;
         }
-        let loading = self.advisor_picker.pending.is_some()
-            || self.advisor_picker.request_id.is_some();
+        let loading =
+            self.advisor_picker.pending.is_some() || self.advisor_picker.request_id.is_some();
         if let Some(picker) = self.inline_interactive_state.as_mut() {
             picker.filter = filter;
             // Keep the loading row visible while the user starts filtering.
@@ -164,8 +172,8 @@ impl App {
         if !picker.preview || !picker.is_advisor_picker() {
             return false;
         }
-        let loading = self.advisor_picker.pending.is_some()
-            || self.advisor_picker.request_id.is_some();
+        let loading =
+            self.advisor_picker.pending.is_some() || self.advisor_picker.request_id.is_some();
         if !loading && !(picker.filter.is_empty() && picker.selected == 0) {
             return false;
         }
@@ -183,7 +191,8 @@ impl App {
         let mut model_timeout = false;
         let mut control_timeout = false;
         for (id, request) in &mut self.advisor_picker.in_flight {
-            if request.timed_out || now.saturating_duration_since(request.sent_at) < REQUEST_TIMEOUT {
+            if request.timed_out || now.saturating_duration_since(request.sent_at) < REQUEST_TIMEOUT
+            {
                 continue;
             }
             request.timed_out = true;

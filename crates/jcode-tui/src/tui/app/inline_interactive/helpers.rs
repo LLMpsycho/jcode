@@ -212,9 +212,15 @@ pub(super) fn normalize_agent_model_summary(
 
 pub(super) fn agent_model_default_summary(target: AgentModelTarget, app: &App) -> String {
     let summary = match target {
-        AgentModelTarget::Main => app.remote_provider_model.clone().or_else(|| Some(app.provider.model())),
+        AgentModelTarget::Main => app
+            .remote_provider_model
+            .clone()
+            .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Advisor => Some("session selection · /advisor status".into()),
-        AgentModelTarget::Swarm => app.session.subagent_model.clone()
+        AgentModelTarget::Swarm => app
+            .session
+            .subagent_model
+            .clone()
             .or_else(|| load_agent_model_override(target))
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Review => load_agent_model_override(target)

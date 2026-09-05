@@ -407,7 +407,10 @@ fn feedback_role_model_line(
         ),
     };
     if let Some(route) = route {
-        line.push_str(&format!(" via {} ({})", route.provider_label, route.api_method));
+        line.push_str(&format!(
+            " via {} ({})",
+            route.provider_label, route.api_method
+        ));
     }
     if let Some(effort) = effort {
         line.push_str(&format!("; effort: {effort}"));
@@ -419,7 +422,11 @@ pub(super) fn autoreview_status_message(app: &App) -> String {
     let default_enabled = crate::config::config().autoreview.enabled;
     let config = &crate::config::config().autoreview;
     let model_line = feedback_role_model_line(
-        "Reviewer", app, config.route.as_ref(), config.model.as_deref(), config.effort.as_deref(),
+        "Reviewer",
+        app,
+        config.route.as_ref(),
+        config.model.as_deref(),
+        config.effort.as_deref(),
     );
     format!(
         "Autoreview: {} (config default: {})\n{}",
@@ -441,7 +448,11 @@ pub(super) fn autojudge_status_message(app: &App) -> String {
     let default_enabled = crate::config::config().autojudge.enabled;
     let config = &crate::config::config().autojudge;
     let model_line = feedback_role_model_line(
-        "Judge", app, config.route.as_ref(), config.model.as_deref(), config.effort.as_deref(),
+        "Judge",
+        app,
+        config.route.as_ref(),
+        config.model.as_deref(),
+        config.effort.as_deref(),
     );
     format!(
         "Autojudge: {} (config default: {})\n{}",

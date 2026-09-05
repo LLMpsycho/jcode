@@ -41,9 +41,8 @@ impl ReviewModelSelection {
             .or(selection.reasoning_effort);
         }
         if !app.is_remote {
-            let provider = crate::provider::fork_for_agent_role(
-                app.provider.as_ref(), route, model, effort,
-            )?;
+            let provider =
+                crate::provider::fork_for_agent_role(app.provider.as_ref(), route, model, effort)?;
             selection.model.get_or_insert_with(|| provider.model());
             selection.reasoning_effort = provider.reasoning_effort();
         }
@@ -67,18 +66,21 @@ impl ReviewModelSelection {
         if let Some(route) = route {
             selection.override_model = true;
             let route = crate::provider::configured_role_route(route);
-            selection.model = Some(if route.runtime_key == crate::provider::RuntimeKey::OpenRouter {
-                route.routed_model_spec()
-            } else {
-                route.model.clone()
-            });
+            selection.model = Some(
+                if route.runtime_key == crate::provider::RuntimeKey::OpenRouter {
+                    route.routed_model_spec()
+                } else {
+                    route.model.clone()
+                },
+            );
             selection.provider_key = Some(route.runtime_key.stable_id());
             selection.route_api_method = Some(route.api_method);
             // A fixed model without an effort uses that model's default.
             selection.reasoning_effort = effort.map(str::to_owned);
-        } else if let Some(model) = model.map(str::trim).filter(|model| {
-            !model.is_empty() && !model.eq_ignore_ascii_case("inherit")
-        }) {
+        } else if let Some(model) = model
+            .map(str::trim)
+            .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("inherit"))
+        {
             selection.override_model = true;
             selection.model = Some(model.to_owned());
             selection.provider_key = None;

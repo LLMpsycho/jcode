@@ -40,20 +40,28 @@ impl Provider for RoleProvider {
         bail!("role selection tests do not send requests")
     }
 
-    fn name(&self) -> &str { "role-test" }
-    fn model(&self) -> String { self.selection.lock().unwrap().model.clone() }
+    fn name(&self) -> &str {
+        "role-test"
+    }
+    fn model(&self) -> String {
+        self.selection.lock().unwrap().model.clone()
+    }
     fn model_routes(&self) -> Vec<ModelRoute> {
-        [route("openai-oauth", "OpenAI"), route("openrouter", "OpenAI"), route("openai-compatible:team", "Team")]
-            .into_iter()
-            .map(|route| ModelRoute {
-                model: route.model,
-                provider: route.provider_label,
-                api_method: route.api_method,
-                available: self.available,
-                detail: "not persisted".into(),
-                cheapness: None,
-            })
-            .collect()
+        [
+            route("openai-oauth", "OpenAI"),
+            route("openrouter", "OpenAI"),
+            route("openai-compatible:team", "Team"),
+        ]
+        .into_iter()
+        .map(|route| ModelRoute {
+            model: route.model,
+            provider: route.provider_label,
+            api_method: route.api_method,
+            available: self.available,
+            detail: "not persisted".into(),
+            cheapness: None,
+        })
+        .collect()
     }
     fn set_route_selection(&self, selection: &RouteSelection) -> Result<()> {
         *self.selection.lock().unwrap() = selection.clone();
@@ -65,8 +73,12 @@ impl Provider for RoleProvider {
             _ => jcode_provider_core::ResolvedCredential::ApiKey,
         })
     }
-    fn available_efforts(&self) -> Vec<&'static str> { vec!["low", "high", "swarm"] }
-    fn reasoning_effort(&self) -> Option<String> { Some(self.effort.lock().unwrap().clone()) }
+    fn available_efforts(&self) -> Vec<&'static str> {
+        vec!["low", "high", "swarm"]
+    }
+    fn reasoning_effort(&self) -> Option<String> {
+        Some(self.effort.lock().unwrap().clone())
+    }
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
         *self.effort.lock().unwrap() = effort.into();
         Ok(())
@@ -82,9 +94,16 @@ impl Provider for RoleProvider {
 
 #[test]
 fn configured_roles_preserve_oauth_custom_profiles_and_openrouter_pins() {
-    assert_eq!(configured_role_route(&route("openai-oauth", "OpenAI")).runtime_key, RuntimeKey::OpenAIOAuth);
-    assert_eq!(configured_role_route(&route("openai-compatible:team", "Team")).runtime_key,
-        RuntimeKey::OpenAiCompatible { profile_id: Some("team".into()) });
+    assert_eq!(
+        configured_role_route(&route("openai-oauth", "OpenAI")).runtime_key,
+        RuntimeKey::OpenAIOAuth
+    );
+    assert_eq!(
+        configured_role_route(&route("openai-compatible:team", "Team")).runtime_key,
+        RuntimeKey::OpenAiCompatible {
+            profile_id: Some("team".into())
+        }
+    );
     let pinned = configured_role_route(&route("openrouter", "OpenAI"));
     assert_eq!(pinned.runtime_key, RuntimeKey::OpenRouter);
     assert_eq!(pinned.routed_model_spec(), "openai/gpt-5.5@OpenAI");
@@ -94,11 +113,23 @@ fn configured_roles_preserve_oauth_custom_profiles_and_openrouter_pins() {
 #[test]
 fn configured_role_effort_and_route_do_not_mutate_primary() {
     let primary = RoleProvider::new();
-    let selected = fork_for_agent_role(&primary, Some(&route("openai-oauth", "OpenAI")), None, Some("low")).unwrap();
+    let selected = fork_for_agent_role(
+        &primary,
+        Some(&route("openai-oauth", "OpenAI")),
+        None,
+        Some("low"),
+    )
+    .unwrap();
     assert_eq!(selected.reasoning_effort().as_deref(), Some("low"));
-    assert_eq!(selected.active_resolved_credential(), Some(jcode_provider_core::ResolvedCredential::Oauth));
+    assert_eq!(
+        selected.active_resolved_credential(),
+        Some(jcode_provider_core::ResolvedCredential::Oauth)
+    );
     assert_eq!(primary.reasoning_effort().as_deref(), Some("high"));
-    assert_eq!(primary.selection.lock().unwrap().runtime_key, RuntimeKey::OpenAIApiKey);
+    assert_eq!(
+        primary.selection.lock().unwrap().runtime_key,
+        RuntimeKey::OpenAIApiKey
+    );
 }
 
 #[test]
@@ -108,7 +139,15 @@ fn configured_role_unavailable_route_or_effort_fails_without_fallback() {
     for effort in ["unsupported", "swarm"] {
         assert!(fork_for_agent_role(&primary, Some(&saved), None, Some(effort)).is_err());
     }
-    assert!(fork_for_agent_role(&primary, Some(&route("openai-oauth", "Other account")), None, None).is_err());
+    assert!(
+        fork_for_agent_role(
+            &primary,
+            Some(&route("openai-oauth", "Other account")),
+            None,
+            None
+        )
+        .is_err()
+    );
     primary.available = false;
     assert!(fork_for_agent_role(&primary, Some(&saved), None, None).is_err());
     assert_eq!(primary.reasoning_effort().as_deref(), Some("high"));

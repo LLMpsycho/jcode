@@ -18,9 +18,17 @@ fn role_model_marker_is_optional_for_legacy_session_json() -> Result<()> {
     let loaded: Session = serde_json::from_value(json.clone())?;
     assert!(loaded.role_model_selection.is_none());
     let stub: SessionStartupStub = serde_json::from_value(json.clone())?;
-    assert!(Session::session_from_startup_stub(stub).role_model_selection.is_none());
+    assert!(
+        Session::session_from_startup_stub(stub)
+            .role_model_selection
+            .is_none()
+    );
     let remote: RemoteStartupSessionSnapshot = serde_json::from_value(json)?;
-    assert!(Session::session_from_remote_startup_snapshot(remote).role_model_selection.is_none());
+    assert!(
+        Session::session_from_remote_startup_snapshot(remote)
+            .role_model_selection
+            .is_none()
+    );
 
     let meta_json = serde_json::to_value(legacy.journal_meta())?;
     assert!(meta_json.get("role_model_selection").is_none());
@@ -40,19 +48,31 @@ fn role_model_route_and_effort_survive_snapshot_journal_and_startup_loads() -> R
     session.role_model_selection = Some(selected.clone());
     session.model = Some(selected.model.clone());
     session.reasoning_effort = Some("high".to_string());
-    session.add_message(Role::User, vec![ContentBlock::Text {
-        text: "initial task".to_string(), cache_control: None,
-    }]);
+    session.add_message(
+        Role::User,
+        vec![ContentBlock::Text {
+            text: "initial task".to_string(),
+            cache_control: None,
+        }],
+    );
     session.save()?;
-    session.add_message(Role::Assistant, vec![ContentBlock::Text {
-        text: "task result".to_string(), cache_control: None,
-    }]);
+    session.add_message(
+        Role::Assistant,
+        vec![ContentBlock::Text {
+            text: "task result".to_string(),
+            cache_control: None,
+        }],
+    );
     session.save()?;
 
     let journal = std::fs::read_to_string(session_journal_path(id)?)?;
     assert!(journal.contains("role_model_selection"));
     assert!(journal.contains("openai-compatible:private-endpoint"));
-    for loaded in [Session::load(id)?, Session::load_startup_stub(id)?, Session::load_for_remote_startup(id)?] {
+    for loaded in [
+        Session::load(id)?,
+        Session::load_startup_stub(id)?,
+        Session::load_for_remote_startup(id)?,
+    ] {
         assert_eq!(loaded.role_model_selection.as_ref(), Some(&selected));
         assert_eq!(loaded.reasoning_effort.as_deref(), Some("high"));
     }
@@ -75,11 +95,18 @@ fn role_model_route_change_and_clear_checkpoint_before_stub_resume() -> Result<(
     let pinned = selected_route("openrouter", "DeepInfra");
     session.role_model_selection = Some(pinned.clone());
     session.save()?;
-    assert_eq!(Session::load_startup_stub(id)?.role_model_selection, Some(pinned));
+    assert_eq!(
+        Session::load_startup_stub(id)?.role_model_selection,
+        Some(pinned)
+    );
 
     session.role_model_selection = None;
     session.save()?;
-    for loaded in [Session::load(id)?, Session::load_startup_stub(id)?, Session::load_for_remote_startup(id)?] {
+    for loaded in [
+        Session::load(id)?,
+        Session::load_startup_stub(id)?,
+        Session::load_for_remote_startup(id)?,
+    ] {
         assert!(loaded.role_model_selection.is_none());
         assert_eq!(loaded.reasoning_effort.as_deref(), Some("high"));
     }

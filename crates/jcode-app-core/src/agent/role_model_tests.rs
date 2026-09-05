@@ -26,20 +26,42 @@ impl RestoreProvider {
 
 #[async_trait::async_trait]
 impl Provider for RestoreProvider {
-    async fn complete(&self, _messages: &[Message], _tools: &[ToolDefinition], _system: &str, _resume: Option<&str>) -> Result<EventStream> {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume: Option<&str>,
+    ) -> Result<EventStream> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(self.model(), "worker-model");
         assert_eq!(self.reasoning_effort().as_deref(), Some("low"));
         assert!(self.route_pinned());
-        Ok(Box::pin(futures::stream::once(async { Ok(StreamEvent::TextDelta("Worker complete".into())) })))
+        Ok(Box::pin(futures::stream::once(async {
+            Ok(StreamEvent::TextDelta("Worker complete".into()))
+        })))
     }
-    fn name(&self) -> &str { "restore-test" }
-    fn model(&self) -> String { self.model.lock().unwrap().clone() }
+    fn name(&self) -> &str {
+        "restore-test"
+    }
+    fn model(&self) -> String {
+        self.model.lock().unwrap().clone()
+    }
     fn model_routes(&self) -> Vec<ModelRoute> {
-        vec![ModelRoute { model: "worker-model".into(), api_method: "openai-oauth".into(), provider: "OpenAI".into(), available: true, detail: String::new(), cheapness: None }]
+        vec![ModelRoute {
+            model: "worker-model".into(),
+            api_method: "openai-oauth".into(),
+            provider: "OpenAI".into(),
+            available: true,
+            detail: String::new(),
+            cheapness: None,
+        }]
     }
     fn set_model(&self, model: &str) -> Result<()> {
-        anyhow::ensure!(model == "main-model", "legacy restoration must not configure this role");
+        anyhow::ensure!(
+            model == "main-model",
+            "legacy restoration must not configure this role"
+        );
         *self.model.lock().unwrap() = model.to_string();
         Ok(())
     }
@@ -48,19 +70,33 @@ impl Provider for RestoreProvider {
         *self.model.lock().unwrap() = route.model.clone();
         Ok(())
     }
-    fn available_efforts(&self) -> Vec<&'static str> { vec!["low", "high"] }
-    fn reasoning_effort(&self) -> Option<String> { Some(self.effort.lock().unwrap().clone()) }
+    fn available_efforts(&self) -> Vec<&'static str> {
+        vec!["low", "high"]
+    }
+    fn reasoning_effort(&self) -> Option<String> {
+        Some(self.effort.lock().unwrap().clone())
+    }
     fn set_reasoning_effort(&self, effort: &str) -> Result<()> {
-        anyhow::ensure!(self.available_efforts().contains(&effort), "unsupported effort");
+        anyhow::ensure!(
+            self.available_efforts().contains(&effort),
+            "unsupported effort"
+        );
         *self.effort.lock().unwrap() = effort.to_string();
         Ok(())
     }
-    fn set_route_pinned(&self, pinned: bool) { self.pinned.store(pinned, Ordering::SeqCst); }
-    fn route_pinned(&self) -> bool { self.pinned.load(Ordering::SeqCst) }
+    fn set_route_pinned(&self, pinned: bool) {
+        self.pinned.store(pinned, Ordering::SeqCst);
+    }
+    fn route_pinned(&self) -> bool {
+        self.pinned.load(Ordering::SeqCst)
+    }
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(Self {
-            model: Mutex::new(self.model()), effort: Mutex::new(self.reasoning_effort().unwrap()),
-            pinned: AtomicBool::new(self.route_pinned()), auth_valid: self.auth_valid, calls: self.calls.clone(),
+            model: Mutex::new(self.model()),
+            effort: Mutex::new(self.reasoning_effort().unwrap()),
+            pinned: AtomicBool::new(self.route_pinned()),
+            auth_valid: self.auth_valid,
+            calls: self.calls.clone(),
         })
     }
 }
@@ -69,7 +105,9 @@ fn saved_role() -> Session {
     let mut session = Session::create(None, Some("review".into()));
     session.model = Some("worker-model".into());
     session.role_model_selection = Some(ConfigModelRoute {
-        model: "worker-model".into(), api_method: "openai-oauth".into(), provider_label: "OpenAI".into(),
+        model: "worker-model".into(),
+        api_method: "openai-oauth".into(),
+        provider_label: "OpenAI".into(),
     });
     session.provider_key = Some("openai-oauth".into());
     session.route_api_method = Some("openai-oauth".into());
@@ -107,10 +145,17 @@ async fn role_model_resume_keeps_previous_session_and_provider_on_invalid_settin
         let initial_session = agent.session_id().to_string();
         let initial_status = agent.session.status.clone();
         let mut role = saved_role();
-        if failure == "model" { role.role_model_selection.as_mut().unwrap().model = "removed-model".into(); }
-        if failure == "effort" { role.reasoning_effort = Some("removed-effort".into()); }
+        if failure == "model" {
+            role.role_model_selection.as_mut().unwrap().model = "removed-model".into();
+        }
+        if failure == "effort" {
+            role.reasoning_effort = Some("removed-effort".into());
+        }
         role.save().unwrap();
-        assert!(agent.restore_session(&role.id).is_err(), "{failure} must fail visibly");
+        assert!(
+            agent.restore_session(&role.id).is_err(),
+            "{failure} must fail visibly"
+        );
         assert_eq!(agent.session_id(), initial_session);
         assert_eq!(agent.session.status, initial_status);
         assert_eq!(agent.provider_model(), "main-model");
@@ -130,7 +175,8 @@ async fn role_model_constructor_and_resume_dispatch_exact_route_and_effort() {
     let role = saved_role();
     role.save().unwrap();
     let registry = Registry::new(provider_dyn.clone()).await;
-    let agent = Agent::new_with_role_session(provider_dyn.clone(), registry, role.clone(), None).unwrap();
+    let agent =
+        Agent::new_with_role_session(provider_dyn.clone(), registry, role.clone(), None).unwrap();
     assert_eq!(agent.provider_model(), "worker-model");
     assert_eq!(agent.session.reasoning_effort.as_deref(), Some("low"));
     let registry = Registry::new(provider_dyn.clone()).await;
@@ -138,7 +184,11 @@ async fn role_model_constructor_and_resume_dispatch_exact_route_and_effort() {
     resumed.restore_session(&role.id).unwrap();
     assert!(resumed.provider_handle().route_pinned());
     assert_eq!(resumed.provider_model(), "worker-model");
-    let _stream = resumed.provider_handle().complete(&[], &[], "", None).await.unwrap();
+    let _stream = resumed
+        .provider_handle()
+        .complete(&[], &[], "", None)
+        .await
+        .unwrap();
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(provider.model(), "main-model");
     assert!(!provider.route_pinned());
@@ -158,5 +208,10 @@ async fn role_model_constructor_rejects_expired_auth_and_manual_model_clears_mar
     agent.set_model("main-model").unwrap();
     assert!(agent.session.role_model_selection.is_none());
     assert!(!agent.provider_handle().route_pinned());
-    assert!(Session::load(agent.session_id()).unwrap().role_model_selection.is_none());
+    assert!(
+        Session::load(agent.session_id())
+            .unwrap()
+            .role_model_selection
+            .is_none()
+    );
 }

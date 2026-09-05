@@ -517,7 +517,10 @@ impl AnthropicProvider {
         is_oauth: bool,
         selected_model: String,
     ) -> String {
-        if self.route_pinned() || !is_oauth || !selected_model.to_ascii_lowercase().contains("fable") {
+        if self.route_pinned()
+            || !is_oauth
+            || !selected_model.to_ascii_lowercase().contains("fable")
+        {
             return selected_model;
         }
         let Ok(usage) = jcode_base::usage::fetch_usage_for_access_token(token).await else {
@@ -526,7 +529,11 @@ impl AnthropicProvider {
         self.model_after_oauth_usage(selected_model, &usage)
     }
 
-    fn model_after_oauth_usage(&self, selected_model: String, usage: &jcode_base::usage::UsageData) -> String {
+    fn model_after_oauth_usage(
+        &self,
+        selected_model: String,
+        usage: &jcode_base::usage::UsageData,
+    ) -> String {
         if self.route_pinned() {
             return selected_model;
         }

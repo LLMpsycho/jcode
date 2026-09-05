@@ -97,7 +97,10 @@ fn role_models_persist_independently_and_inherit_clears_route_and_effort() {
     assert_eq!(loaded.autojudge.effort.as_deref(), Some("high"));
     assert_eq!(loaded.agents.memory_effort.as_deref(), Some("high"));
     assert_eq!(loaded.ambient.effort.as_deref(), Some("high"));
-    assert_eq!(crate::config::config().agents.swarm_route, Some(route("worker-model")));
+    assert_eq!(
+        crate::config::config().agents.swarm_route,
+        Some(route("worker-model"))
+    );
 
     Config::set_agent_model_selection(AgentModelRole::Review, None, None, Some("max")).unwrap();
     let inherited = crate::config::config();
@@ -113,25 +116,44 @@ fn role_model_update_refuses_corrupt_config_and_does_not_persist_environment() {
     let path = sandbox.home.path().join("config.toml");
     let original = "[provider\ndefault_model = broken";
     std::fs::write(&path, original).unwrap();
-    assert!(Config::set_agent_model_selection(
-        AgentModelRole::Swarm, Some(&route("worker-model")), None, Some("high")
-    ).is_err());
+    assert!(
+        Config::set_agent_model_selection(
+            AgentModelRole::Swarm,
+            Some(&route("worker-model")),
+            None,
+            Some("high")
+        )
+        .is_err()
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
 
     std::fs::write(&path, "[provider]\ndefault_model = \"saved-main\"\n").unwrap();
     crate::env::set_var("JCODE_MODEL", "temporary-main");
     crate::env::set_var("JCODE_AUTOJUDGE_MODEL", "temporary-judge");
     Config::set_agent_model_selection(
-        AgentModelRole::Swarm, Some(&route("worker-model")), None, Some("high")
-    ).unwrap();
+        AgentModelRole::Swarm,
+        Some(&route("worker-model")),
+        None,
+        Some("high"),
+    )
+    .unwrap();
     let persisted: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(persisted.provider.default_model.as_deref(), Some("saved-main"));
+    assert_eq!(
+        persisted.provider.default_model.as_deref(),
+        Some("saved-main")
+    );
     assert!(persisted.autojudge.model.is_none());
-    assert_eq!(persisted.agents.swarm_model.as_deref(), Some("worker-model"));
+    assert_eq!(
+        persisted.agents.swarm_model.as_deref(),
+        Some("worker-model")
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+            0
+        );
     }
 }
 
@@ -145,7 +167,10 @@ fn role_model_environment_overrides_replace_routes_and_reload_effort() {
     cfg.autojudge.route = Some(route("saved-judge"));
     cfg.ambient.route = Some(route("saved-ambient"));
     cfg.save().unwrap();
-    for key in ROLE_ENV.iter().filter(|key| key.ends_with("_MODEL") && **key != "JCODE_MODEL") {
+    for key in ROLE_ENV
+        .iter()
+        .filter(|key| key.ends_with("_MODEL") && **key != "JCODE_MODEL")
+    {
         crate::env::set_var(key, "override-model");
     }
     for key in ROLE_ENV.iter().filter(|key| key.ends_with("_EFFORT")) {
@@ -158,7 +183,10 @@ fn role_model_environment_overrides_replace_routes_and_reload_effort() {
     assert!(active.autojudge.route.is_none());
     assert!(active.ambient.route.is_none());
     assert_eq!(active.agents.swarm_model.as_deref(), Some("override-model"));
-    assert_eq!(active.agents.memory_model.as_deref(), Some("override-model"));
+    assert_eq!(
+        active.agents.memory_model.as_deref(),
+        Some("override-model")
+    );
     assert_eq!(active.autoreview.model.as_deref(), Some("override-model"));
     assert_eq!(active.autojudge.model.as_deref(), Some("override-model"));
     assert_eq!(active.ambient.model.as_deref(), Some("override-model"));
@@ -168,12 +196,18 @@ fn role_model_environment_overrides_replace_routes_and_reload_effort() {
     assert_eq!(active.autojudge.effort.as_deref(), Some("medium"));
     assert_eq!(active.ambient.effort.as_deref(), Some("medium"));
     crate::env::set_var("JCODE_AUTOJUDGE_EFFORT", "high");
-    assert_eq!(crate::config::config().autojudge.effort.as_deref(), Some("high"));
+    assert_eq!(
+        crate::config::config().autojudge.effort.as_deref(),
+        Some("high")
+    );
 
     crate::env::remove_var("JCODE_AMBIENT_MODEL");
     crate::env::set_var("JCODE_AMBIENT_PROVIDER", "openai");
     assert!(crate::config::config().ambient.route.is_none());
-    assert_eq!(crate::config::config().ambient.provider.as_deref(), Some("openai"));
+    assert_eq!(
+        crate::config::config().ambient.provider.as_deref(),
+        Some("openai")
+    );
 }
 
 #[test]
@@ -189,9 +223,21 @@ fn role_model_summary_and_change_report_show_routes_effort_and_edit_commands() {
     assert!(display.contains("/advisor"));
     assert!(display.contains("judge-model (Jcode · jcode-subscription) · effort: high"));
     let changes = crate::config::change_report::diff_toml(&before, &toml::to_string(&cfg).unwrap());
-    assert!(changes.iter().any(|change| change.key == "autojudge.route.api_method"));
-    assert!(changes.iter().any(|change| change.key == "autojudge.effort"));
-    assert!(changes.iter().all(|change| change.liveness == crate::config::change_report::Liveness::Live));
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.key == "autojudge.route.api_method")
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|change| change.key == "autojudge.effort")
+    );
+    assert!(
+        changes
+            .iter()
+            .all(|change| change.liveness == crate::config::change_report::Liveness::Live)
+    );
 }
 
 #[test]

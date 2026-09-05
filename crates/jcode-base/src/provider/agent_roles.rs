@@ -54,10 +54,10 @@ pub fn fork_for_agent_role(
     }
 
     if let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) {
-        if matches!(effort, "swarm" | "swarm-deep")
-            || !fork.available_efforts().contains(&effort)
-        {
-            bail!("Selected reasoning effort is unavailable for the agent model; choose its effort again in /agents");
+        if matches!(effort, "swarm" | "swarm-deep") || !fork.available_efforts().contains(&effort) {
+            bail!(
+                "Selected reasoning effort is unavailable for the agent model; choose its effort again in /agents"
+            );
         }
         fork.set_reasoning_effort(effort)
             .context("Could not apply the configured agent reasoning effort")?;

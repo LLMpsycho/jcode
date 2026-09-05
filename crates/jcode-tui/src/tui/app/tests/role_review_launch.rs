@@ -10,10 +10,34 @@ fn test_review_role_split_snapshots_selected_model_route_and_effort() {
         app.session.reasoning_effort = Some("high".to_string());
         let parent_id = app.session.id.clone();
         for (label, role, model, api, effort) in [
-            ("Review", AgentModelRole::Review, "review-model", "claude-oauth", "max"),
-            ("Autoreview", AgentModelRole::Review, "auto-review-model", "claude-oauth", "low"),
-            ("Judge", AgentModelRole::Judge, "judge-model", "openai-oauth", "high"),
-            ("Autojudge", AgentModelRole::Judge, "auto-judge-model", "openai-oauth", "low"),
+            (
+                "Review",
+                AgentModelRole::Review,
+                "review-model",
+                "claude-oauth",
+                "max",
+            ),
+            (
+                "Autoreview",
+                AgentModelRole::Review,
+                "auto-review-model",
+                "claude-oauth",
+                "low",
+            ),
+            (
+                "Judge",
+                AgentModelRole::Judge,
+                "judge-model",
+                "openai-oauth",
+                "high",
+            ),
+            (
+                "Autojudge",
+                AgentModelRole::Judge,
+                "auto-judge-model",
+                "openai-oauth",
+                "low",
+            ),
         ] {
             let route = ConfigModelRoute {
                 model: model.to_string(),
@@ -38,7 +62,9 @@ fn test_review_role_split_snapshots_selected_model_route_and_effort() {
             child.save().expect("save split child");
             crate::tui::app::commands::prepare_review_spawned_session(
                 &child.id,
-                app.pending_split_startup_message.take().expect("startup prompt"),
+                app.pending_split_startup_message
+                    .take()
+                    .expect("startup prompt"),
                 selection,
                 Some(label.to_ascii_lowercase()),
                 Some(parent_id.clone()),
@@ -74,7 +100,8 @@ fn test_review_role_inherit_does_not_prefer_an_available_oauth_account() {
                     "account_id": "acct_test"
                 }],
                 "active_openai_account": "openai-1"
-            }).to_string(),
+            })
+            .to_string(),
         )
         .expect("write unrelated auth account");
         let mut app = create_test_app();
@@ -85,7 +112,10 @@ fn test_review_role_inherit_does_not_prefer_an_available_oauth_account() {
         app.remote_reasoning_effort = Some("max".to_string());
         let parent_id = app.session.id.clone();
         crate::tui::app::commands::queue_review_spawn_remote(
-            &mut app, "Review", parent_id.clone(), "review".to_string(),
+            &mut app,
+            "Review",
+            parent_id.clone(),
+            "review".to_string(),
         )
         .expect("queue inherited review");
         let child = crate::session::Session::create(Some(parent_id), None);

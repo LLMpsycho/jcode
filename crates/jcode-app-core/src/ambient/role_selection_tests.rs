@@ -55,8 +55,14 @@ impl Provider for RoleProvider {
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> anyhow::Result<EventStream> {
-        assert!(self.route_pinned(), "ambient requests must disable automatic route failover");
-        self.calls.lock().unwrap().push((self.model(), self.reasoning_effort()));
+        assert!(
+            self.route_pinned(),
+            "ambient requests must disable automatic route failover"
+        );
+        self.calls
+            .lock()
+            .unwrap()
+            .push((self.model(), self.reasoning_effort()));
         Ok(Box::pin(futures::stream::once(async {
             Ok(StreamEvent::TextDelta("Cycle checked.".to_string()))
         })))
@@ -167,7 +173,11 @@ async fn ambient_cycle_uses_configured_route_effort_and_records_actual_model() {
     assert_eq!(model, "gpt-5.4");
     let calls = primary.calls.lock().unwrap();
     assert!(!calls.is_empty());
-    assert!(calls.iter().all(|(model, effort)| model == "gpt-5.4" && effort.as_deref() == Some("high")));
+    assert!(
+        calls
+            .iter()
+            .all(|(model, effort)| model == "gpt-5.4" && effort.as_deref() == Some("high"))
+    );
     assert_eq!(primary.model(), "primary-model");
     assert_eq!(primary.reasoning_effort().as_deref(), Some("low"));
     assert!(!primary.route_pinned());
@@ -226,13 +236,19 @@ async fn ambient_api_route_requires_explicit_api_key_permission() {
     let error = runner.run_cycle(&provider).await.unwrap_err();
     assert!(error.to_string().contains("ambient.allow_api_keys=false"));
     assert!(primary.calls.lock().unwrap().is_empty());
-    assert_eq!(primary.active_resolved_credential(), Some(ResolvedCredential::Oauth));
+    assert_eq!(
+        primary.active_resolved_credential(),
+        Some(ResolvedCredential::Oauth)
+    );
 
     config.ambient.allow_api_keys = true;
     config.save().unwrap();
     runner.run_cycle(&provider).await.unwrap();
     assert!(!primary.calls.lock().unwrap().is_empty());
-    assert_eq!(primary.active_resolved_credential(), Some(ResolvedCredential::Oauth));
+    assert_eq!(
+        primary.active_resolved_credential(),
+        Some(ResolvedCredential::Oauth)
+    );
 }
 
 #[test]

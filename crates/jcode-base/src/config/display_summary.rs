@@ -394,7 +394,10 @@ fn agent_model_summary(
     fallback: &str,
 ) -> String {
     let model = match route {
-        Some(route) => format!("{} ({} · {})", route.model, route.provider_label, route.api_method),
+        Some(route) => format!(
+            "{} ({} · {})",
+            route.model, route.provider_label, route.api_method
+        ),
         None => model.unwrap_or(fallback).to_string(),
     };
     format!("{} · effort: {}", model, effort.unwrap_or("default"))
