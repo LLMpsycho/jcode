@@ -80,6 +80,10 @@ impl WorkspaceClientState {
         let _ = self.map.add_session_to_current_workspace(tile);
     }
 
+    pub(crate) fn cancel_pending_split(&mut self) {
+        self.pending_split_target = None;
+    }
+
     pub(crate) fn queue_split_target(&mut self, target: WorkspaceSplitTarget) {
         self.enabled = true;
         self.pending_split_target = Some(target);

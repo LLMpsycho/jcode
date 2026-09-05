@@ -92,6 +92,12 @@ pub(super) async fn handle_workspace_command(
     };
 
     if let Some(target) = target {
+        if super::super::commands_review::review_split_pending(app) {
+            app.push_display_message(DisplayMessage::system(
+                "A session launch is already pending.",
+            ));
+            return Ok(true);
+        }
         app.workspace_client
             .enable(current_session, &app.remote_sessions);
         app.workspace_client.queue_split_target(target);
@@ -104,7 +110,13 @@ pub(super) async fn handle_workspace_command(
             app.set_status_notice("Workspace add queued");
         } else {
             begin_remote_split_launch(app, "Workspace");
-            remote.split().await?;
+            match remote.split().await {
+                Ok(id) => app.pending_split_request_id = Some(id),
+                Err(error) => {
+                    super::review_launch::clear_launch(app);
+                    return Err(error);
+                }
+            }
         }
         return Ok(true);
     }

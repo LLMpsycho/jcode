@@ -304,6 +304,13 @@ fn remote_ownership_gate_reads_the_remote_goal_assessment() {
         )
         .expect("save remote goal assessment");
 
+        // A validated workflow may request its final user-facing response,
+        // but must not reopen the ownership or confidence gates.
+        assert!(app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(app.queued_messages, vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]);
+        assert_eq!(app.todo_completion_gate_attempts, 0);
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
         assert!(!app.schedule_auto_poke_followup_if_needed());
         assert!(app.queued_messages.is_empty());
     });

@@ -20,9 +20,12 @@ mod input_dispatch;
 mod key_handling;
 mod queue_recovery;
 mod reconnect;
+mod review_controls;
+pub(in crate::tui::app) mod review_launch;
 mod server_event_handlers;
 mod server_events;
 mod session_persistence;
+mod split_response;
 mod swarm_plan_core;
 mod swarm_status_core;
 mod workspace;
@@ -1402,32 +1405,8 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         return;
     }
 
-    if app.pending_split_request && !app.is_processing {
-        app.pending_split_request = false;
-        let flow_label = app
-            .pending_split_label
-            .clone()
-            .unwrap_or_else(|| "Split".to_string());
-        begin_remote_split_launch(app, &flow_label);
-        if let Err(error) = remote.split().await {
-            finish_remote_split_launch(app);
-            let had_startup = app.pending_split_startup_message.take().is_some();
-            app.pending_split_parent_session_id = None;
-            let had_prompt = app.pending_split_prompt.take().is_some();
-            let label = app.pending_split_label.take();
-            app.pending_split_model_override = None;
-            app.pending_split_role_selection = None;
-            app.pending_split_provider_key_override = None;
-            let flow_label = label.unwrap_or(flow_label);
-            app.push_display_message(DisplayMessage::error(format!(
-                "Failed to launch {} session: {}",
-                flow_label.to_lowercase(),
-                error
-            )));
-            if had_startup || had_prompt {
-                app.set_status_notice(format!("{} launch failed", flow_label));
-            }
-        }
+    super::commands_review::stage_next_automatic_review(app);
+    if review_controls::dispatch_pending_split(app, remote).await {
         return;
     }
 

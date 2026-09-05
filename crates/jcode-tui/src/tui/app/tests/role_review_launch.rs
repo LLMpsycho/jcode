@@ -4,11 +4,6 @@ use super::*;
 fn test_review_role_split_snapshots_selected_model_route_and_effort() {
     with_temp_jcode_home(|| {
         use crate::config::{AgentModelRole, Config, ConfigModelRoute};
-        let mut app = create_test_app();
-        app.is_remote = true;
-        app.session.model = Some("main-model".to_string());
-        app.session.reasoning_effort = Some("high".to_string());
-        let parent_id = app.session.id.clone();
         for (label, role, model, api, effort) in [
             (
                 "Review",
@@ -39,6 +34,11 @@ fn test_review_role_split_snapshots_selected_model_route_and_effort() {
                 "low",
             ),
         ] {
+            let mut app = create_test_app();
+            app.is_remote = true;
+            app.session.model = Some("main-model".to_string());
+            app.session.reasoning_effort = Some("high".to_string());
+            let parent_id = app.session.id.clone();
             let route = ConfigModelRoute {
                 model: model.to_string(),
                 api_method: api.to_string(),

@@ -547,6 +547,11 @@ pub(in crate::tui::app) fn handle_server_event(
     {
         return true;
     }
+    if let ServerEvent::Error { id, message, .. } = &event
+        && super::review_launch::handle_error(app, *id, message)
+    {
+        return true;
+    }
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());
@@ -1033,6 +1038,7 @@ pub(in crate::tui::app) fn handle_server_event(
             if !keep_pending_retry {
                 app.clear_pending_remote_retry();
             }
+            app_mod::commands_review::cancel_automatic_reviews(app);
             let recovered_local = recover_local_interleave_to_queue(app, "interrupt");
             let ops = app.stream_buffer.flush();
             app.apply_stream_ops(ops);
@@ -1082,6 +1088,7 @@ pub(in crate::tui::app) fn handle_server_event(
             stop_reason,
             message,
         } => {
+            app_mod::commands_review::cancel_automatic_reviews(app);
             crate::logging::warn(&format!(
                 "PROVIDER_GUARDRAIL_EVENT session={:?} stop_reason={:?}",
                 app.remote_session_id, stop_reason
@@ -1198,6 +1205,7 @@ pub(in crate::tui::app) fn handle_server_event(
                     "client_turn_completed",
                     std::time::Duration::from_secs(30),
                 );
+                app_mod::commands_review::queue_completed_turn_reviews(app);
                 auto_poked = app.schedule_turn_end_followups();
                 if !auto_poked {
                     app.clear_visible_turn_started();
@@ -1226,6 +1234,7 @@ pub(in crate::tui::app) fn handle_server_event(
             retry_after_secs,
             ..
         } => {
+            app_mod::commands_review::cancel_automatic_reviews(app);
             // The server rejects a Message request with this error while its
             // previous turn is still running. This typically happens when a
             // reload/reconnect raced the turn-end dispatch: the history
@@ -1417,6 +1426,13 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::SessionId { session_id } => {
+            if app
+                .remote_session_id
+                .as_ref()
+                .is_some_and(|id| id != &session_id)
+            {
+                app_mod::commands_review::cancel_automatic_reviews(app);
+            }
             remote.set_session_id(session_id.clone());
             app.remote_session_id = Some(session_id.clone());
             crate::set_current_session(&session_id);
@@ -1629,6 +1645,7 @@ pub(in crate::tui::app) fn handle_server_event(
             let session_changed = prev_session_id.as_deref() != Some(session_id.as_str());
 
             if session_changed {
+                app_mod::commands_review::cancel_automatic_reviews(app);
                 app.cancel_advisor_picker();
                 app.rate_limit_pending_message = None;
                 app.rate_limit_reset = None;
@@ -2736,112 +2753,12 @@ pub(in crate::tui::app) fn handle_server_event(
             false
         }
         ServerEvent::SplitResponse {
+            id,
             new_session_id,
             new_session_name,
             ..
         } => {
-            if app.workspace_client.handle_split_response(&new_session_id) {
-                finish_remote_split_launch(app);
-                app.pending_split_request = false;
-                app.pending_split_startup_message = None;
-                app.pending_split_parent_session_id = None;
-                app.pending_split_prompt = None;
-                app.pending_split_model_override = None;
-                app.pending_split_role_selection = None;
-                app.pending_split_provider_key_override = None;
-                app.pending_split_label = None;
-                app.push_display_message(DisplayMessage::system(format!(
-                    "Added {} to workspace.",
-                    new_session_name,
-                )));
-                app.set_status_notice(format!("Workspace + {}", new_session_name));
-                return false;
-            }
-            finish_remote_split_launch(app);
-            app.pending_split_request = false;
-            let startup_message = app.pending_split_startup_message.take();
-            let parent_session_id_override = app.pending_split_parent_session_id.take();
-            let startup_prompt = app.pending_split_prompt.take();
-            app.pending_split_model_override = None;
-            app.pending_split_provider_key_override = None;
-            let role_selection = app.pending_split_role_selection.take();
-            let split_label = app.pending_split_label.take();
-            if let Some(startup_message) = startup_message {
-                if let Err(error) = app_mod::commands::prepare_review_spawned_session(
-                    &new_session_id,
-                    startup_message,
-                    role_selection,
-                    split_label.clone().map(|label| label.to_ascii_lowercase()),
-                    parent_session_id_override,
-                ) {
-                    app.push_display_message(DisplayMessage::error(format!(
-                        "Failed to prepare review session: {error}"
-                    )));
-                    app.set_status_notice("Review launch failed");
-                    return false;
-                }
-            } else if let Some(startup_prompt) = startup_prompt {
-                App::save_startup_submission_for_session(
-                    &new_session_id,
-                    startup_prompt.content,
-                    startup_prompt.images,
-                );
-            }
-            let exe = app_mod::launch_client_executable();
-            let cwd = crate::session::Session::load(&new_session_id)
-                .ok()
-                .and_then(|session| session.working_dir)
-                .map(std::path::PathBuf::from)
-                .filter(|path| path.is_dir())
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| std::path::PathBuf::from("."));
-            let socket = std::env::var("JCODE_SOCKET").ok();
-            match spawn_in_new_terminal(&exe, &new_session_id, &cwd, socket.as_deref()) {
-                Ok(true) => {
-                    if let Some(label) = split_label.as_deref() {
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "🔍 {} launched in {}.",
-                            label, new_session_name,
-                        )));
-                        app.set_status_notice(format!("{} launched", label));
-                    } else {
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "✂ Split → {} (opened in new pane/window)",
-                            new_session_name,
-                        )));
-                        app.set_status_notice(format!("Split → {}", new_session_name));
-                    }
-                }
-                Ok(false) => {
-                    if let Some(label) = split_label.as_deref() {
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "🔍 {} session {} created.\n\nNo terminal found. Resume manually:\n  jcode --resume {}",
-                            label, new_session_name, new_session_id,
-                        )));
-                        app.set_status_notice(format!("{} session created", label));
-                    } else {
-                        app.push_display_message(DisplayMessage::system(format!(
-                            "✂ Split → {}\n\nNo terminal found. Resume manually:\n  jcode --resume {}",
-                            new_session_name, new_session_id,
-                        )));
-                    }
-                }
-                Err(e) => {
-                    if let Some(label) = split_label.as_deref() {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "{} session {} was created but failed to open a window: {}\n\nResume manually: jcode --resume {}",
-                            label, new_session_name, e, new_session_id,
-                        )));
-                        app.set_status_notice(format!("{} open failed", label));
-                    } else {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Split created {} but failed to open window: {}\n\nResume manually: jcode --resume {}",
-                            new_session_name, e, new_session_id,
-                        )));
-                    }
-                }
-            }
-            false
+            super::split_response::handle_split_response(app, id, new_session_id, new_session_name)
         }
         ServerEvent::CompactResult {
             message, success, ..
