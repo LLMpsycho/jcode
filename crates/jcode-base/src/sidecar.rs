@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;
 
+mod role_selection;
+
 /// Fast/cheap OpenAI model used when Codex credentials are available.
 pub const SIDECAR_OPENAI_MODEL: &str = "gpt-5.6-luna";
 const SIDECAR_OPENAI_REASONING: &str = "none";
@@ -76,6 +78,12 @@ impl std::error::Error for SidecarHttpError {}
 /// are permanent; throttling, server failures, and transport failures are
 /// transient. Unknown provider errors retain the conservative retry behavior.
 pub fn classify_error(error: &anyhow::Error) -> SidecarErrorKind {
+    if error
+        .downcast_ref::<role_selection::SidecarConfigurationError>()
+        .is_some()
+    {
+        return SidecarErrorKind::Permanent;
+    }
     if let Some(error) = error.downcast_ref::<SidecarHttpError>() {
         return classify_http_status(error.status);
     }
@@ -149,32 +157,32 @@ pub struct Sidecar {
     /// per-model behavior applies. Used by the memory benchmark to pin
     /// GPT-5.5 with no thinking.
     reasoning_override: Option<String>,
+    /// Explicit selections fail on use instead of silently selecting another model.
+    initialization_error: Option<Arc<str>>,
 }
 
 impl Sidecar {
     /// Create a new sidecar client, auto-selecting the best available backend.
     /// Prefers OpenAI (GPT-5.6 Luna with no reasoning) if creds exist, falls back to Claude.
     pub fn new() -> Self {
-        let configured_model = crate::config::config().agents.memory_model.clone();
-        Self::with_configured_model(configured_model)
+        let agents = &crate::config::config().agents;
+        if agents.memory_route.is_some()
+            || agents.memory_model.is_some()
+            || agents.memory_effort.is_some()
+        {
+            Self::with_role_provider(
+                agents.memory_route.as_ref(),
+                agents.memory_model.as_deref(),
+                agents.memory_effort.as_deref(),
+                crate::provider::active_provider_fork(),
+            )
+        } else {
+            Self::auto_selected()
+        }
     }
 
-    fn with_configured_model(configured_model: Option<String>) -> Self {
-        let (backend, model, provider) = if let Some(model) = configured_model {
-            match crate::provider::provider_for_model(&model) {
-                Some("openai") => (SidecarBackend::OpenAI, model, None),
-                Some("claude") => (SidecarBackend::Claude, model, None),
-                _ => {
-                    crate::logging::warn(&format!(
-                        "Ignoring unsupported memory sidecar model override '{}'; expected an OpenAI or Claude model",
-                        model
-                    ));
-                    Self::auto_select_backend()
-                }
-            }
-        } else {
-            Self::auto_select_backend()
-        };
+    fn auto_selected() -> Self {
+        let (backend, model, provider) = Self::auto_select_backend();
 
         Self {
             client: crate::provider::shared_http_client(),
@@ -183,6 +191,7 @@ impl Sidecar {
             backend,
             provider,
             reasoning_override: None,
+            initialization_error: None,
         }
     }
 
@@ -263,6 +272,7 @@ impl Sidecar {
             backend: SidecarBackend::Claude,
             provider: None,
             reasoning_override: None,
+            initialization_error: None,
         }
     }
 
@@ -277,6 +287,7 @@ impl Sidecar {
             backend: SidecarBackend::OpenAI,
             provider: None,
             reasoning_override: reasoning_effort,
+            initialization_error: None,
         }
     }
 
@@ -292,6 +303,9 @@ impl Sidecar {
     /// Simple completion - send a prompt, get a response.
     /// Routes to the correct API based on the detected backend.
     pub async fn complete(&self, system: &str, user_message: &str) -> Result<String> {
+        if let Some(error) = &self.initialization_error {
+            return Err(role_selection::SidecarConfigurationError(error.clone()).into());
+        }
         match self.backend {
             SidecarBackend::OpenAI => self.complete_openai(system, user_message).await,
             SidecarBackend::Claude => self.complete_claude(system, user_message).await,
@@ -299,18 +313,13 @@ impl Sidecar {
         }
     }
 
-    /// Complete via the live agent provider (`complete_simple`).
-    ///
-    /// This is the universal path: it works for every provider jcode supports,
-    /// because `complete_simple` is a default method on the `Provider` trait that
-    /// collects the streamed `TextDelta`s into a single string. The provider was
-    /// forked at construction time, so it carries the user's selected model.
+    /// Complete on the stored provider route without rotating accounts or
+    /// falling back to a different model.
     async fn complete_via_provider(&self, system: &str, user_message: &str) -> Result<String> {
         let provider = self.provider.as_ref().context(
             "No active provider registered for sidecar; memory features require a logged-in provider",
         )?;
-        provider
-            .complete_simple(user_message, system)
+        role_selection::complete_on_selected_route(provider.as_ref(), system, user_message)
             .await
             .context("Sidecar completion via active provider failed")
     }
@@ -420,6 +429,7 @@ impl Sidecar {
                             backend: SidecarBackend::Claude,
                             provider: None,
                             reasoning_override: None,
+                            initialization_error: None,
                         };
                         claude.complete_claude(system, user_message).await
                     }
@@ -1205,7 +1215,7 @@ mod tests {
         })
         .expect("write Claude test auth");
 
-        let sidecar = Sidecar::with_configured_model(None);
+        let sidecar = Sidecar::auto_selected();
         assert_eq!(sidecar.backend, SidecarBackend::OpenAI);
         assert_eq!(sidecar.model, SIDECAR_OPENAI_MODEL);
         codex::set_active_account_override(None);
@@ -1343,7 +1353,7 @@ mod tests {
             reply: "[2,1]".to_string(),
         }));
 
-        let sidecar = Sidecar::with_configured_model(None);
+        let sidecar = Sidecar::auto_selected();
         assert_eq!(
             sidecar.backend_name(),
             "provider",
@@ -1371,7 +1381,7 @@ mod tests {
             name: "configured-profile",
             reply: "configured-profile-response".to_string(),
         }));
-        let sidecar = Sidecar::with_configured_model(None);
+        let sidecar = Sidecar::auto_selected();
 
         // Model switches and catalog refreshes can replace the process-global
         // provider while a background memory request is queued. Dispatch must
@@ -1393,11 +1403,10 @@ mod tests {
         assert_eq!(out, "configured-profile-response");
     }
 
-    /// Every provider jcode supports should drive the sidecar end-to-end via the
-    /// universal `complete_simple` path. We iterate over each provider label to
-    /// make the "works for ALL providers" guarantee explicit and regression-proof.
+    /// Provider adapters that enforce empty tool sets use the same text-only
+    /// completion path regardless of their provider label.
     #[test]
-    fn sidecar_provider_path_works_for_all_providers() {
+    fn sidecar_provider_path_works_for_toolless_provider_adapters() {
         let _guard = crate::storage::lock_test_env();
         let temp = tempfile::TempDir::new().expect("create temp jcode home");
         let _home = EnvVarGuard::set_path("JCODE_HOME", temp.path());
@@ -1422,7 +1431,7 @@ mod tests {
                 name: provider,
                 reply: "[1]".to_string(),
             }));
-            let sidecar = Sidecar::with_configured_model(None);
+            let sidecar = Sidecar::auto_selected();
             assert_eq!(
                 sidecar.backend_name(),
                 "provider",
