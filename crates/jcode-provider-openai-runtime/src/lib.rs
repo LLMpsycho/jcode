@@ -721,6 +721,8 @@ pub struct OpenAIProvider {
     browser_only: Arc<AtomicBool>,
     /// Explicit helper role models must not follow account-model fallbacks.
     route_pinned: AtomicBool,
+    /// Independent helper tool grants must exclude automatically hosted tools.
+    explicit_tools_only: AtomicBool,
 }
 
 impl OpenAIProvider {
@@ -863,6 +865,7 @@ impl OpenAIProvider {
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::new(AtomicBool::new(browser_only)),
             route_pinned: AtomicBool::new(false),
+            explicit_tools_only: AtomicBool::new(false),
         };
         provider.revalidate_reasoning_effort();
         provider
@@ -1191,80 +1194,6 @@ impl OpenAIProvider {
         format!("{}/compact", Self::responses_url(credentials))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "request construction threads explicit per-request OpenAI settings without hidden state"
-    )]
-    fn build_response_request(
-        model_id: &str,
-        instructions: String,
-        input: &[Value],
-        api_tools: &[Value],
-        is_chatgpt_mode: bool,
-        max_output_tokens: Option<u32>,
-        reasoning_effort: Option<&str>,
-        service_tier: Option<&str>,
-        prompt_cache_key: Option<&str>,
-        prompt_cache_retention: Option<&str>,
-        native_compaction_threshold: Option<usize>,
-    ) -> Value {
-        let mut tools = api_tools.to_vec();
-        // The hosted `image_generation` tool is only available to general
-        // ChatGPT/GPT models on the Responses backend. Codex models
-        // (`*-codex*`) reject unknown hosted tools, so don't attach it for them.
-        // An empty tool list also disables hosted tools for callers such as
-        // the advisor, which deliberately reviews without tool access.
-        if !api_tools.is_empty() && is_chatgpt_mode && model_supports_image_generation(model_id) {
-            tools.push(serde_json::json!({ "type": "image_generation" }));
-        }
-
-        let mut request = serde_json::json!({
-            "model": model_id,
-            "instructions": instructions,
-            "input": input,
-            "tools": tools,
-            "tool_choice": "auto",
-            "parallel_tool_calls": false,
-            "stream": true,
-            "store": false,
-            "include": ["reasoning.encrypted_content"],
-        });
-
-        if !is_chatgpt_mode && let Some(max_output_tokens) = max_output_tokens {
-            request["max_output_tokens"] = serde_json::json!(max_output_tokens);
-        }
-
-        if let Some(effort) = reasoning_effort {
-            request["reasoning"] = openai_stream_runtime::reasoning_payload(effort);
-        }
-
-        if let Some(service_tier) = service_tier {
-            request["service_tier"] = serde_json::json!(service_tier);
-        }
-
-        if let Some(compact_threshold) = native_compaction_threshold {
-            request["context_management"] = serde_json::json!([
-                {
-                    "type": "compaction",
-                    "compact_threshold": compact_threshold,
-                }
-            ]);
-        }
-
-        if !is_chatgpt_mode {
-            if let Some(key) = prompt_cache_key {
-                request["prompt_cache_key"] = serde_json::json!(key);
-            }
-            if let Some(retention) =
-                Self::effective_prompt_cache_retention(model_id, prompt_cache_retention)
-            {
-                request["prompt_cache_retention"] = serde_json::json!(retention);
-            }
-        }
-
-        request
-    }
-
     async fn model_id(&self) -> String {
         let current = self.model.read().await.clone();
         if self.route_pinned() {
@@ -1390,3 +1319,5 @@ use self::websocket_health::{
 #[cfg(test)]
 #[path = "openai_tests.rs"]
 mod tests;
+
+mod explicit_tools;

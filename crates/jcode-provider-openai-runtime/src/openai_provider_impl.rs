@@ -20,6 +20,12 @@ impl Provider for OpenAIProvider {
         self.route_pinned.load(AtomicOrdering::Relaxed)
     }
 
+    fn restrict_to_explicit_tools(&self) -> Result<()> {
+        self.explicit_tools_only
+            .store(true, AtomicOrdering::Relaxed);
+        Ok(())
+    }
+
     fn reload_credentials(&self) {
         self.reload_credentials_now();
     }
@@ -72,7 +78,7 @@ impl Provider for OpenAIProvider {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
         let native_compaction_threshold =
             self.native_compaction_threshold_for_context_window(self.context_window());
-        let request = Self::build_response_request(
+        let mut request = Self::build_response_request(
             &model_id,
             instructions,
             &input,
@@ -85,6 +91,7 @@ impl Provider for OpenAIProvider {
             self.prompt_cache_retention.as_deref(),
             native_compaction_threshold,
         );
+        self.apply_explicit_tool_policy(&mut request);
 
         // --- Persistent WebSocket continuation path ---
         // Try to reuse an existing WebSocket connection with previous_response_id
@@ -1220,6 +1227,9 @@ impl Provider for OpenAIProvider {
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::clone(&self.browser_only),
             route_pinned: AtomicBool::new(self.route_pinned()),
+            explicit_tools_only: AtomicBool::new(
+                self.explicit_tools_only.load(AtomicOrdering::Relaxed),
+            ),
         })
     }
 

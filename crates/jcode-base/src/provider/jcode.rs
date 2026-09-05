@@ -272,6 +272,10 @@ impl Provider for JcodeProvider {
         self.inner.supports_toolless_requests()
     }
 
+    fn restrict_to_explicit_tools(&self) -> Result<()> {
+        self.inner.restrict_to_explicit_tools()
+    }
+
     async fn invalidate_credentials(&self) {
         self.inner.invalidate_credentials().await;
     }

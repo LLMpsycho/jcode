@@ -358,6 +358,17 @@ pub trait Provider: Send + Sync {
         !self.handles_tools_internally()
     }
 
+    /// Limit this private runtime to caller-supplied tool definitions. Runtimes
+    /// that add hosted tools must disable them here; wrappers must delegate.
+    /// An internal agent needs an explicit implementation of this restriction.
+    fn restrict_to_explicit_tools(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.handles_tools_internally(),
+            "This provider cannot restrict execution to explicitly granted tools"
+        );
+        Ok(())
+    }
+
     /// Invalidate any cached credentials.
     async fn invalidate_credentials(&self) {}
 

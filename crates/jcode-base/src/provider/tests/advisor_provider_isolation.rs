@@ -406,6 +406,24 @@ struct AdvisorInternalRuntime {
     supports_toolless: bool,
 }
 
+#[test]
+fn advisor_explicit_tool_policy_delegates_and_rejects_autonomous_runtimes() {
+    with_clean_provider_test_env(|| {
+        let provider = test_multi_provider_with_cursor();
+        *provider.cursor.write().unwrap() = None;
+        provider.set_active_provider(ActiveProvider::OpenAI);
+        *provider.openai.write().unwrap() = Some(Arc::new(AdvisorInternalRuntime {
+            supports_toolless: true,
+        }));
+        assert!(provider.supports_toolless_requests());
+        // Supporting an empty list does not establish that a nonempty list
+        // excludes the internal agent's own tools.
+        assert!(provider.restrict_to_explicit_tools().is_err());
+        *provider.openai.write().unwrap() = None;
+        assert!(provider.restrict_to_explicit_tools().is_err());
+    });
+}
+
 #[async_trait::async_trait]
 impl Provider for AdvisorInternalRuntime {
     async fn complete(
