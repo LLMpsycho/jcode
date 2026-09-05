@@ -51,7 +51,7 @@ pub use structured::{
 pub use jcode_harness_api as api;
 pub use jcode_harness_api::{
     AdvisorControlResult, AdvisorModelOptions, AdvisorModelSettings, AdvisorRequest,
-    AdvisorRouteSelection, AdvisorRuntimeKey,
-    ApiEvent, ApiRequest, HistoryMessage, ModelRouteInfo, PermissionDecision, RenderedImage,
-    RenderedImageAnchor, RenderedImageSource, SessionInfo, TextMatch, api_socket_path,
+    AdvisorRouteSelection, AdvisorRuntimeKey, ApiEvent, ApiRequest, HistoryMessage, ModelRouteInfo,
+    PermissionDecision, RenderedImage, RenderedImageAnchor, RenderedImageSource, SessionInfo,
+    TextMatch, api_socket_path,
 };

@@ -2440,9 +2440,7 @@ impl Provider for MultiProvider {
 
     fn supports_toolless_requests(&self) -> bool {
         let runtime = match self.active_provider() {
-            ActiveProvider::Claude => self
-                .anthropic_provider()
-                .or_else(|| self.claude_provider()),
+            ActiveProvider::Claude => self.anthropic_provider().or_else(|| self.claude_provider()),
             ActiveProvider::OpenAI => self.openai_provider(),
             ActiveProvider::Copilot => self.copilot_provider(),
             ActiveProvider::Antigravity => self.antigravity_provider(),

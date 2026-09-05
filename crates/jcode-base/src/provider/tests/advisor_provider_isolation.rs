@@ -213,7 +213,9 @@ fn advisor_openrouter_route_replaces_custom_endpoint_and_preserves_provider_pin(
         assert!(selected.direct_openai_compatible_route_parts().is_none());
         assert_eq!(selected.model(), "openai/gpt-5.5");
         assert_eq!(
-            selected.explicit_provider_pin_for_current_model().as_deref(),
+            selected
+                .explicit_provider_pin_for_current_model()
+                .as_deref(),
             Some("OpenAI")
         );
         assert_eq!(primary_runtime.model(), "gpt-5.5");

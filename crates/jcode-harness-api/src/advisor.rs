@@ -31,8 +31,12 @@ pub enum AdvisorRequest {
     Inspect,
     Enable,
     Disable,
-    Acknowledge { note_id: String },
-    Dismiss { note_id: String },
+    Acknowledge {
+        note_id: String,
+    },
+    Dismiss {
+        note_id: String,
+    },
     ModelOptions {
         #[serde(default)]
         selection: Option<AdvisorRouteSelection>,

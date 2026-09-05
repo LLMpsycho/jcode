@@ -234,7 +234,9 @@ enum SimpleKind {
     /// Awaiting `reasoning_effort_changed`.
     ReasoningEffort,
     /// Awaiting a structured advisor result, not an ack or turn boundary.
-    Advisor { session_id: String },
+    Advisor {
+        session_id: String,
+    },
     /// Awaiting `compacted_history`.
     Compact,
     /// Awaiting the catalog reply that answers `list_models`.

@@ -226,9 +226,9 @@ fn control_request(
         AdvisorRequest::Enable => manager
             .set_enabled(session, true)
             .map(|()| "Advisor enabled for this session.".into()),
-        AdvisorRequest::Disable => manager.set_enabled(session, false).map(|()| {
-            "Advisor disabled for this session; future risky tools are released.".into()
-        }),
+        AdvisorRequest::Disable => manager
+            .set_enabled(session, false)
+            .map(|()| "Advisor disabled for this session; future risky tools are released.".into()),
         _ => Err(anyhow::anyhow!("Invalid advisor control request.")),
     };
     let (message, error) = match outcome {

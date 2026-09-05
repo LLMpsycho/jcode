@@ -102,8 +102,8 @@ impl App {
     }
 
     pub(super) fn disconnect_advisor_picker(&mut self) {
-        let had_requests = self.advisor_picker.pending.is_some()
-            || !self.advisor_picker.in_flight.is_empty();
+        let had_requests =
+            self.advisor_picker.pending.is_some() || !self.advisor_picker.in_flight.is_empty();
         self.cancel_advisor_picker();
         self.advisor_picker.in_flight.clear();
         if had_requests {
@@ -299,8 +299,11 @@ impl App {
                     .collect();
             }
             selections.sort_by(|a, b| {
-                (&a.model, &a.provider_label, &a.api_method)
-                    .cmp(&(&b.model, &b.provider_label, &b.api_method))
+                (&a.model, &a.provider_label, &a.api_method).cmp(&(
+                    &b.model,
+                    &b.provider_label,
+                    &b.api_method,
+                ))
             });
             if selections.is_empty() {
                 entries.push(entry(

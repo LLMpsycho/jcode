@@ -433,8 +433,16 @@ fn advisor_picker_disconnect_clears_pending_controls_and_can_reopen_same_session
         });
         let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
         app.handle_advisor_result(id, advisor_test_result(None));
-        assert!(app.inline_interactive_state.as_ref().unwrap().is_advisor_picker());
-        assert_eq!(app.inline_interactive_state.as_ref().unwrap().entries.len(), 2);
+        assert!(
+            app.inline_interactive_state
+                .as_ref()
+                .unwrap()
+                .is_advisor_picker()
+        );
+        assert_eq!(
+            app.inline_interactive_state.as_ref().unwrap().entries.len(),
+            2
+        );
     });
 }
 
@@ -463,7 +471,11 @@ fn advisor_picker_preserves_canonical_profile_identity() {
         result.model_options.as_mut().unwrap().available_selections = vec![selection.clone()];
         app.handle_advisor_result(id, result);
         let picker = app.inline_interactive_state.as_mut().unwrap();
-        assert_eq!(picker.entries.len(), 2, "canonical catalog replaces legacy routes");
+        assert_eq!(
+            picker.entries.len(),
+            2,
+            "canonical catalog replaces legacy routes"
+        );
         assert_eq!(picker.entries[1].name, "team-model");
         picker.selected = 1;
         app.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::NONE)
@@ -475,7 +487,10 @@ fn advisor_picker_preserves_canonical_profile_identity() {
         );
         let (_, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
         selection.detail.clear();
-        assert_eq!(request["selection"], serde_json::to_value(selection).unwrap());
+        assert_eq!(
+            request["selection"],
+            serde_json::to_value(selection).unwrap()
+        );
     });
 }
 
@@ -492,11 +507,20 @@ fn advisor_picker_explains_empty_permitted_catalog() {
         });
         let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
         let mut result = advisor_test_result(None);
-        result.model_options.as_mut().unwrap().available_routes.clear();
+        result
+            .model_options
+            .as_mut()
+            .unwrap()
+            .available_routes
+            .clear();
         app.handle_advisor_result(id, result);
         let picker = app.inline_interactive_state.as_ref().unwrap();
         assert_eq!(picker.entries.len(), 2);
-        assert!(picker.entries[1].name.contains("No available advisor models"));
+        assert!(
+            picker.entries[1]
+                .name
+                .contains("No available advisor models")
+        );
         assert!(!picker.entries[1].options[0].available);
         assert!(picker.entries[1].options[0].provider.contains("/login"));
     });
