@@ -7,6 +7,37 @@ live-model acceptance gate remains open: this execution environment has no
 provider credential. A local HTTP fixture is not claimed as live-model evidence.
 Final-head CI results and any outstanding gates are recorded in PR #10.
 
+Follow-up on 2026-09-05: PR #10 is merged. The advisor now has a session model
+and effort picker backed by the authenticated model catalog used by `/model`.
+The optional OpenAI API acceptance probe below is one test harness; it is not
+a requirement for using the advisor with an existing Jcode subscription login.
+
+## Choosing the advisor model
+
+1. Run `/advisor` (or `/advisor model`) to list available, permitted routes from
+   your signed-in providers. The provider and authentication method identify
+   each route, including when a model has both subscription and API routes.
+2. Choose a model, then choose its supported reasoning effort. Models without
+   effort controls show a confirmation row. Confirming enables the advisor for
+   this session. The main model, main effort, and global defaults stay separate.
+3. Run `/advisor inherit` to enable the advisor using the current main model and
+   effort. Existing status, inspect, acknowledge, dismiss, on and off controls
+   remain available.
+
+Selections are session overrides of configured advisor/reviewer/verification
+models. Only canonical route identity and effort are checkpointed, never
+credentials or provider context. Restart, reload, rewind and compaction retain
+the choice. Availability and `allowed_runtime_keys` are enforced when selecting
+and when running a review; a denied or unavailable route never falls back to
+another credential path. Selecting a new model invalidates pending reviews so
+an old completion cannot publish as the newly chosen advisor.
+
+Picker and wire regressions cover OAuth selection without an API-key route,
+effort selection, primary/default isolation, cancellation and late responses.
+Provider regressions cover OAuth/API effort inheritance and independent
+Copilot, Gemini and Antigravity forks. Socket acceptance checks the selected
+model and effort in real transport requests and after restart/reload.
+
 ## Requirement traceability
 
 | Remaining requirement | Implementation | Verification |
@@ -62,7 +93,7 @@ severity findings survive text truncation.
 
 - Checkpoints live under the configured Jcode home at `state/advisor`, independently
   of the ephemeral runtime/socket directory. File names hash session identifiers.
-- Persisted state is limited to version, enable override, turn/cost counters,
+- Persisted state is limited to version, enable and model/effort overrides, turn/cost counters,
   immunity counters, and at most 32 bounded note records. Individual records are
   capped at 4 KiB after JSON escaping; files are capped at 256 KiB.
 - Resume restores controls, handled dispositions, unresolved blockers, and review
@@ -71,7 +102,7 @@ severity findings survive text truncation.
   restart checkpoint.
 - Rewind, rewind undo, and applied compaction invalidate notes, pending reviews,
   private context, deduplication, and queued advisor notifications. They preserve
-  explicit enable/disable, lifetime cost counters, and the handled-note window.
+  explicit enable/disable, model/effort selection, lifetime cost counters, and the handled-note window.
 - Acknowledging/dismissing cancels any current review generation and pending review
   so late paraphrases cannot immediately resurrect a handled concern. Other
   unresolved blockers continue to gate effects. Disabling fences publication and
@@ -84,9 +115,9 @@ severity findings survive text truncation.
   pending request, a timeout, and per-turn note limits. A full set of retained
   unresolved blockers does not produce uninspectable extra notes.
 
-The existing `/advisor status|inspect|ack <id>|dismiss <id>|on|off` TUI and public
-client/socket controls remain the product surface. No redundant standalone CLI
-control command is added.
+The `/advisor` picker and `/advisor inherit|status|inspect|ack <id>|dismiss <id>|on|off`
+TUI and public client/socket controls remain the product surface. No redundant
+standalone CLI control command is added.
 
 ## Enforcement and routing
 

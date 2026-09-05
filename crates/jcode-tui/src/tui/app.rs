@@ -49,6 +49,7 @@ pub enum AppRuntimeMode {
     TestHarness,
 }
 
+mod advisor_picker;
 mod auth;
 mod auth_account_picker_saved_accounts;
 mod catchup;
@@ -1412,6 +1413,7 @@ pub struct App {
     // default effort (low by default) and silently runs the newly selected
     // model at the wrong effort (issue #427).
     pending_reasoning_effort: Option<String>,
+    advisor_picker: advisor_picker::AdvisorPickerState,
     // Remote SetModel has been sent but ModelChanged has not arrived yet. User
     // prompts submitted in this window are held so the first request cannot race
     // the model switch and use stale provider/model state.

@@ -1430,97 +1430,13 @@ pub(super) async fn handle_client(
             }
 
             Request::Advisor { id, request } => {
-                use crate::advisor::AdvisorNoteDisposition;
-                use crate::protocol::{AdvisorControlResult, AdvisorRequest};
-                let manager = crate::advisor::advisor_manager();
-                let session_id = client_session_id.clone();
-                let message = match request {
-                    AdvisorRequest::Status => {
-                        let configured = crate::advisor::config_for_current_session().enabled;
-                        let enabled = manager.is_enabled(&session_id, configured);
-                        match manager.snapshot(&session_id) {
-                            Some(snapshot) => format!(
-                                "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); {}",
-                                if enabled { "on" } else { "off" },
-                                snapshot.status,
-                                snapshot.unresolved_blocking_notes,
-                                manager.notes(&session_id).len(),
-                                snapshot.last_error.as_deref().unwrap_or("no error")
-                            ),
-                            None => format!(
-                                "Advisor: {} (idle); no retained notes",
-                                if enabled { "on" } else { "off" }
-                            ),
-                        }
-                    }
-                    AdvisorRequest::Inspect => {
-                        let notes = manager.notes(&session_id);
-                        if notes.is_empty() {
-                            "Advisor has no retained notes.".to_string()
-                        } else {
-                            notes
-                                .into_iter()
-                                .map(|note| {
-                                    format!(
-                                        "{} [{:?}/{:?}] {}\nRecommended: {}{}",
-                                        note.id,
-                                        note.severity,
-                                        note.disposition,
-                                        note.summary,
-                                        note.recommended_action,
-                                        if note.evidence.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!("\nEvidence: {}", note.evidence.join(" | "))
-                                        }
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n\n")
-                        }
-                    }
-                    AdvisorRequest::Dismiss(note_id) => {
-                        match manager.resolve_note(
-                            &session_id,
-                            &note_id,
-                            AdvisorNoteDisposition::Dismissed,
-                        ) {
-                            Ok(true) => format!("Dismissed advisor note {note_id}."),
-                            Ok(false) => format!("Advisor note {note_id} was not found."),
-                            Err(error) => error.to_string(),
-                        }
-                    }
-                    AdvisorRequest::Acknowledge(note_id) => {
-                        match manager.resolve_note(
-                            &session_id,
-                            &note_id,
-                            AdvisorNoteDisposition::Acknowledged,
-                        ) {
-                            Ok(true) => format!("Acknowledged advisor note {note_id}."),
-                            Ok(false) => format!("Advisor note {note_id} was not found."),
-                            Err(error) => error.to_string(),
-                        }
-                    }
-                    AdvisorRequest::Enable => match manager.set_enabled(&session_id, true) {
-                        Ok(()) => "Advisor enabled for this session.".to_string(),
-                        Err(error) => error.to_string(),
-                    },
-                    AdvisorRequest::Disable => match manager.set_enabled(&session_id, false) {
-                        Ok(()) => {
-                            "Advisor disabled for this session; future risky tools are released."
-                                .to_string()
-                        }
-                        Err(error) => error.to_string(),
-                    },
-                };
-                let json = encode_event(&ServerEvent::AdvisorResult {
+                super::advisor_control::handle_advisor(
                     id,
-                    result: AdvisorControlResult { message },
-                });
-                let mut w = writer.lock().await;
-                if w.write_all(json.as_bytes()).await.is_err() {
-                    break;
-                }
+                    request,
+                    &client_session_id,
+                    &agent,
+                    &client_event_tx,
+                );
             }
 
             Request::Subscribe {

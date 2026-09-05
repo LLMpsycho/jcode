@@ -12,6 +12,8 @@ const MAX_STATE_BYTES: u64 = 256 * 1024;
 struct Checkpoint {
     version: u8,
     enabled_override: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_override: Option<model_selection::AdvisorModelOverride>,
     turns_observed: u64,
     cursor: u64,
     #[serde(default)]
@@ -45,6 +47,7 @@ impl AdvisorManager {
         let checkpoint = Checkpoint {
             version: 1,
             enabled_override: runtime.enabled_override,
+            model_override: runtime.model_override.clone(),
             turns_observed: runtime.turns_observed,
             cursor: runtime.cursor,
             immunity_until_turn: runtime.immunity_until_turn,
@@ -80,6 +83,7 @@ impl AdvisorManager {
                     session.to_string(),
                     AdvisorRuntime {
                         enabled_override: checkpoint.enabled_override,
+                        model_override: checkpoint.model_override,
                         turns_observed: checkpoint.turns_observed,
                         cursor: checkpoint.cursor,
                         immunity_until_turn: checkpoint.immunity_until_turn,
@@ -116,6 +120,7 @@ impl AdvisorManager {
             immunity_until_turn: previous.immunity_until_turn,
             immunity_turns: previous.immunity_turns,
             enabled_override: previous.enabled_override,
+            model_override: previous.model_override,
             turns_observed: previous.turns_observed,
             cursor: previous.cursor,
             ..AdvisorRuntime::default()
@@ -149,6 +154,20 @@ fn load(path: &Path) -> Result<Option<Checkpoint>> {
         serde_json::from_slice(&bytes).context("invalid advisor checkpoint")?;
     if checkpoint.version != 1 || checkpoint.notes.len() > MAX_NOTE_METADATA {
         bail!("unsupported advisor checkpoint");
+    }
+    if let Some(model_selection::AdvisorModelOverride::Selected {
+        selection,
+        reasoning_effort,
+    }) = &checkpoint.model_override
+    {
+        routing::validate_persisted_selection(selection)?;
+        if reasoning_effort.as_ref().is_some_and(|effort| {
+            effort.len() > 32
+                || effort.chars().any(char::is_control)
+                || redact_secrets(effort) != *effort
+        }) {
+            bail!("invalid advisor reasoning effort");
+        }
     }
     for note in &checkpoint.notes {
         if !note.id.starts_with("adv-") || note.id.len() > 64 {

@@ -488,13 +488,16 @@ async fn stale_review_completion_cannot_publish_into_recreated_session() {
         .run_review(
             "recreated".to_string(),
             1,
-            Arc::new(AdvisorProvider {
+            PendingReview {
+            provider: Arc::new(AdvisorProvider {
                 calls: Arc::new(AtomicUsize::new(0)),
                 response: r#"{"severity":"blocker","summary":"Stale","evidence":[],"recommended_action":"Do not publish","blocking":true}"#.to_string(),
             }),
-            Arc::clone(&queue),
-            AdvisorTurnInput::default(),
-            enabled_config(),
+            queue: Arc::clone(&queue),
+            input: AdvisorTurnInput::default(),
+            config: enabled_config(),
+            model_override: None,
+            },
         )
         .await;
 

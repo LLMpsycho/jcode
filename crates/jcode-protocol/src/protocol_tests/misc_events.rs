@@ -133,8 +133,8 @@ fn test_advisor_control_roundtrips() -> Result<()> {
     let requests = [
         AdvisorRequest::Status,
         AdvisorRequest::Inspect,
-        AdvisorRequest::Dismiss("adv-0000000000000001".to_string()),
-        AdvisorRequest::Acknowledge("adv-0000000000000002".to_string()),
+        AdvisorRequest::Dismiss { note_id: "adv-0000000000000001".to_string() },
+        AdvisorRequest::Acknowledge { note_id: "adv-0000000000000002".to_string() },
         AdvisorRequest::Enable,
         AdvisorRequest::Disable,
     ];
@@ -152,6 +152,7 @@ fn test_advisor_control_roundtrips() -> Result<()> {
         id: 7,
         result: AdvisorControlResult {
             message: "Advisor: on (Ready)".to_string(),
+            ..AdvisorControlResult::default()
         },
     };
     let json = encode_event(&event);
@@ -160,6 +161,48 @@ fn test_advisor_control_roundtrips() -> Result<()> {
     };
     assert_eq!(id, 7);
     assert_eq!(result.message, "Advisor: on (Ready)");
+    Ok(())
+}
+
+#[test]
+fn test_advisor_model_controls_preserve_legacy_wire_and_structured_routes() -> Result<()> {
+    let legacy = [
+        r#"{"action":"status"}"#,
+        r#"{"action":"inspect"}"#,
+        r#"{"action":"dismiss","note_id":"adv-one"}"#,
+        r#"{"action":"acknowledge","note_id":"adv-two"}"#,
+        r#"{"action":"enable"}"#,
+        r#"{"action":"disable"}"#,
+    ];
+    for json in legacy {
+        let request: AdvisorRequest = serde_json::from_str(json)?;
+        assert_eq!(serde_json::to_value(request)?, serde_json::from_str::<serde_json::Value>(json)?);
+    }
+    let old_result: AdvisorControlResult = serde_json::from_str(r#"{"message":"Advisor: on"}"#)?;
+    assert!(old_result.model_settings.is_none());
+    assert!(old_result.model_options.is_none());
+    assert!(old_result.error.is_none());
+    assert_eq!(serde_json::to_string(&old_result)?, r#"{"message":"Advisor: on"}"#);
+    let selection = jcode_provider_core::RouteSelection {
+        model: "gpt-5".into(), runtime_key: jcode_provider_core::RuntimeKey::OpenAIOAuth,
+        api_method: "openai-oauth".into(), provider_label: "OpenAI".into(), detail: String::new(),
+    };
+    for request in [
+        AdvisorRequest::ModelOptions { selection: None },
+        AdvisorRequest::ModelOptions { selection: Some(selection.clone()) },
+        AdvisorRequest::SelectModel { selection: selection.clone(), reasoning_effort: Some("high".into()) },
+        AdvisorRequest::UsePrimary,
+    ] {
+        let json = serde_json::to_string(&request)?;
+        assert_eq!(serde_json::from_str::<AdvisorRequest>(&json)?, request);
+    }
+    let result = AdvisorControlResult {
+        message: "Advisor enabled".into(),
+        model_settings: Some(AdvisorModelSettings { enabled: true, selection: Some(selection.clone()), reasoning_effort: Some("high".into()), follows_primary: false }),
+        model_options: Some(AdvisorModelOptions { selection: Some(selection), reasoning_effort: Some("high".into()), available_routes: Vec::new(), available_efforts: vec!["low".into(), "high".into()] }),
+        error: None,
+    };
+    assert_eq!(serde_json::from_str::<AdvisorControlResult>(&serde_json::to_string(&result)?)?, result);
     Ok(())
 }
 

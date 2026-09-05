@@ -3435,6 +3435,10 @@ impl App {
                 }
 
                 match entry.action {
+                    PickerAction::Advisor(Some(request)) => {
+                        self.queue_advisor_request(request);
+                    }
+                    PickerAction::Advisor(None) => {}
                     PickerAction::Account(selection) => {
                         self.inline_interactive_state = None;
                         self.handle_account_picker_selection(selection);

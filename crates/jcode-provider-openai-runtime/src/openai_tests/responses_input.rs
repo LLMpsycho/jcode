@@ -324,20 +324,18 @@ fn test_build_response_request_for_gpt_5_4_1m_uses_base_model_without_extra_flag
         serde_json::json!({ "effort": "xhigh", "summary": "auto" })
     );
     assert_eq!(request["service_tier"], serde_json::json!("unused"));
-    assert!(
-        request["tools"]
-            .as_array()
-            .expect("tools should be an array")
-            .contains(&serde_json::json!({ "type": "image_generation" }))
-    );
+    assert_eq!(request["tools"], serde_json::json!([]));
 }
 
 #[test]
 fn test_build_response_request_omits_image_generation_for_codex_models() {
     // Codex models reject the hosted image_generation tool, so it must not be
     // attached even in ChatGPT mode (issue #369).
-    let request = build_test_response_request(
+    let request = OpenAIProvider::build_response_request(
         "gpt-5.3-codex",
+        "system".to_string(),
+        &[],
+        &[serde_json::json!({ "type": "function", "name": "read" })],
         true,
         Some(DEFAULT_MAX_OUTPUT_TOKENS),
         None,
@@ -358,8 +356,11 @@ fn test_build_response_request_omits_image_generation_for_codex_models() {
 
 #[test]
 fn test_build_response_request_keeps_image_generation_for_non_codex_chatgpt_models() {
-    let request = build_test_response_request(
+    let request = OpenAIProvider::build_response_request(
         "gpt-5.5",
+        "system".to_string(),
+        &[],
+        &[serde_json::json!({ "type": "function", "name": "read" })],
         true,
         Some(DEFAULT_MAX_OUTPUT_TOKENS),
         None,
@@ -376,6 +377,34 @@ fn test_build_response_request_keeps_image_generation_for_non_codex_chatgpt_mode
             .contains(&serde_json::json!({ "type": "image_generation" })),
         "non-codex ChatGPT models should still receive image_generation"
     );
+    assert!(
+        request["tools"]
+            .as_array()
+            .expect("tools should be an array")
+            .contains(&serde_json::json!({ "type": "function", "name": "read" }))
+    );
+}
+
+#[test]
+fn test_advisor_chatgpt_review_keeps_empty_tool_surface() {
+    for is_chatgpt_mode in [true, false] {
+        let request = OpenAIProvider::build_response_request(
+            "gpt-5.5",
+            "You are Jcode's independent advisor.".to_string(),
+            &[serde_json::json!({ "role": "user", "content": "Review acceptance evidence." })],
+            &[],
+            is_chatgpt_mode,
+            Some(1024),
+            Some("high"),
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(request["tools"], serde_json::json!([]));
+        assert_eq!(request["reasoning"]["effort"], "high");
+    }
 }
 
 #[test]

@@ -799,6 +799,7 @@ struct StubExternalRuntime {
     models: &'static [&'static str],
     model: std::sync::RwLock<String>,
     credential_mode: std::sync::RwLock<jcode_provider_core::CredentialMode>,
+    reasoning_effort: std::sync::RwLock<Option<String>>,
 }
 
 impl StubExternalRuntime {
@@ -815,6 +816,7 @@ impl StubExternalRuntime {
             models,
             model: std::sync::RwLock::new(models[0].to_string()),
             credential_mode: std::sync::RwLock::new(jcode_provider_core::CredentialMode::Auto),
+            reasoning_effort: std::sync::RwLock::new(None),
         }
     }
 
@@ -930,6 +932,19 @@ impl Provider for StubExternalRuntime {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mode;
         Ok(())
+    }
+    fn reasoning_effort(&self) -> Option<String> {
+        self.reasoning_effort.read().unwrap().clone()
+    }
+    fn set_reasoning_effort(&self, effort: &str) -> anyhow::Result<()> {
+        if !self.available_efforts().contains(&effort) {
+            anyhow::bail!("unsupported test reasoning effort");
+        }
+        *self.reasoning_effort.write().unwrap() = Some(effort.to_string());
+        Ok(())
+    }
+    fn available_efforts(&self) -> Vec<&'static str> {
+        vec!["low", "medium", "high"]
     }
     fn fork(&self) -> Arc<dyn Provider> {
         Arc::new(StubExternalRuntime::new(
@@ -1068,6 +1083,9 @@ include!("tests/model_resolution.rs");
 include!("tests/issue_534_profile_preservation.rs");
 include!("tests/fallback_failover.rs");
 include!("tests/catalog_subscription.rs");
+
+#[path = "tests/advisor_provider_isolation.rs"]
+mod advisor_provider_isolation;
 
 /// Rendering the route catalog must never schedule network work.
 ///
