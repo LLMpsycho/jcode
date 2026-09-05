@@ -24,6 +24,7 @@ pub(super) fn dispatch_local_command(app: &mut App, trimmed: &str) -> bool {
         // `handle_session_command`, so they need no separate entries here.
         || super::commands::handle_session_command(app, trimmed)
         || super::commands::handle_dictation_command(app, trimmed)
+        || app.handle_unavailable_advisor_command(trimmed)
         || super::commands::handle_config_command(app, trimmed)
         || super::commands_colors::handle_colors_command(app, trimmed)
         || super::commands::handle_log_command(app, trimmed)

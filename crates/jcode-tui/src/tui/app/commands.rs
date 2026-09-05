@@ -2942,7 +2942,9 @@ fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
 
 fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "swarm" | "agent" | "agents" | "subagent" | "subagents" => {
+        "main" | "primary" => Some(crate::tui::AgentModelTarget::Main),
+        "advisor" => Some(crate::tui::AgentModelTarget::Advisor),
+        "swarm" | "agent" | "agents" | "subagent" | "subagents" | "worker" | "workers" => {
             Some(crate::tui::AgentModelTarget::Swarm)
         }
         "review" | "reviewer" | "code-review" | "codereview" => {
@@ -3174,11 +3176,13 @@ mod interactive_editor_tests {
 }
 
 pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/agents") {
+    let Some(rest) = slash_command_rest(trimmed, "/agents")
+        .or_else(|| slash_command_rest(trimmed, "/config agents"))
+        .or_else(|| slash_command_rest(trimmed, "/config models"))
+    else {
         return false;
-    }
-
-    let rest = trimmed.strip_prefix("/agents").unwrap_or_default().trim();
+    };
+    let rest = rest.trim();
     if rest.is_empty() {
         app.open_agents_picker();
         return true;
@@ -3186,7 +3190,7 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(target) = parse_agents_target(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents or /agents <swarm|review|judge|memory|ambient>".to_string(),
+            "Usage: /agents or /config models [main|swarm|advisor|review|judge|memory|ambient]".to_string(),
         ));
         return true;
     };

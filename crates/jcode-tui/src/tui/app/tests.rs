@@ -1806,3 +1806,6 @@ fn assert_clear_swarm_plan_reset(app: &App) {
 
 #[path = "tests/role_review_launch.rs"]
 mod role_review_launch;
+
+#[path = "tests/agent_role_picker.rs"]
+mod agent_role_picker;
