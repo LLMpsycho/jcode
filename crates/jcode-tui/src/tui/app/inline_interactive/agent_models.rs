@@ -381,7 +381,11 @@ impl App {
                 let selection = if clear {
                     "inherit".into()
                 } else {
-                    entry.name.clone()
+                    let model = model_entry_saved_spec(entry);
+                    match entry.effort.as_deref() {
+                        Some(effort) => format!("{model} ({effort})"),
+                        None => model,
+                    }
                 };
                 let label = agent_model_target_label(target);
                 self.push_display_message(DisplayMessage::system(format!(

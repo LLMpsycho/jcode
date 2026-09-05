@@ -1372,6 +1372,7 @@ fn test_agent_model_picker_inherit_row_uses_provider_default_when_inherited_mode
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         configure_test_remote_models(&mut app);
+        app.remote_provider_model = Some("unknown".to_string());
         app.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
 
         let picker = app
