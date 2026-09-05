@@ -7,6 +7,7 @@ provided by the caller. Never claims the fixture is a live-model acceptance run.
 """
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import http.server
 import json
@@ -30,6 +31,38 @@ PROMPT = (
     f"Synthetic redaction fixture OPENAI_API_KEY={SYNTHETIC_SECRET}"
 )
 PRIMARY = "Implementation complete; tests were not run."
+MAX_REPORT_BYTES = 128 * 1024
+
+
+def redact_report(value):
+    if isinstance(value, str):
+        for secret in (os.environ.get("OPENAI_API_KEY"), SYNTHETIC_SECRET):
+            if secret:
+                value = value.replace(secret, "[REDACTED]")
+        return re.sub(r"\bsk-[A-Za-z0-9_-]{8,}", "[REDACTED]", value)
+    if isinstance(value, dict):
+        return {key: redact_report(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [redact_report(child) for child in value]
+    return value
+
+
+def emit_report(report, path=None):
+    encoded = (json.dumps(redact_report(report), indent=2) + "\n").encode()
+    if len(encoded) > MAX_REPORT_BYTES:
+        raise ValueError("acceptance report exceeds its 128 KiB limit")
+    if path is not None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "wb") as output:
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            Path(temporary).unlink(missing_ok=True)
+    print(encoded.decode(), end="")
 
 
 def strings(value):
@@ -317,7 +350,8 @@ def exercise(binary, mode, fixture, model):
                 assert not fixture.errors, fixture.errors
                 assert any(fixture.primary_tools), "primary lost normal tools"
             return {"mode": mode, "status": "passed", "restart": True,
-                    "reload_and_immunity": bool(fixture), "rewind": True}
+                    "reload_and_immunity": bool(fixture), "rewind": True,
+                    "advisor_verdict": {"note_id": note, "inspect": message}}
         except Exception:
             if fixture:
                 print("Fixture errors:", fixture.errors)
@@ -331,23 +365,27 @@ def exercise(binary, mode, fixture, model):
             daemon.log.close()
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=Path("target/selfdev/jcode"))
     parser.add_argument("--live", action="store_true", help="Use the caller's OpenAI API key (billable).")
     parser.add_argument("--model", default="gpt-5")
-    args = parser.parse_args()
-    binary = args.binary.resolve(strict=True)
+    parser.add_argument("--report", type=Path, help="Save the bounded, redacted successful verdict report.")
+    args = parser.parse_args(argv)
     if args.live and not os.environ.get("OPENAI_API_KEY"):
         parser.error("--live requires an existing OPENAI_API_KEY; no provider calls were made")
+    binary = args.binary.resolve(strict=True)
     fixture = None if args.live else Fixture()
     if fixture:
         threading.Thread(target=fixture.serve_forever, daemon=True).start()
     try:
         results = [exercise(binary, mode, fixture, args.model) for mode in MODES]
-        print(json.dumps({"provider": "live-openai" if args.live else "local-http-fixture",
-                          "binary_sha256": hashlib.file_digest(binary.open("rb"), "sha256").hexdigest(),
-                          "results": results}, indent=2))
+        with binary.open("rb") as executable:
+            binary_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
+        emit_report({"provider": "live-openai" if args.live else "local-http-fixture",
+                     "requested_model": args.model,
+                     "recorded_at": datetime.now(timezone.utc).isoformat(),
+                     "binary_sha256": binary_sha256, "results": results}, args.report)
     finally:
         if fixture:
             fixture.shutdown()
