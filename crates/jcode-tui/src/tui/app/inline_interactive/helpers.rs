@@ -226,11 +226,9 @@ pub(super) fn agent_model_default_summary(target: AgentModelTarget, app: &App) -
             .or_else(|| app.session.subagent_model.clone())
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Review => load_agent_model_override(target)
-            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Judge => load_agent_model_override(target)
-            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Memory => load_agent_model_override(target),

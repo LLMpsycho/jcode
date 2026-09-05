@@ -1413,14 +1413,17 @@ async fn handle_remote_key_internal(
                 if trimmed == "/autoreview now" {
                     let parent_session_id =
                         app_mod::commands::current_feedback_target_session_id(app);
-                    app_mod::commands::queue_review_spawn_remote(
+                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
                         app,
                         "Autoreview",
                         parent_session_id.clone(),
                         app_mod::commands::build_autoreview_startup_message(&parent_session_id),
-                        crate::config::config().autoreview.model.clone(),
-                        None,
-                    );
+                    ) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to queue autoreview: {error}"
+                        )));
+                        return Ok(());
+                    }
                     if app.is_processing {
                         app.set_status_notice("Autoreview queued");
                     } else {
@@ -1432,6 +1435,7 @@ async fn handle_remote_key_internal(
                             app.pending_split_parent_session_id = None;
                             app.pending_split_prompt = None;
                             app.pending_split_model_override = None;
+                            app.pending_split_role_selection = None;
                             app.pending_split_provider_key_override = None;
                             app.pending_split_label = None;
                             app.push_display_message(DisplayMessage::error(format!(
@@ -1471,14 +1475,17 @@ async fn handle_remote_key_internal(
                 if trimmed == "/autojudge now" {
                     let parent_session_id =
                         app_mod::commands::current_feedback_target_session_id(app);
-                    app_mod::commands::queue_review_spawn_remote(
+                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
                         app,
                         "Autojudge",
                         parent_session_id.clone(),
                         app_mod::commands::build_autojudge_startup_message(&parent_session_id),
-                        crate::config::config().autojudge.model.clone(),
-                        None,
-                    );
+                    ) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to queue autojudge: {error}"
+                        )));
+                        return Ok(());
+                    }
                     if app.is_processing {
                         app.set_status_notice("Autojudge queued");
                     } else {
@@ -1490,6 +1497,7 @@ async fn handle_remote_key_internal(
                             app.pending_split_parent_session_id = None;
                             app.pending_split_prompt = None;
                             app.pending_split_model_override = None;
+                            app.pending_split_role_selection = None;
                             app.pending_split_provider_key_override = None;
                             app.pending_split_label = None;
                             app.push_display_message(DisplayMessage::error(format!(
@@ -1503,22 +1511,19 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/review" {
-                    let (model_override, provider_key_override) =
-                        app_mod::commands::preferred_one_shot_review_override()
-                            .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-                            .unwrap_or_else(|| {
-                                (crate::config::config().autoreview.model.clone(), None)
-                            });
                     let parent_session_id =
                         app_mod::commands::current_feedback_target_session_id(app);
-                    app_mod::commands::queue_review_spawn_remote(
+                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
                         app,
                         "Review",
                         parent_session_id.clone(),
                         app_mod::commands::build_review_startup_message(&parent_session_id),
-                        model_override,
-                        provider_key_override,
-                    );
+                    ) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to queue review: {error}"
+                        )));
+                        return Ok(());
+                    }
                     if app.is_processing {
                         app.set_status_notice("Review queued");
                     } else {
@@ -1530,6 +1535,7 @@ async fn handle_remote_key_internal(
                             app.pending_split_parent_session_id = None;
                             app.pending_split_prompt = None;
                             app.pending_split_model_override = None;
+                            app.pending_split_role_selection = None;
                             app.pending_split_provider_key_override = None;
                             app.pending_split_label = None;
                             app.push_display_message(DisplayMessage::error(format!(
@@ -1543,22 +1549,19 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/judge" {
-                    let (model_override, provider_key_override) =
-                        app_mod::commands::preferred_one_shot_review_override()
-                            .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-                            .unwrap_or_else(|| {
-                                (crate::config::config().autojudge.model.clone(), None)
-                            });
                     let parent_session_id =
                         app_mod::commands::current_feedback_target_session_id(app);
-                    app_mod::commands::queue_review_spawn_remote(
+                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
                         app,
                         "Judge",
                         parent_session_id.clone(),
                         app_mod::commands::build_judge_startup_message(&parent_session_id),
-                        model_override,
-                        provider_key_override,
-                    );
+                    ) {
+                        app.push_display_message(DisplayMessage::error(format!(
+                            "Failed to queue judge: {error}"
+                        )));
+                        return Ok(());
+                    }
                     if app.is_processing {
                         app.set_status_notice("Judge queued");
                     } else {
@@ -1570,6 +1573,7 @@ async fn handle_remote_key_internal(
                             app.pending_split_parent_session_id = None;
                             app.pending_split_prompt = None;
                             app.pending_split_model_override = None;
+                            app.pending_split_role_selection = None;
                             app.pending_split_provider_key_override = None;
                             app.pending_split_label = None;
                             app.push_display_message(DisplayMessage::error(format!(

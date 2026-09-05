@@ -39,38 +39,6 @@ fn test_finish_turn_does_not_duplicate_existing_poke_followup() {
     });
 }
 
-#[test]
-fn test_review_prefers_openai_oauth_gpt_5_4_when_available() {
-    with_temp_jcode_home(|| {
-        let auth_path = crate::storage::jcode_dir()
-            .expect("jcode dir")
-            .join("openai-auth.json");
-        std::fs::write(
-            &auth_path,
-            serde_json::json!({
-                "openai_accounts": [
-                    {
-                        "label": "openai-1",
-                        "access_token": "at_test",
-                        "refresh_token": "rt_test",
-                        "account_id": "acct_test"
-                    }
-                ],
-                "active_openai_account": "openai-1"
-            })
-            .to_string(),
-        )
-        .expect("write auth file");
-
-        assert_eq!(
-            super::commands::preferred_one_shot_review_override(),
-            Some((
-                super::commands::REVIEW_PREFERRED_MODEL.to_string(),
-                "openai".to_string()
-            ))
-        );
-    });
-}
 
 #[test]
 fn test_pending_split_launch_shows_processing_status_in_ui() {
@@ -254,10 +222,10 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
                 &child_id,
                 super::commands::build_judge_startup_message(&parent_id),
                 None,
-                None,
                 Some(title.to_string()),
                 Some(parent_id.clone()),
-            );
+            )
+            .expect("prepare judge session");
 
             let prepared = crate::session::Session::load(&child_id).expect("reload child session");
             let transcript = prepared

@@ -1412,6 +1412,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
             let had_prompt = app.pending_split_prompt.take().is_some();
             let label = app.pending_split_label.take();
             app.pending_split_model_override = None;
+            app.pending_split_role_selection = None;
             app.pending_split_provider_key_override = None;
             let flow_label = label.unwrap_or(flow_label);
             app.push_display_message(DisplayMessage::error(format!(

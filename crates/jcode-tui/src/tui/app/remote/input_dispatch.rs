@@ -258,6 +258,7 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
         images: prepared.images,
     });
     app.pending_split_model_override = None;
+    app.pending_split_role_selection = None;
     app.pending_split_provider_key_override = None;
     app.pending_split_label = Some("Prompt".to_string());
     app.pending_split_started_at = Some(Instant::now());
@@ -275,6 +276,7 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
                     images: prompt.images,
                 });
             app.pending_split_model_override = None;
+            app.pending_split_role_selection = None;
             app.pending_split_provider_key_override = None;
             app.pending_split_label = None;
             if let Some(prepared) = pending {
@@ -297,6 +299,7 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
                 images: prompt.images,
             });
         app.pending_split_model_override = None;
+        app.pending_split_role_selection = None;
         app.pending_split_provider_key_override = None;
         app.pending_split_label = None;
         if let Some(prepared) = pending {

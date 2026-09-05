@@ -18,7 +18,7 @@ pub(super) use super::commands_review::{
     handle_autojudge_command_local, handle_autoreview_command_local, handle_judge_command_local,
     handle_observe_command, handle_review_command_local, launch_forked_session_local,
     launch_prompt_in_new_session_local, maybe_trigger_autojudge_local,
-    maybe_trigger_autoreview_local, preferred_one_shot_review_override,
+    maybe_trigger_autoreview_local,
     prepare_review_spawned_session, queue_review_spawn_remote, reset_current_session,
 };
 pub(super) use super::todos_view::handle_todos_view_command;
@@ -30,7 +30,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-pub(super) const REVIEW_PREFERRED_MODEL: &str = "gpt-5.5";
 const POKE_OFF_UI_HINT: &str = "/poke off to stop.";
 
 const TODO_COMPLETION_CONTINUATION_MESSAGE: &str =
