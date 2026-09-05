@@ -42,6 +42,7 @@ model and effort in real transport requests and after restart/reload.
 
 The follow-up starts from merged `master` at
 `7c25bb8e25ae1459f75a8358bf1764a61a722051`; this fork has no `main` branch.
+Validation for this follow-up is recorded in PR #13.
 The audit closes these additional integration gaps:
 
 | Finding | Correction | Focused regression |
