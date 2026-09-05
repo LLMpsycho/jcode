@@ -518,7 +518,7 @@ impl AdvisorManager {
             let Some(runtime) = sessions.get_mut(&owner_session_id) else {
                 return;
             };
-            if runtime.status == AdvisorStatus::Reviewing {
+            if runtime.persistence_failed || runtime.status == AdvisorStatus::Reviewing {
                 return;
             }
             let Some(pending) = runtime.pending.take() else {
