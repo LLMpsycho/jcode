@@ -117,6 +117,8 @@ struct DirectTransportConfig {
     headers: std::result::Result<HeaderMap, String>,
     auth_mode: String,
     auth_header: String,
+    #[cfg(test)]
+    oauth_fixture_url: Option<String>,
 }
 
 impl DirectTransportConfig {
@@ -127,6 +129,8 @@ impl DirectTransportConfig {
             auth_mode: direct_auth_mode(),
             auth_header: std::env::var("JCODE_ANTHROPIC_AUTH_HEADER")
                 .unwrap_or_else(|_| "x-api-key".to_string()),
+            #[cfg(test)]
+            oauth_fixture_url: None,
         }
     }
 }
@@ -2050,6 +2054,21 @@ async fn stream_response(
         API_URL_OAUTH
     } else {
         direct_transport.api_url.as_str()
+    };
+    // OAuth keeps its fixed production endpoint. Unit tests can exercise its
+    // retry policy with a local HTTP fixture and dummy credentials only.
+    #[cfg(test)]
+    let url = if is_oauth
+        && let Some(fixture_url) = &direct_transport.oauth_fixture_url
+    {
+        let parsed = reqwest::Url::parse(fixture_url)?;
+        anyhow::ensure!(
+            parsed.scheme() == "http" && parsed.host_str() == Some("127.0.0.1"),
+            "OAuth test fixtures must use HTTP loopback"
+        );
+        fixture_url.as_str()
+    } else {
+        url
     };
 
     let mut req = client.post(url);

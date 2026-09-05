@@ -76,6 +76,7 @@ fn fixture_provider(url: String) -> AnthropicProvider {
         headers: Ok(HeaderMap::new()),
         auth_mode: "none".into(),
         auth_header: "x-api-key".into(),
+        oauth_fixture_url: None,
     };
     provider.profile_api_key = Some(Ok("fixture-key".into()));
     provider.credential_mode = Arc::new(RwLock::new(AnthropicCredentialMode::ApiKey));
@@ -141,7 +142,7 @@ fn role_pinned_streams_reject_model_substitution_and_effort_stripping() {
                 // Construct outside the runtime so new() cannot start a usage fetch.
                 let provider = fixture_provider(url);
                 provider.set_model(model).unwrap();
-                provider.set_reasoning_effort("high");
+                provider.set_reasoning_effort("high").unwrap();
                 provider.set_route_pinned(pinned);
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -231,10 +232,11 @@ fn role_pinned_oauth_quota_error_is_terminal_without_model_retry() {
                 "fixture-session".into(),
                 model.clone(),
                 DirectTransportConfig {
-                    api_url: url,
+                    api_url: API_URL.to_string(),
                     headers: Ok(HeaderMap::new()),
                     auth_mode: "none".into(),
                     auth_header: "x-api-key".into(),
+                    oauth_fixture_url: Some(url),
                 },
                 true,
             ),
@@ -247,12 +249,14 @@ fn role_pinned_oauth_quota_error_is_terminal_without_model_retry() {
                 failure = Some(error.to_string());
             }
         }
+        let failure = failure.expect("pinned quota rejection must be terminal");
         assert!(
-            failure
-                .unwrap()
-                .contains("automatic substitution is disabled")
+            failure.contains("automatic substitution is disabled"),
+            "{failure}"
         );
         assert_eq!(*model.read().unwrap(), "claude-fable-5");
     });
-    assert_eq!(server.join().unwrap().len(), 1);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["model"], "claude-fable-5");
 }
