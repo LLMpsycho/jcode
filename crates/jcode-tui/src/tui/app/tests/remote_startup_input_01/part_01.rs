@@ -149,6 +149,8 @@ fn test_judge_startup_prompts_describe_visible_mirror_context() {
 #[test]
 fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_sessions() {
     with_temp_jcode_home(|| {
+        crate::config::Config::set_reasoning_display(crate::config::ReasoningDisplayMode::Full)
+            .expect("show full reasoning in UI");
         for title in ["judge", "autojudge"] {
             let parent_id = format!("parent_{title}_visible_context");
             let child_id = format!("child_{title}_visible_context");
@@ -194,6 +196,9 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
                 vec![
                     ContentBlock::Reasoning {
                         text: "hidden reasoning should never leak".to_string(),
+                    },
+                    ContentBlock::ReasoningTrace {
+                        text: "hidden trace should never leak".to_string(),
                     },
                     ContentBlock::Text {
                         text: "Final visible answer.".to_string(),
@@ -246,6 +251,7 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
             assert!(transcript.contains("git diff --stat"));
             assert!(!transcript.contains("SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR"));
             assert!(!transcript.contains("hidden reasoning should never leak"));
+            assert!(!transcript.contains("hidden trace should never leak"));
             assert_eq!(prepared.parent_id.as_deref(), Some(parent_id.as_str()));
             assert!(prepared.compaction.is_none());
         }

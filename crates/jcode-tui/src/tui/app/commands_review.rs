@@ -176,8 +176,22 @@ fn judge_visible_tool_summary(tool: &ToolCall) -> Option<String> {
 
 fn build_judge_visible_transcript_messages(parent_session: &Session) -> Vec<StoredMessage> {
     let mut transcript = Vec::new();
+    // The general renderer can include persisted reasoning when the user has
+    // enabled full reasoning display. A judge's context must stay restricted
+    // regardless of that UI preference, including future private block types.
+    let mut visible_parent = parent_session.clone();
+    for message in &mut visible_parent.messages {
+        message.content.retain(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+            )
+        });
+    }
 
-    for rendered in crate::session::render_messages(parent_session) {
+    for rendered in crate::session::render_messages(&visible_parent) {
         match rendered.role.as_str() {
             "user" => {
                 if !rendered.content.trim().is_empty() {
