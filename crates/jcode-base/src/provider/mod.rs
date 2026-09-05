@@ -2119,6 +2119,21 @@ impl Provider for MultiProvider {
         if selection.runtime_key == RuntimeKey::JcodeSubscription {
             return self.set_model_on_jcode_subscription(&selection.model);
         }
+        if selection.runtime_key == RuntimeKey::OpenRouter {
+            return self.set_model_on_explicit_openrouter_route(selection);
+        }
+        if matches!(
+            selection.runtime_key,
+            RuntimeKey::Gemini | RuntimeKey::CodeAssistOAuth
+        ) {
+            return self.set_model_on_provider(ActiveProvider::Gemini, &selection.model);
+        }
+        if selection.runtime_key == (RuntimeKey::OpenAiCompatible { profile_id: None }) {
+            return self.set_model_on_unnamed_compatible_route(selection);
+        }
+        if matches!(&selection.runtime_key, RuntimeKey::Other(api) if api == "grok-build-acp") {
+            return self.set_model(&format!("grok-build:{}", selection.model));
+        }
 
         // Routing-prefix policy lives once in RouteSelection::routed_model_spec
         // so this orchestrator and every single-runtime provider agree on the
