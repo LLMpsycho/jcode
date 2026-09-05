@@ -172,7 +172,7 @@ async fn role_model_constructor_and_resume_dispatch_exact_route_and_effort() {
     let _home = HomeGuard::set(temp.path());
     let provider = Arc::new(RestoreProvider::new(true));
     let provider_dyn: Arc<dyn Provider> = provider.clone();
-    let role = saved_role();
+    let mut role = saved_role();
     role.save().unwrap();
     let registry = Registry::new(provider_dyn.clone()).await;
     let agent =

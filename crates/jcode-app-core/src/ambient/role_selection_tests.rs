@@ -1,7 +1,8 @@
 use super::*;
 use crate::config::{Config, ConfigModelRoute};
 use crate::message::{Message, StreamEvent, ToolDefinition};
-use crate::provider::{EventStream, ModelRoute, ResolvedCredential, RouteSelection, RuntimeKey};
+use crate::provider::{EventStream, ModelRoute, RouteSelection, RuntimeKey};
+use jcode_provider_core::ResolvedCredential;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 

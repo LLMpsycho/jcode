@@ -10,7 +10,7 @@ fn selected_route(api_method: &str, provider_label: &str) -> ConfigModelRoute {
 }
 
 #[test]
-fn role_model_marker_is_optional_for_legacy_session_json() -> Result<()> {
+fn role_model_marker_is_optional_for_legacy_session_json() -> anyhow::Result<()> {
     let _lock = lock_env();
     let legacy = Session::create_with_id("session_role_model_legacy".to_string(), None, None);
     let json = serde_json::to_value(&legacy)?;
@@ -38,7 +38,7 @@ fn role_model_marker_is_optional_for_legacy_session_json() -> Result<()> {
 }
 
 #[test]
-fn role_model_route_and_effort_survive_snapshot_journal_and_startup_loads() -> Result<()> {
+fn role_model_route_and_effort_survive_snapshot_journal_and_startup_loads() -> anyhow::Result<()> {
     let _lock = lock_env();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("JCODE_HOME", home.path());
@@ -82,7 +82,7 @@ fn role_model_route_and_effort_survive_snapshot_journal_and_startup_loads() -> R
 }
 
 #[test]
-fn role_model_route_change_and_clear_checkpoint_before_stub_resume() -> Result<()> {
+fn role_model_route_change_and_clear_checkpoint_before_stub_resume() -> anyhow::Result<()> {
     let _lock = lock_env();
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("JCODE_HOME", home.path());
