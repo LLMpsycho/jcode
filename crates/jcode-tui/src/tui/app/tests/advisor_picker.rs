@@ -743,6 +743,117 @@ fn advisor_picker_timeout_explains_reload_and_ignores_late_error() {
 }
 
 #[test]
+fn advisor_commands_reach_server_from_enter_and_generic_submission_while_busy() {
+    with_temp_jcode_home(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for generic_submission in [false, true] {
+            for busy in [false, true] {
+                for (command, action) in
+                    [("/advisor", "model_options"), ("/advisor status", "status")]
+                {
+                    let mut app = create_test_app();
+                    app.is_remote = true;
+                    app.is_processing = busy;
+                    app.current_message_id = busy.then_some(42);
+                    app.active_skill = Some("existing-skill".into());
+                    rt.block_on(async {
+                        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+                        let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+                        let mut reader = tokio::io::BufReader::new(peer);
+                        if generic_submission {
+                            crate::tui::app::remote::submit_remote_slash_input(
+                                &mut app,
+                                &mut remote,
+                                crate::tui::app::input::PreparedInput {
+                                    raw_input: command.into(),
+                                    expanded: command.into(),
+                                    images: vec![],
+                                },
+                            )
+                            .await
+                            .unwrap();
+                        } else {
+                            app.input = command.into();
+                            app.cursor_pos = app.input.len();
+                            app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+                                .await
+                                .unwrap();
+                        }
+                        let (id, request) =
+                            advisor_read_request(&mut app, &mut remote, &mut reader).await;
+                        assert_eq!(request["action"], action);
+                        assert_eq!(app.is_processing, busy);
+                        assert_eq!(app.current_message_id, busy.then_some(42));
+                        assert_eq!(app.active_skill.as_deref(), Some("existing-skill"));
+                        assert!(!app.pending_turn);
+                        assert!(app.queued_messages.is_empty());
+                        assert!(!app.display_messages.iter().any(|message| {
+                            message.role == "user"
+                                || message.content.contains("Unknown skill")
+                                || message.content.contains("live server connection")
+                        }));
+                        if action == "model_options" {
+                            app.handle_advisor_result(id, advisor_test_result(None));
+                            assert!(
+                                app.inline_interactive_state
+                                    .as_ref()
+                                    .unwrap()
+                                    .is_advisor_picker()
+                            );
+                        }
+                    });
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn advisor_generic_submission_invalid_control_shows_usage_without_sending_a_turn() {
+    with_temp_jcode_home(|| {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.is_processing = true;
+        app.current_message_id = Some(42);
+        rt.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+            let mut reader = tokio::io::BufReader::new(peer);
+            crate::tui::app::remote::submit_remote_slash_input(
+                &mut app,
+                &mut remote,
+                crate::tui::app::input::PreparedInput {
+                    raw_input: "/advisor status trailing".into(),
+                    expanded: "/advisor status trailing".into(),
+                    images: vec![],
+                },
+            )
+            .await
+            .unwrap();
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("Usage: /advisor")
+            );
+            assert!(app.is_processing);
+            assert_eq!(app.current_message_id, Some(42));
+            assert!(!app.pending_turn);
+            assert!(app.queued_messages.is_empty());
+            use tokio::io::AsyncBufReadExt;
+            let mut line = String::new();
+            assert!(
+                tokio::time::timeout(Duration::from_millis(30), reader.read_line(&mut line))
+                    .await
+                    .is_err()
+            );
+        });
+    });
+}
+
+#[test]
 fn advisor_picker_local_and_disconnected_commands_explain_connection_requirement() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();

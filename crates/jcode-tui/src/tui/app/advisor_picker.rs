@@ -107,6 +107,26 @@ fn entry(
 }
 
 impl App {
+    /// Handle connected submissions before skill resolution, including input
+    /// submitted from transcript actions rather than the Enter key handler.
+    pub(super) async fn dispatch_remote_advisor_command(
+        &mut self,
+        input: &str,
+        remote: &mut RemoteConnection,
+    ) -> bool {
+        let Some(request) = command(input) else {
+            return false;
+        };
+        match request {
+            Ok(request) => {
+                self.queue_advisor_request(request);
+                self.forward_pending_advisor_request(remote).await;
+            }
+            Err(usage) => self.push_display_message(DisplayMessage::error(usage.to_string())),
+        }
+        true
+    }
+
     pub(super) fn handle_unavailable_advisor_command(&mut self, input: &str) -> bool {
         let Some(request) = command(input) else {
             return false;

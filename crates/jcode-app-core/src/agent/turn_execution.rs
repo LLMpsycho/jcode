@@ -920,31 +920,42 @@ impl Agent {
 
     /// Start an interactive REPL
     pub async fn repl(&mut self) -> Result<()> {
-        println!("J-Code - Coding Agent");
-        println!("Type your message, or 'quit' to exit.");
+        self.repl_with_input(
+            || {
+                print!("> ");
+                io::stdout().flush()?;
+                let mut input = String::new();
+                Ok((io::stdin().read_line(&mut input)? != 0).then_some(input))
+            },
+            |message| println!("{}", message),
+        )
+        .await
+    }
+
+    async fn repl_with_input(
+        &mut self,
+        mut read_input: impl FnMut() -> Result<Option<String>>,
+        mut write_line: impl FnMut(&str),
+    ) -> Result<()> {
+        write_line("J-Code - Coding Agent");
+        write_line("Type your message, or 'quit' to exit.");
 
         // Show available skills
         let skills = self.current_skills_snapshot();
         let skill_list = skills.list();
         if !skill_list.is_empty() {
-            println!(
+            write_line(&format!(
                 "Available skills: {}",
                 skill_list
                     .iter()
                     .map(|s| format!("/{}", s.name))
                     .collect::<Vec<_>>()
                     .join(", ")
-            );
+            ));
         }
-        println!();
+        write_line("");
 
-        loop {
-            print!("> ");
-            io::stdout().flush()?;
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-
+        while let Some(input) = read_input()? {
             let input = input.trim();
             if input.is_empty() {
                 continue;
@@ -956,7 +967,14 @@ impl Agent {
 
             if input == "clear" {
                 self.clear();
-                println!("Conversation cleared.");
+                write_line("Conversation cleared.");
+                continue;
+            }
+
+            if input.split_whitespace().next() == Some("/advisor") {
+                write_line(
+                    "Advisor model selection is available in the normal jcode interface, not `jcode repl`. Exit with `quit`, run `jcode`, then enter `/advisor` to choose a model and reasoning effort from your signed-in providers.",
+                );
                 continue;
             }
 
@@ -966,19 +984,19 @@ impl Agent {
             // bare parse always stops at the first whitespace.
             if let Some(invocation) = skills.resolve_invocation(input) {
                 if let Some(skill) = skills.get(invocation.name) {
-                    println!("Activating skill: {}", skill.name);
-                    println!("{}\n", skill.description);
+                    write_line(&format!("Activating skill: {}", skill.name));
+                    write_line(&format!("{}\n", skill.description));
                     self.active_skill = Some(invocation.name.to_string());
                     if let Some(prompt) = invocation.prompt {
                         if let Err(e) = self.run_once(prompt).await {
                             eprintln!("\nError: {}\n", e);
                         }
-                        println!();
+                        write_line("");
                     }
                     continue;
                 } else {
-                    println!("Unknown skill: /{}", invocation.name);
-                    println!(
+                    write_line(&format!("Unknown skill: /{}", invocation.name));
+                    write_line(&format!(
                         "Available: {}",
                         skills
                             .list()
@@ -986,7 +1004,7 @@ impl Agent {
                             .map(|s| format!("/{}", s.name))
                             .collect::<Vec<_>>()
                             .join(", ")
-                    );
+                    ));
                     continue;
                 }
             }
@@ -995,7 +1013,7 @@ impl Agent {
                 eprintln!("\nError: {}\n", e);
             }
 
-            println!();
+            write_line("");
         }
 
         // Extract memories from session before exiting
@@ -1112,3 +1130,7 @@ impl Agent {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "repl_tests.rs"]
+mod repl_tests;

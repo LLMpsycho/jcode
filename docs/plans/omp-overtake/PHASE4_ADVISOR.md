@@ -75,6 +75,35 @@ produces connection/reload guidance instead of an indefinite loading row. These
 client and server changes require an updated binary and a restarted or reloaded
 daemon; a newly built client alone cannot update an already-running old daemon.
 
+### If `/advisor` says `Unknown skill`
+
+`/advisor` is a built-in TUI command, not an installable skill. The plain
+`jcode repl` interface has no model picker; exit it and launch normal `jcode`.
+The REPL now explains that requirement instead of reporting an unknown skill.
+Connected TUI submissions from transcript actions use the same advisor dispatch
+as Enter, including while a main turn is busy.
+
+If the normal TUI reports the exact unknown-skill error, inspect `/version` in
+that running TUI, then `type -a jcode` and `jcode --version` in the shell. A
+merged PR or a rebuilt daemon does not replace an already-running old client.
+The standard `scripts/install.sh` and release updater still target upstream
+`1jehuang/jcode`, so they do not establish that this fork's advisor is installed.
+
+On macOS/Linux, from a clean, current `master` checkout of `LLMpsycho/jcode`, use
+the source installer and its explicit launcher:
+
+```bash
+git remote get-url origin
+git pull --ff-only
+scripts/install_release.sh --fast
+"$HOME/.local/bin/jcode" --no-update
+```
+
+The source installer builds this checkout, installs its binary, and requests a
+server reload. Use the newly opened TUI for `/advisor`; `--no-update` avoids the
+upstream automatic update check for that launch. If a custom install directory
+is configured, use that installer's printed launcher path instead.
+
 This follow-up starts at merged PR #13 (`b9f9c103`) on `master`; the fork has no
 `main`. Focused coverage includes role config atomicity and environment
 precedence, exact route/effort execution, independent worker paths, sidecar and

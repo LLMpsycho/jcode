@@ -171,6 +171,13 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
 ) -> Result<()> {
     let raw_input = prepared.raw_input.clone();
 
+    if app
+        .dispatch_remote_advisor_command(raw_input.trim(), remote)
+        .await
+    {
+        return Ok(());
+    }
+
     // Text that merely starts with `/` is not necessarily a command. A terminal
     // file drop (`/tmp/shot.png`) or a bare path (`/home/me/notes`) is ordinary
     // user input. Routing those through `App::submit_input` stages a *local*
