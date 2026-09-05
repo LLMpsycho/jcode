@@ -458,7 +458,7 @@ fn advisor_toolless_capability_delegates_to_active_internal_profile() {
 }
 
 #[test]
-fn advisor_toolless_capability_delegates_to_claude_cli_override() {
+fn advisor_toolless_capability_delegates_to_active_claude_slot() {
     with_clean_provider_test_env(|| {
         let provider = test_multi_provider_with_cursor();
         *provider.cursor.write().unwrap() = None;

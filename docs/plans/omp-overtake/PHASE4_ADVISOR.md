@@ -59,7 +59,10 @@ can forward unchanged when requesting efforts or selecting a model. The field is
 additive and defaults to empty for older daemons. It contains no credentials.
 The picker explains an empty catalog and distinguishes model loading from effort
 loading. A runtime that cannot disable built-in tools is rejected with guidance
-to choose another advisor model.
+to choose another advisor model. This includes Grok ACP and the deprecated
+Claude CLI runtime: an empty built-in tool list does not establish isolation
+from inherited CLI/MCP configuration. Direct authenticated provider routes remain
+available when they satisfy the tool-free contract.
 
 The focused acceptance workflow now covers the public API and both SDKs as well
 as the existing isolated socket restart/reload/mode checks. The two inherited
