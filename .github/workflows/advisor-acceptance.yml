@@ -58,11 +58,32 @@ jobs:
         run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib server::client_lifecycle
       - name: Advisor configuration
         run: scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
+      - name: Agent role settings, exact routes and memory isolation
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib config::agent_models
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib provider::agent_roles
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib sidecar::role_selection
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib session::tests::role_model
+      - name: Swarm and ambient role routing
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib comm_session
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib agent::role_model
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib ambient::runner::role_selection_tests
       - name: Advisor picker and wire compatibility
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
           scripts/dev_cargo.sh test --locked -p jcode-protocol --lib advisor
           scripts/dev_cargo.sh test --locked -p jcode-tui --lib advisor -- --test-threads=1
+      - name: Agent role pickers, review selection and command discovery
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agent_model -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agent_role_picker -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agents_ -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib review_role -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib prepare_review_spawned_session -- --test-threads=1
       - name: Advisor provider fork isolation
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: scripts/dev_cargo.sh test --locked -p jcode-provider-copilot-runtime --lib advisor_fork -- --test-threads=1
@@ -76,6 +97,12 @@ jobs:
         run: |
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib advisor_chatgpt
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib image_generation
+      - name: Explicit role models suppress provider fallback
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib role_pinned
+          scripts/dev_cargo.sh test --locked -p jcode-provider-anthropic-runtime --lib role_pinned
+          scripts/dev_cargo.sh test --locked -p jcode-provider-gemini-runtime --lib role_pinned
       - name: Advisor public API and Rust SDK
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
