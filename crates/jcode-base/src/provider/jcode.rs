@@ -1,4 +1,7 @@
-use super::{EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider, copilot};
+use super::{
+    EventStream, ModelRoute, MultiProvider, NativeToolResultSender, Provider, RouteSelection,
+    RuntimeKey, copilot,
+};
 use crate::message::{Message, ToolDefinition};
 use crate::provider::models::ensure_model_allowed_for_subscription;
 use anyhow::Result;
@@ -11,13 +14,27 @@ pub struct JcodeProvider {
 }
 
 impl JcodeProvider {
-    fn runtime_model_spec(model: &str) -> String {
-        // Subscription model ids overlap with direct providers (for example,
-        // `claude-*` and `gpt-*`). Passing a bare id to MultiProvider lets its
-        // family heuristic escape to the user's Anthropic/OpenAI credentials.
-        // Pin the managed OpenRouter slot, whose transport is configured below
-        // as `jcode-subscription`, for every curated model.
-        format!("openrouter:{}", model.trim())
+    fn runtime_selection(model: &str) -> RouteSelection {
+        // The managed subscription is a distinct runtime, not an OpenRouter
+        // model prefix. Preserve that identity through every model switch.
+        RouteSelection {
+            model: model.trim().to_string(),
+            runtime_key: RuntimeKey::JcodeSubscription,
+            api_method: crate::subscription_catalog::JCODE_ROUTE_API_METHOD.to_string(),
+            provider_label: crate::subscription_catalog::JCODE_PROVIDER_DISPLAY_NAME.to_string(),
+            detail: String::new(),
+        }
+    }
+
+    fn select_managed_runtime(&self, model: &str, effort: Option<String>) -> Result<()> {
+        self.inner
+            .set_route_selection(&Self::runtime_selection(model))?;
+        if let Some(effort) = effort
+            && self.inner.available_efforts().contains(&effort.as_str())
+        {
+            self.inner.set_reasoning_effort(&effort)?;
+        }
+        Ok(())
     }
 
     pub fn new() -> Self {
@@ -25,7 +42,7 @@ impl JcodeProvider {
         Self::apply_runtime_profile();
         let inner = MultiProvider::new_fast();
         let default_model = crate::subscription_catalog::default_model().id.to_string();
-        let _ = inner.set_model(&Self::runtime_model_spec(&default_model));
+        let _ = inner.set_route_selection(&Self::runtime_selection(&default_model));
         Self {
             inner,
             selected_model: Arc::new(RwLock::new(default_model)),
@@ -94,6 +111,19 @@ impl Provider for JcodeProvider {
             .await
     }
 
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.ensure_runtime_mode();
+        self.inner
+            .complete_on_selected_route(messages, tools, system, resume_session_id)
+            .await
+    }
+
     async fn complete_split(
         &self,
         messages: &[Message],
@@ -128,7 +158,7 @@ impl Provider for JcodeProvider {
     fn set_model(&self, model: &str) -> Result<()> {
         self.ensure_runtime_mode();
         ensure_model_allowed_for_subscription(model)?;
-        self.inner.set_model(&Self::runtime_model_spec(model))?;
+        self.select_managed_runtime(model, self.reasoning_effort())?;
         if let Ok(mut selected_model) = self.selected_model.write() {
             *selected_model = crate::subscription_catalog::canonical_model_id(model)
                 .unwrap_or(model)
@@ -180,11 +210,14 @@ impl Provider for JcodeProvider {
 
     fn on_auth_changed(&self) {
         self.ensure_runtime_mode();
+        let effort = self.reasoning_effort();
         self.inner.on_auth_changed();
         let selected_model = self.model();
-        let _ = self
-            .inner
-            .set_model(&Self::runtime_model_spec(&selected_model));
+        if let Err(error) = self.select_managed_runtime(&selected_model, effort) {
+            crate::logging::warn(&format!(
+                "Failed to restore subscription model after auth refresh: {error}"
+            ));
+        }
     }
 
     fn auth_model_refresh_pending(&self) -> bool {
@@ -225,6 +258,10 @@ impl Provider for JcodeProvider {
 
     fn handles_tools_internally(&self) -> bool {
         self.inner.handles_tools_internally()
+    }
+
+    fn supports_toolless_requests(&self) -> bool {
+        self.inner.supports_toolless_requests()
     }
 
     async fn invalidate_credentials(&self) {
@@ -270,7 +307,15 @@ impl Provider for JcodeProvider {
         self.ensure_runtime_mode();
         let forked = Self::new();
         let selected_model = self.model();
-        let _ = forked.set_model(&selected_model);
+        if forked.set_model(&selected_model).is_ok()
+            && let Some(effort) = self.reasoning_effort()
+            && forked.available_efforts().contains(&effort.as_str())
+            && let Err(error) = forked.set_reasoning_effort(&effort)
+        {
+            crate::logging::warn(&format!(
+                "Failed to preserve reasoning effort for forked subscription provider: {error}"
+            ));
+        }
         Arc::new(forked)
     }
 
@@ -332,19 +377,14 @@ mod tests {
     }
 
     #[test]
-    fn jcode_models_are_pinned_to_the_managed_transport() {
-        assert_eq!(
-            JcodeProvider::runtime_model_spec("claude-opus-4-8"),
-            "openrouter:claude-opus-4-8"
-        );
-        assert_eq!(
-            JcodeProvider::runtime_model_spec("gpt-5.5"),
-            "openrouter:gpt-5.5"
-        );
-        assert_eq!(
-            JcodeProvider::runtime_model_spec("minimax-m2.5"),
-            "openrouter:minimax-m2.5"
-        );
+    fn advisor_jcode_models_are_pinned_to_the_managed_transport() {
+        for model in ["claude-opus-4-8", "gpt-5.5", "minimax-m2.5"] {
+            let selection = JcodeProvider::runtime_selection(model);
+            assert_eq!(selection.runtime_key, RuntimeKey::JcodeSubscription);
+            assert_eq!(selection.model, model);
+            assert_eq!(selection.api_method, "jcode-subscription");
+            assert_eq!(selection.provider_label, "Jcode Subscription");
+        }
     }
 
     #[test]

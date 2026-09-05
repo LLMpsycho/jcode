@@ -167,10 +167,10 @@ fn control_request(
     request: AdvisorRequest,
 ) -> AdvisorControlResult {
     let is_status = matches!(request, AdvisorRequest::Status);
-    let message = match request {
+    let outcome = match request {
         AdvisorRequest::Status => {
             let enabled = manager.is_enabled(session, config.enabled);
-            match manager.snapshot(session) {
+            Ok(match manager.snapshot(session) {
                 Some(snapshot) => format!(
                     "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); {}",
                     if enabled { "on" } else { "off" },
@@ -183,11 +183,11 @@ fn control_request(
                     "Advisor: {} (idle); no retained notes",
                     if enabled { "on" } else { "off" }
                 ),
-            }
+            })
         }
         AdvisorRequest::Inspect => {
             let notes = manager.notes(session);
-            if notes.is_empty() {
+            Ok(if notes.is_empty() {
                 "Advisor has no retained notes.".into()
             } else {
                 notes
@@ -209,31 +209,34 @@ fn control_request(
                     })
                     .collect::<Vec<_>>()
                     .join("\n\n")
-            }
+            })
         }
-        AdvisorRequest::Dismiss { note_id } => {
-            match manager.resolve_note(session, &note_id, AdvisorNoteDisposition::Dismissed) {
-                Ok(true) => format!("Dismissed advisor note {note_id}."),
-                Ok(false) => format!("Advisor note {note_id} was not found."),
-                Err(error) => error.to_string(),
-            }
+        AdvisorRequest::Dismiss { note_id } => manager
+            .resolve_note(session, &note_id, AdvisorNoteDisposition::Dismissed)
+            .and_then(|found| {
+                anyhow::ensure!(found, "Advisor note {note_id} was not found.");
+                Ok(format!("Dismissed advisor note {note_id}."))
+            }),
+        AdvisorRequest::Acknowledge { note_id } => manager
+            .resolve_note(session, &note_id, AdvisorNoteDisposition::Acknowledged)
+            .and_then(|found| {
+                anyhow::ensure!(found, "Advisor note {note_id} was not found.");
+                Ok(format!("Acknowledged advisor note {note_id}."))
+            }),
+        AdvisorRequest::Enable => manager
+            .set_enabled(session, true)
+            .map(|()| "Advisor enabled for this session.".into()),
+        AdvisorRequest::Disable => manager
+            .set_enabled(session, false)
+            .map(|()| "Advisor disabled for this session; future risky tools are released.".into()),
+        _ => Err(anyhow::anyhow!("Invalid advisor control request.")),
+    };
+    let (message, error) = match outcome {
+        Ok(message) => (message, None),
+        Err(error) => {
+            let message = crate::message::redact_secrets(&error.to_string());
+            (message.clone(), Some(message))
         }
-        AdvisorRequest::Acknowledge { note_id } => {
-            match manager.resolve_note(session, &note_id, AdvisorNoteDisposition::Acknowledged) {
-                Ok(true) => format!("Acknowledged advisor note {note_id}."),
-                Ok(false) => format!("Advisor note {note_id} was not found."),
-                Err(error) => error.to_string(),
-            }
-        }
-        AdvisorRequest::Enable => match manager.set_enabled(session, true) {
-            Ok(()) => "Advisor enabled for this session.".into(),
-            Err(error) => error.to_string(),
-        },
-        AdvisorRequest::Disable => match manager.set_enabled(session, false) {
-            Ok(()) => "Advisor disabled for this session; future risky tools are released.".into(),
-            Err(error) => error.to_string(),
-        },
-        _ => "Invalid advisor control request.".into(),
     };
     let message = if is_status {
         format!("{message}; {}", manager.model_summary(session, config))
@@ -242,6 +245,7 @@ fn control_request(
     };
     AdvisorControlResult {
         message,
+        error,
         ..AdvisorControlResult::default()
     }
 }

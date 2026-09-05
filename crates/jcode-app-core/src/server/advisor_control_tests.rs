@@ -155,3 +155,72 @@ fn advisor_legacy_status_and_error_responses_keep_the_message_contract() {
     assert!(result.error.is_some());
     assert!(!result.model_settings.expect("settings").enabled);
 }
+
+#[test]
+fn advisor_failed_durable_controls_return_structured_errors() {
+    let dir = tempfile::tempdir().expect("state directory");
+    let state = dir.path().join("advisor");
+    std::fs::create_dir(&state).expect("create state");
+    let session = "advisor_control_write_failure";
+    let key = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, session.as_bytes());
+    let checkpoint = state.join(format!("{key}.json"));
+    std::fs::write(
+        &checkpoint,
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "enabled_override": true,
+            "turns_observed": 1,
+            "cursor": 1,
+            "notes": [{
+                "id": "adv-retained",
+                "severity": "blocker",
+                "summary": "Check the patch",
+                "evidence": [],
+                "recommended_action": "Run tests",
+                "blocking": true,
+                "disposition": "unresolved"
+            }]
+        }))
+        .expect("checkpoint JSON"),
+    )
+    .expect("write checkpoint");
+    let manager = AdvisorManager::persistent(state.clone());
+    manager.resume(session);
+    assert_eq!(manager.notes(session).len(), 1);
+    std::fs::remove_file(checkpoint).expect("remove checkpoint");
+    std::fs::remove_dir(&state).expect("remove state directory");
+    std::fs::write(&state, "not a directory").expect("prevent durable writes");
+
+    for request in [
+        AdvisorRequest::Enable,
+        AdvisorRequest::Disable,
+        AdvisorRequest::Acknowledge {
+            note_id: "adv-retained".into(),
+        },
+        AdvisorRequest::Dismiss {
+            note_id: "adv-retained".into(),
+        },
+    ] {
+        let result = control_request(&manager, session, &AdvisorConfig::default(), request);
+        assert!(result.message.contains("control is not durable"));
+        assert_eq!(result.error.as_deref(), Some(result.message.as_str()));
+    }
+}
+
+#[test]
+fn advisor_missing_note_returns_a_redacted_error_without_claiming_success() {
+    let manager = AdvisorManager::default();
+    for request in [
+        AdvisorRequest::Acknowledge {
+            note_id: "adv-missing".into(),
+        },
+        AdvisorRequest::Dismiss {
+            note_id: "OPENAI_API_KEY=sk-test-openai-example".into(),
+        },
+    ] {
+        let result = control_request(&manager, "missing", &AdvisorConfig::default(), request);
+        assert!(result.message.contains("was not found"));
+        assert_eq!(result.error.as_deref(), Some(result.message.as_str()));
+        assert!(!result.message.contains("sk-test-openai-example"));
+    }
+}

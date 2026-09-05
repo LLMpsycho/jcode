@@ -8,7 +8,7 @@
  */
 
 export const API_VERSION_MAJOR = 1;
-export const API_VERSION_MINOR = 0;
+export const API_VERSION_MINOR = 1;
 
 export type PermissionDecision = "allow" | "allow_always" | "deny";
 
@@ -36,6 +36,55 @@ export interface ModelRouteInfo {
   api_method: string;
   available: boolean;
   detail: string;
+}
+
+/** Authentication identity already configured in jcode; never a credential. */
+export interface AdvisorRuntimeKey {
+  kind: string;
+  profile_id?: string | null;
+}
+
+/** An exact model route, preserving subscription/OAuth versus API-key identity. */
+export interface AdvisorRouteSelection {
+  model: string;
+  runtime_key: AdvisorRuntimeKey;
+  api_method: string;
+  provider_label: string;
+  detail?: string;
+}
+
+export type AdvisorRequest =
+  | { action: "status" | "inspect" | "enable" | "disable" | "use_primary" }
+  | { action: "acknowledge" | "dismiss"; note_id: string }
+  | { action: "model_options"; selection?: AdvisorRouteSelection | null }
+  | {
+      action: "select_model";
+      selection: AdvisorRouteSelection;
+      reasoning_effort?: string | null;
+    };
+
+export interface AdvisorModelSettings {
+  enabled: boolean;
+  selection: AdvisorRouteSelection | null;
+  reasoning_effort: string | null;
+  follows_primary: boolean;
+}
+
+export interface AdvisorModelOptions {
+  selection: AdvisorRouteSelection | null;
+  reasoning_effort: string | null;
+  available_routes: ModelRouteInfo[];
+  /** Exact selectable routes from the daemon; absent on older daemons. */
+  available_selections?: AdvisorRouteSelection[];
+  available_efforts: string[];
+}
+
+export interface AdvisorControlResult {
+  message: string;
+  model_settings?: AdvisorModelSettings;
+  model_options?: AdvisorModelOptions;
+  /** A refused advisor operation; settings still describe its resulting state. */
+  error?: string;
 }
 
 export interface TextMatch {
@@ -115,6 +164,7 @@ export type ApiRequest =
   | { req: "file_status"; session_id: string; path: string }
   | { req: "set_model"; session_id: string; model: string }
   | { req: "set_reasoning_effort"; session_id: string; effort: string }
+  | { req: "advisor"; session_id: string; request: AdvisorRequest }
   | { req: "compact"; session_id: string }
   | { req: "rename_session"; session_id: string; title?: string }
   | { req: "rewind_undo"; session_id: string }
@@ -197,6 +247,7 @@ export type ApiEvent =
       routes: ModelRouteInfo[];
     }
   | { ev: "credential_updated"; provider: string; configured: boolean }
+  | { ev: "advisor_result"; session_id: string; result: AdvisorControlResult }
   | {
       ev: "file_content";
       session_id: string;
@@ -284,6 +335,7 @@ export const KNOWN_EVENT_KINDS = [
   "models",
   "runtime_info",
   "credential_updated",
+  "advisor_result",
   "file_content",
   "files",
   "text_matches",
@@ -321,6 +373,7 @@ export const KNOWN_REQUEST_KINDS = [
   "file_status",
   "set_model",
   "set_reasoning_effort",
+  "advisor",
   "compact",
   "rename_session",
   "rewind_undo",

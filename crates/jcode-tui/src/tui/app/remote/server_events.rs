@@ -542,6 +542,11 @@ pub(in crate::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    if let ServerEvent::Error { id, message, .. } = &event
+        && app.handle_advisor_request_error(*id, message)
+    {
+        return true;
+    }
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
     if app.is_processing {
         app.last_stream_activity = Some(Instant::now());

@@ -123,9 +123,22 @@ impl AdvisorManager {
             model_override: previous.model_override,
             turns_observed: previous.turns_observed,
             cursor: previous.cursor,
+            persistence_failed: previous.persistence_failed,
+            last_error: if previous.persistence_failed {
+                previous.last_error
+            } else {
+                None
+            },
+            status: if previous.persistence_failed {
+                AdvisorStatus::Failed
+            } else {
+                AdvisorStatus::Idle
+            },
             ..AdvisorRuntime::default()
         };
-        if self.persist(session, &mut runtime).is_err() {
+        // History changes cannot repair unknown durable state or erase the
+        // evidence needed to recover it. Only an explicit control may retry.
+        if !runtime.persistence_failed && self.persist(session, &mut runtime).is_err() {
             runtime.status = AdvisorStatus::Failed;
         }
         sessions.insert(session.to_string(), runtime);
@@ -287,6 +300,46 @@ mod tests {
         std::fs::write(&file, "not a directory").expect("fixture");
         let blocked = AdvisorManager::persistent(file);
         assert!(blocked.set_enabled("session", false).is_err());
+    }
+
+    #[test]
+    fn history_reset_preserves_corrupt_checkpoint_until_explicit_recovery() {
+        let dir = tempfile::tempdir().expect("directory");
+        let manager = AdvisorManager::persistent(dir.path().to_path_buf());
+        let session = "broken_history";
+        let path = manager.state_path(session).expect("path");
+        std::fs::write(&path, "{").expect("corrupt fixture");
+        manager.resume(session);
+        let restore_error = manager.snapshot(session).expect("failed state").last_error;
+
+        for _ in 0..2 {
+            manager.reset_history(session);
+            assert_eq!(std::fs::read_to_string(&path).expect("checkpoint"), "{");
+            assert!(
+                manager
+                    .blocks_tool_call(session, "effect", crate::tool::ToolCapability::Execute)
+                    .is_some()
+            );
+            let snapshot = manager.snapshot(session).expect("failed state");
+            assert_eq!(snapshot.status, AdvisorStatus::Failed);
+            assert_eq!(snapshot.last_error, restore_error);
+        }
+
+        manager
+            .set_enabled(session, false)
+            .expect("explicit recovery");
+        assert!(
+            manager
+                .blocks_tool_call(session, "effect", crate::tool::ToolCapability::Execute)
+                .is_none()
+        );
+        assert!(
+            !load(&path)
+                .expect("repaired checkpoint")
+                .expect("state")
+                .enabled_override
+                .expect("explicit disable")
+        );
     }
 
     #[test]

@@ -88,6 +88,8 @@ pub struct AdvisorModelOptions {
     pub selection: Option<jcode_provider_core::RouteSelection>,
     pub reasoning_effort: Option<String>,
     pub available_routes: Vec<jcode_provider_core::ModelRoute>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub available_selections: Vec<jcode_provider_core::RouteSelection>,
     pub available_efforts: Vec<String>,
 }
 

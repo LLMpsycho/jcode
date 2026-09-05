@@ -72,6 +72,79 @@ struct PrematureAdvisorProvider {
     emit_error: bool,
 }
 
+struct SelectedRouteFailureProvider {
+    selected_calls: Arc<AtomicUsize>,
+    fallback_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for SelectedRouteFailureProvider {
+    fn name(&self) -> &str {
+        "selected-route-failure"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            selected_calls: Arc::clone(&self.selected_calls),
+            fallback_calls: Arc::clone(&self.fallback_calls),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _: &[Message],
+        _: &[crate::message::ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        self.fallback_calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("ordinary completion must not select a fallback for an advisor");
+    }
+
+    async fn complete_on_selected_route(
+        &self,
+        _: &[Message],
+        tools: &[crate::message::ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        assert!(tools.is_empty());
+        self.selected_calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("selected route quota exhausted");
+    }
+}
+
+#[tokio::test]
+async fn advisor_quota_error_keeps_the_selected_route_and_publishes_no_note() {
+    let selected_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let manager = Arc::new(AdvisorManager::default());
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    assert!(manager.schedule_turn(
+        "selected_quota".into(),
+        Arc::new(SelectedRouteFailureProvider {
+            selected_calls: Arc::clone(&selected_calls),
+            fallback_calls: Arc::clone(&fallback_calls),
+        }),
+        Arc::clone(&queue),
+        AdvisorTurnInput::default(),
+        enabled_config(),
+    ));
+    wait_for_status(&manager, "selected_quota", AdvisorStatus::Failed).await;
+    assert_eq!(selected_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+    assert!(manager.notes("selected_quota").is_empty());
+    assert!(queue.lock().expect("queue").is_empty());
+    assert!(
+        manager
+            .snapshot("selected_quota")
+            .expect("failed state")
+            .last_error
+            .expect("quota error")
+            .contains("selected route quota exhausted")
+    );
+}
+
 #[async_trait]
 impl Provider for PrematureAdvisorProvider {
     fn name(&self) -> &str {
@@ -637,6 +710,49 @@ fn zero_session_budget_has_no_runtime_or_provider_cost() {
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert!(manager.snapshot("zero-budget").is_none());
+}
+
+#[tokio::test]
+async fn pending_review_cannot_clear_a_checkpoint_failure() {
+    let dir = tempfile::tempdir().expect("directory");
+    let state = dir.path().join("advisor");
+    std::fs::write(&state, "not a directory").expect("unwritable state fixture");
+    let manager = Arc::new(AdvisorManager::persistent(state.clone()));
+    let session = "pending_write_failure";
+    assert!(manager.set_enabled(session, true).is_err());
+    let calls = Arc::new(AtomicUsize::new(0));
+    {
+        let mut sessions = manager.sessions.lock().expect("sessions");
+        let runtime = sessions.get_mut(session).expect("failed state");
+        runtime.status = AdvisorStatus::Ready;
+        runtime.cursor = 7;
+        runtime.pending = Some(PendingReview {
+            provider: Arc::new(AdvisorProvider {
+                calls: Arc::clone(&calls),
+                response: String::new(),
+            }),
+            queue: Arc::new(Mutex::new(Vec::new())),
+            input: AdvisorTurnInput::default(),
+            config: enabled_config(),
+            model_override: None,
+        });
+    }
+    // A transient filesystem recovery does not authorize the scheduler to
+    // overwrite the failed checkpoint or resume sending evidence.
+    std::fs::remove_file(&state).expect("remove obstruction");
+    std::fs::create_dir(&state).expect("writable directory");
+    manager.start_pending(session.into());
+    tokio::task::yield_now().await;
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(std::fs::read_dir(&state).expect("state files").count(), 0);
+    let snapshot = manager.snapshot(session).expect("runtime");
+    assert_eq!(snapshot.cursor, 7);
+    assert!(snapshot.last_error.is_some());
+    assert!(
+        manager
+            .blocks_tool_call(session, "effect", crate::tool::ToolCapability::Execute)
+            .is_some()
+    );
 }
 
 #[test]

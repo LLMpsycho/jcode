@@ -518,7 +518,7 @@ impl AdvisorManager {
             let Some(runtime) = sessions.get_mut(&owner_session_id) else {
                 return;
             };
-            if runtime.status == AdvisorStatus::Reviewing {
+            if runtime.persistence_failed || runtime.status == AdvisorStatus::Reviewing {
                 return;
             }
             let Some(pending) = runtime.pending.take() else {
@@ -609,7 +609,7 @@ impl AdvisorManager {
         };
         let system_prompt = advisor_system_prompt(config.mode);
         let mut stream = match provider
-            .complete(&[Message::user(&prompt)], &[], &system_prompt, None)
+            .complete_on_selected_route(&[Message::user(&prompt)], &[], &system_prompt, None)
             .await
         {
             Ok(stream) => stream,

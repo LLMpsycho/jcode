@@ -2,6 +2,9 @@
 //! internal protocol. Kept side-effect free so it is trivially unit-testable.
 
 use crate::background_progress::parse_background_notification;
+
+#[path = "translate_advisor.rs"]
+mod advisor;
 use jcode_harness_api::{
     ApiEvent, ErrorCode, HistoryMessage, ModelRouteInfo, ServerFrame, SessionInfo, TextMatch,
 };
@@ -36,6 +39,7 @@ const REQUIRES_ATTACH: &[&str] = &[
     "list_models",
     "set_model",
     "set_reasoning_effort",
+    "advisor",
     "compact",
     "rename_session",
     "get_runtime_info",
@@ -229,6 +233,10 @@ enum SimpleKind {
     Model,
     /// Awaiting `reasoning_effort_changed`.
     ReasoningEffort,
+    /// Awaiting a structured advisor result, not an ack or turn boundary.
+    Advisor {
+        session_id: String,
+    },
     /// Awaiting `compacted_history`.
     Compact,
     /// Awaiting the catalog reply that answers `list_models`.
@@ -304,6 +312,7 @@ impl BridgeState {
         }
 
         match req {
+            "advisor" => self.advisor_request_to_legacy(request, api_id),
             "archive_session" => {
                 let session_id = request["session_id"].as_str().unwrap_or_default();
                 if Self::session_record_path(session_id).is_none_or(|path| !path.is_file()) {
@@ -1025,6 +1034,7 @@ impl BridgeState {
                     vec![]
                 }
             }
+            "advisor_result" => self.advisor_result_to_api(event),
             "wake_requested" => vec![ServerFrame::event(ApiEvent::WakeRequested {
                 session_id: event["session_id"]
                     .as_str()

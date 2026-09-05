@@ -1007,6 +1007,25 @@ impl JcodeClient {
         .map(drop)
     }
 
+    /// Control the advisor using the session's existing provider sign-ins.
+    /// Inspect the returned `error` before reporting a durable change.
+    pub fn advisor(
+        &self,
+        session_id: &str,
+        request: jcode_harness_api::AdvisorRequest,
+    ) -> Result<jcode_harness_api::AdvisorControlResult> {
+        match self
+            .request_ok(ApiRequest::Advisor {
+                session_id: session_id.to_string(),
+                request,
+            })?
+            .event
+        {
+            ApiEvent::AdvisorResult { result, .. } => Ok(result),
+            other => Err(unexpected("advisor_result", &other)),
+        }
+    }
+
     /// Schedule compaction of the transcript so far, freeing context. Not
     /// synchronous: returning means the request was accepted.
     pub fn compact(&self, session_id: &str) -> Result<String> {
@@ -1397,6 +1416,7 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | ToolDone { session_id, .. }
         | TokenUsage { session_id, .. }
         | TurnDone { session_id, .. }
+        | AdvisorResult { session_id, .. }
         | BackgroundProgress { session_id, .. }
         | MessageAccepted { session_id, .. }
         | PermissionRequest { session_id, .. }

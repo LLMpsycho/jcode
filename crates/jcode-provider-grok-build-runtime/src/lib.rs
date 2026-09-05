@@ -768,6 +768,14 @@ fn cached_login_hint(prefix: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advisor_rejects_grok_internal_tool_execution() {
+        let provider = GrokBuildProvider::new();
+        assert!(provider.handles_tools_internally());
+        assert!(!provider.supports_toolless_requests());
+        assert!(!provider.fork().supports_toolless_requests());
+    }
     use serde_json::json;
 
     #[test]

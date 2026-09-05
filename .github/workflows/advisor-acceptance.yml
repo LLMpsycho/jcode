@@ -7,6 +7,7 @@ on:
     branches: [master]
     paths:
       - 'crates/**'
+      - 'sdk/typescript/**'
       - 'scripts/test_advisor*'
       - '.github/workflows/advisor-acceptance.yml'
 
@@ -65,11 +66,23 @@ jobs:
       - name: Advisor provider fork isolation
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: scripts/dev_cargo.sh test --locked -p jcode-provider-copilot-runtime --lib advisor_fork -- --test-threads=1
+      - name: Provider tool-free capability contracts
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-provider-claude-cli-runtime --lib advisor
+          scripts/dev_cargo.sh test --locked -p jcode-provider-grok-build-runtime --lib advisor
       - name: Tool-free subscription reviews and normal hosted tools
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib advisor_chatgpt
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib image_generation
+      - name: Advisor public API and Rust SDK
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-harness-api --lib
+          scripts/dev_cargo.sh test --locked -p jcode-harness-api-server --lib advisor
+          scripts/dev_cargo.sh test --locked -p jcode-sdk --lib
+          scripts/dev_cargo.sh test --locked -p jcode-sdk --test client_behavior advisor
       - name: Tool contracts
         run: scripts/dev_cargo.sh test --locked -p jcode-tool-core --lib
       - name: Build isolated selfdev binary
@@ -98,3 +111,21 @@ jobs:
       - name: Enforce formatting result
         if: always() && steps.formatting.outcome == 'failure'
         run: exit 1
+
+  typescript:
+    name: TypeScript advisor SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sdk/typescript/package-lock.json
+      - name: Install SDK test dependencies
+        working-directory: sdk/typescript
+        run: npm ci --ignore-scripts --omit=optional
+      - name: SDK types, transport and advisor parity
+        working-directory: sdk/typescript
+        run: npm run check

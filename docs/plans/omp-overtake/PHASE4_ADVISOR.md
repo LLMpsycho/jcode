@@ -7,7 +7,7 @@ live-model acceptance gate remains open: this execution environment has no
 provider credential. A local HTTP fixture is not claimed as live-model evidence.
 Final-head CI results and any outstanding gates are recorded in PR #10.
 
-Follow-up on 2026-09-05: PR #10 is merged. The advisor now has a session model
+Follow-up on 2026-09-05: PRs #10 and #12 are merged. The advisor now has a session model
 and effort picker backed by the authenticated model catalog used by `/model`.
 The optional OpenAI API acceptance probe below is one test harness; it is not
 a requirement for using the advisor with an existing Jcode subscription login.
@@ -37,6 +37,42 @@ effort selection, primary/default isolation, cancellation and late responses.
 Provider regressions cover OAuth/API effort inheritance and independent
 Copilot, Gemini and Antigravity forks. Socket acceptance checks the selected
 model and effort in real transport requests and after restart/reload.
+
+## Post-merge advisor audit
+
+The follow-up starts from merged `master` at
+`7c25bb8e25ae1459f75a8358bf1764a61a722051`; this fork has no `main` branch.
+Validation for this follow-up is recorded in PR #13.
+The audit closes these additional integration gaps:
+
+| Finding | Correction | Focused regression |
+| --- | --- | --- |
+| History resets and queued reviews could clear a checkpoint failure without explicit recovery. | Preserve failed durable state across rewind/compaction and refuse automatic pending reviews until recovery. | Corrupt-file preservation, repeated reset, explicit disable recovery, and queued-review failure tests in `advisor/persistence.rs` and `advisor/tests.rs`. |
+| Failed legacy controls looked like successful SDK replies. | Return a redacted typed `error` for failed persistence and missing note IDs. | Enable/disable/ack/dismiss failure and redaction tests in `server/advisor_control_tests.rs`. |
+| Explicit routes could reuse the currently active compatible endpoint, and subscription forks lost effort. | Select the exact authenticated runtime and preserve managed-subscription effort on the private fork. The managed wrapper also uses its canonical subscription route during construction, model switches and auth refresh, without requiring OpenRouter credentials. | Endpoint/pin/credential-failure, Gemini/compatible route, and effort regressions in `jcode-base` provider tests. |
+| A provider with autonomous built-in tools could receive an advisor review. | Require first-class provider support for tool-free requests before preview, selection or execution. | Internal-tool provider rejection with zero review calls; wrapper capability delegation tests. |
+| Advisor quota failover could switch a process-wide primary account. | Execute reviews on the selected runtime without account/provider failover. | Quota-failure route isolation and advisor execution tests. |
+| Stale picker errors, generic server errors and disconnects could leave loading state or disturb a main turn. | Correlate advisor replies independently, discard cancelled picker results, and clear transient state on disconnect without replaying controls. | TUI cancellation, supersession, generic error, active-turn and disconnect tests. |
+| Modern harness API and Rust/TypeScript SDKs lacked advisor controls. | Expose typed controls/results and canonical catalog selections through the existing session bridge. | Pure DTO compatibility, bridge session/request correlation, capability ledger, SDK parity and transport tests. |
+
+`model_options.available_selections` supplies canonical routes that SDK callers
+can forward unchanged when requesting efforts or selecting a model. The field is
+additive and defaults to empty for older daemons. It contains no credentials.
+The picker explains an empty catalog and distinguishes model loading from effort
+loading. A runtime that cannot disable built-in tools is rejected with guidance
+to choose another advisor model. This includes Grok ACP and the deprecated
+Claude CLI runtime: an empty built-in tool list does not establish isolation
+from inherited CLI/MCP configuration. Direct authenticated provider routes remain
+available when they satisfy the tool-free contract.
+
+The focused acceptance workflow now covers the public API and both SDKs as well
+as the existing isolated socket restart/reload/mode checks. The two inherited
+formatting failures and two unused test imports are corrected. The unrelated
+repository-wide CI definition still has duplicate `env` mappings, size budgets
+remain over their existing baselines, and the linked-issue check still conflicts
+with this fork's disabled Issues setting. These broader repository gates are not
+reported as passed. The live-model gate below remains separate from deterministic
+fixture acceptance.
 
 ## Requirement traceability
 

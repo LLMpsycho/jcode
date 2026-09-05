@@ -1734,6 +1734,27 @@ impl Provider for MultiProvider {
         .await
     }
 
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let filtered =
+            image_clamp::filter_unsupported_outbound_images(messages, self.supports_image_input());
+        let messages = filtered.as_deref().unwrap_or(messages);
+        let clamped = image_clamp::clamp_outbound_images(messages);
+        let messages = clamped.as_deref().unwrap_or(messages);
+        let selected = self.active_provider();
+        let stream = self
+            .complete_on_provider(selected, messages, tools, system, resume_session_id)
+            .await?;
+        clear_provider_unavailable_for_account(Self::provider_key(selected));
+        self.record_provider_activity(selected);
+        Ok(stream)
+    }
+
     /// Split system prompt completion - delegates to underlying provider for better caching
     async fn complete_split(
         &self,
@@ -2119,6 +2140,21 @@ impl Provider for MultiProvider {
         if selection.runtime_key == RuntimeKey::JcodeSubscription {
             return self.set_model_on_jcode_subscription(&selection.model);
         }
+        if selection.runtime_key == RuntimeKey::OpenRouter {
+            return self.set_model_on_explicit_openrouter_route(selection);
+        }
+        if matches!(
+            selection.runtime_key,
+            RuntimeKey::Gemini | RuntimeKey::CodeAssistOAuth
+        ) {
+            return self.set_model_on_provider(ActiveProvider::Gemini, &selection.model);
+        }
+        if selection.runtime_key == (RuntimeKey::OpenAiCompatible { profile_id: None }) {
+            return self.set_model_on_unnamed_compatible_route(selection);
+        }
+        if matches!(&selection.runtime_key, RuntimeKey::Other(api) if api == "grok-build-acp") {
+            return self.set_model(&format!("grok-build:{}", selection.model));
+        }
 
         // Routing-prefix policy lives once in RouteSelection::routed_model_spec
         // so this orchestrator and every single-runtime provider agree on the
@@ -2400,6 +2436,24 @@ impl Provider for MultiProvider {
             ActiveProvider::Bedrock => false, // jcode executes Bedrock tool calls
             ActiveProvider::OpenRouter => false, // jcode executes tools
         }
+    }
+
+    fn supports_toolless_requests(&self) -> bool {
+        let runtime = match self.active_provider() {
+            ActiveProvider::Claude => self.anthropic_provider().or_else(|| self.claude_provider()),
+            ActiveProvider::OpenAI => self.openai_provider(),
+            ActiveProvider::Copilot => self.copilot_provider(),
+            ActiveProvider::Antigravity => self.antigravity_provider(),
+            ActiveProvider::Gemini => self.gemini_provider(),
+            ActiveProvider::Cursor => self.cursor_provider(),
+            ActiveProvider::Bedrock => {
+                return self
+                    .bedrock_provider()
+                    .is_some_and(|runtime| runtime.supports_toolless_requests());
+            }
+            ActiveProvider::OpenRouter => self.active_openrouter_execution_provider(),
+        };
+        runtime.is_some_and(|runtime| runtime.supports_toolless_requests())
     }
 
     fn reasoning_effort(&self) -> Option<String> {

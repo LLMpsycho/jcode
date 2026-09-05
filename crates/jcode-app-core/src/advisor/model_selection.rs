@@ -134,27 +134,32 @@ impl AdvisorManager {
         config: &AdvisorConfig,
         selection: Option<&RouteSelection>,
     ) -> Result<AdvisorModelOptions> {
-        let available_routes = provider
+        let (available_routes, available_selections): (Vec<_>, Vec<_>) = provider
             .model_routes()
             .into_iter()
             .filter(|route| routing::permitted(route, config))
-            .take(10_000)
-            .map(|mut route| {
+            .filter_map(|mut route| {
+                // Legacy/custom runtime identities that cannot be represented
+                // by RouteSelection must not break the whole catalog response.
+                let selection = routing::catalog_selection(&route).ok()?;
                 route.detail = truncate_utf8(redact_secrets(&route.detail), 256);
-                route
+                Some((route, selection))
             })
-            .collect();
+            .take(10_000)
+            .unzip();
         let Some(selection) = selection else {
             return Ok(AdvisorModelOptions {
                 selection: None,
                 reasoning_effort: None,
                 available_routes,
+                available_selections,
                 available_efforts: Vec::new(),
             });
         };
         let canonical = routing::canonical_selection(provider, config, selection)?;
         let fork = provider.fork();
         fork.set_route_selection(&canonical)?;
+        routing::require_toolless(fork.as_ref())?;
         let available_efforts = routing::efforts(fork.as_ref());
         let saved_effort = match self.model_override(session) {
             Some(AdvisorModelOverride::Selected {
@@ -170,6 +175,7 @@ impl AdvisorManager {
             selection: Some(canonical),
             reasoning_effort,
             available_routes,
+            available_selections,
             available_efforts,
         })
     }
@@ -257,12 +263,11 @@ fn current_selection(provider: &dyn Provider, config: &AdvisorConfig) -> Option<
             && routing::current_runtime(route, provider)
             && routing::permitted(route, config)
     });
-    let mut selection = RouteSelection::from_model_route(&routes.next()?);
+    let route = routes.next()?;
     if routes.next().is_some() {
         return None;
     }
-    selection.detail.clear();
-    Some(selection)
+    routing::catalog_selection(&route).ok()
 }
 
 #[cfg(test)]

@@ -3196,6 +3196,13 @@ impl App {
                     Self::apply_inline_interactive_filter(picker);
                     return Ok(());
                 }
+                if self
+                    .inline_interactive_state
+                    .as_ref()
+                    .is_some_and(|picker| picker.is_advisor_picker())
+                {
+                    self.cancel_advisor_picker();
+                }
                 self.inline_interactive_state = None;
             }
             KeyCode::Up | KeyCode::Char('k') => {

@@ -12,6 +12,7 @@ struct CatalogProvider {
     calls: Arc<Mutex<Vec<(RouteSelection, String)>>>,
     gate: Option<Arc<tokio::sync::Notify>>,
     started: Arc<tokio::sync::Notify>,
+    internal_tools: bool,
 }
 
 impl CatalogProvider {
@@ -29,6 +30,7 @@ impl CatalogProvider {
             calls: Arc::new(Mutex::new(Vec::new())),
             gate: None,
             started: Arc::new(tokio::sync::Notify::new()),
+            internal_tools: false,
         }
     }
 
@@ -47,6 +49,9 @@ impl Provider for CatalogProvider {
     }
     fn model_routes(&self) -> Vec<ModelRoute> {
         self.routes.clone()
+    }
+    fn handles_tools_internally(&self) -> bool {
+        self.internal_tools
     }
     fn active_resolved_credential(&self) -> Option<ResolvedCredential> {
         Some(ResolvedCredential::Oauth)
@@ -80,6 +85,7 @@ impl Provider for CatalogProvider {
             calls: Arc::clone(&self.calls),
             gate: self.gate.clone(),
             started: Arc::clone(&self.started),
+            internal_tools: self.internal_tools,
         })
     }
     async fn complete(
@@ -90,6 +96,7 @@ impl Provider for CatalogProvider {
         _: Option<&str>,
     ) -> Result<EventStream> {
         assert!(tools.is_empty(), "advisor must remain toolless");
+        assert!(!self.internal_tools, "unsafe provider must not be called");
         self.calls.lock().expect("calls").push((
             self.selected.lock().expect("model").clone(),
             self.effort.lock().expect("effort").clone(),
@@ -142,6 +149,19 @@ async fn oauth_advisor_selection_needs_no_api_key_and_preserves_primary() {
         .expect("catalog");
     assert!(options.selection.is_none());
     assert_eq!(options.available_routes.len(), 3);
+    assert_eq!(options.available_selections.len(), 3);
+    for (route, selection) in options
+        .available_routes
+        .iter()
+        .zip(&options.available_selections)
+    {
+        assert_eq!(selection.model, route.model);
+        assert_eq!(selection.runtime_key, RuntimeKey::OpenAIOAuth);
+        assert!(selection.detail.is_empty());
+        manager
+            .model_options("oauth", &provider, &config, Some(selection))
+            .expect("canonical catalog selection can be previewed unchanged");
+    }
     assert!(
         options
             .available_routes
@@ -455,4 +475,100 @@ fn jcode_subscription_selection_retains_structured_runtime_identity() {
         provider.selected.lock().expect("primary").runtime_key,
         RuntimeKey::OpenAIOAuth
     );
+}
+
+#[test]
+fn advisor_catalog_skips_unrepresentable_runtime_keys_without_losing_valid_routes() {
+    let mut provider = CatalogProvider::new();
+    let legacy = route("legacy-reviewer", "grok-acp", true);
+    let selection = RouteSelection::from_model_route(&legacy);
+    assert!(matches!(&selection.runtime_key, RuntimeKey::Other(_)));
+    assert!(serde_json::to_string(&selection).is_err());
+    provider.routes.push(legacy);
+    *provider.selected.lock().expect("primary route") = selection.clone();
+    let manager = AdvisorManager::default();
+    let config = AdvisorConfig::default();
+    let options = manager
+        .model_options("legacy", &provider, &config, None)
+        .expect("valid catalog remains available");
+    assert_eq!(options.available_routes.len(), 3);
+    assert_eq!(options.available_selections.len(), 3);
+    assert!(
+        options
+            .available_routes
+            .iter()
+            .all(|route| route.api_method != "grok-acp")
+    );
+    let settings = manager.model_settings("legacy", &provider, &config);
+    assert!(settings.selection.is_none());
+    serde_json::to_string(&crate::protocol::AdvisorControlResult {
+        model_options: Some(options),
+        model_settings: Some(settings),
+        ..crate::protocol::AdvisorControlResult::default()
+    })
+    .expect("whole response is serializable");
+    assert!(
+        manager
+            .model_options("legacy", &provider, &config, Some(&selection))
+            .is_err()
+    );
+    assert!(provider.calls.lock().expect("calls").is_empty());
+}
+
+#[tokio::test]
+async fn advisor_rejects_providers_that_cannot_disable_internal_tools() {
+    let mut provider = CatalogProvider::new();
+    let manager = Arc::new(AdvisorManager::default());
+    let config = AdvisorConfig::default();
+    choose(&manager, "unsafe", &provider, Some("high")).expect("initial safe selection");
+    provider.internal_tools = true;
+
+    let preview = manager
+        .model_options("unsafe", &provider, &config, Some(&provider.reviewer()))
+        .expect_err("unsafe preview must fail");
+    assert!(
+        preview
+            .to_string()
+            .contains("cannot disable its built-in tools")
+    );
+    assert!(choose(&manager, "unsafe", &provider, Some("high")).is_err());
+    assert!(
+        manager
+            .use_primary_model(
+                "unsafe",
+                &provider,
+                &config,
+                manager.begin_model_selection("unsafe")
+            )
+            .is_err()
+    );
+
+    // Re-check the live runtime before each review even if a previously saved
+    // route was safe when it was selected.
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    assert!(manager.schedule_turn(
+        "unsafe".into(),
+        provider.fork(),
+        Arc::clone(&queue),
+        AdvisorTurnInput::default(),
+        config
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while manager.snapshot("unsafe").expect("snapshot").status == AdvisorStatus::Reviewing {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unsafe review rejected");
+    let snapshot = manager.snapshot("unsafe").expect("failed state");
+    assert_eq!(snapshot.status, AdvisorStatus::Failed);
+    assert!(
+        snapshot
+            .last_error
+            .expect("capability error")
+            .contains("cannot disable its built-in tools")
+    );
+    assert!(provider.calls.lock().expect("calls").is_empty());
+    assert!(manager.notes("unsafe").is_empty());
+    assert!(queue.lock().expect("queue").is_empty());
 }

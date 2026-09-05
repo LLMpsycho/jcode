@@ -199,10 +199,13 @@ fn test_advisor_model_controls_preserve_legacy_wire_and_structured_routes() -> R
     let result = AdvisorControlResult {
         message: "Advisor enabled".into(),
         model_settings: Some(AdvisorModelSettings { enabled: true, selection: Some(selection.clone()), reasoning_effort: Some("high".into()), follows_primary: false }),
-        model_options: Some(AdvisorModelOptions { selection: Some(selection), reasoning_effort: Some("high".into()), available_routes: Vec::new(), available_efforts: vec!["low".into(), "high".into()] }),
+        model_options: Some(AdvisorModelOptions { selection: Some(selection.clone()), reasoning_effort: Some("high".into()), available_routes: Vec::new(), available_selections: vec![selection], available_efforts: vec!["low".into(), "high".into()] }),
         error: None,
     };
     assert_eq!(serde_json::from_str::<AdvisorControlResult>(&serde_json::to_string(&result)?)?, result);
+    let old_options: AdvisorModelOptions = serde_json::from_str(r#"{"selection":null,"reasoning_effort":null,"available_routes":[],"available_efforts":[]}"#)?;
+    assert!(old_options.available_selections.is_empty());
+    assert!(!serde_json::to_string(&old_options)?.contains("available_selections"));
     Ok(())
 }
 

@@ -84,6 +84,20 @@ pub trait Provider: Send + Sync {
         resume_session_id: Option<&str>,
     ) -> Result<EventStream>;
 
+    /// Complete on the selected runtime and account without automatic failover.
+    /// Single-runtime providers may use their normal transport. Orchestrators
+    /// must override this so helper requests cannot rotate shared credentials.
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.complete(messages, tools, system, resume_session_id)
+            .await
+    }
+
     /// Send messages with split system prompt for better caching.
     async fn complete_split(
         &self,
@@ -324,6 +338,14 @@ pub trait Provider: Send + Sync {
     /// Returns true if the provider executes tools internally.
     fn handles_tools_internally(&self) -> bool {
         false
+    }
+
+    /// Whether `complete(..., &[], ...)` prevents all tool execution, including
+    /// provider-hosted tools. Internal agent runtimes must opt in only when
+    /// they can enforce an empty tool set; a prompt prohibition is insufficient.
+    /// Wrappers must delegate this capability to their active runtime.
+    fn supports_toolless_requests(&self) -> bool {
+        !self.handles_tools_internally()
     }
 
     /// Invalidate any cached credentials.
