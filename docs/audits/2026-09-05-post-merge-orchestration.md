@@ -41,7 +41,7 @@ The retained after-fix logs show:
 
 | Suite | Result |
 |---|---:|
-| Base session suite, including the new persistence regression | 283 passed, 0 failed, 1 ignored |
+| Base session suite, including the new persistence regression | 71 passed, 0 failed |
 | New remote split/transfer persistence and route tests | 2 passed, 0 failed |
 | TUI post-merge review/fork regressions | 19 passed, 0 failed |
 
@@ -51,7 +51,7 @@ The same successful job also ran the existing split-session, review-role, remote
 
 The artifact `prompt-fork-regression-evidence` contains the before/after logs and the exact eight-file source patch. Downloaded ZIP SHA-256:
 
-`b4620fe8449eeac2ff2c51ba0de8660f8a9b28f7c7e2aff0104b1f2decc9f5b210`
+`97bf0150b6d9c170cf509958c0b6cc96bd513cf05f8b9c2abc471913172d6ce8`
 
 Earlier follow-up attempts exposed an empty-session fixture assumption and a return-type error in a new test. They stopped before publishing runtime changes. The successful run supersedes them; the failed attempts are not presented as passing validation.
 
