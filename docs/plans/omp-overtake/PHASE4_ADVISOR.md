@@ -38,6 +38,55 @@ Provider regressions cover OAuth/API effort inheritance and independent
 Copilot, Gemini and Antigravity forks. Socket acceptance checks the selected
 model and effort in real transport requests and after restart/reload.
 
+## Choosing models for the other agent roles
+
+Run `/agents`, `/config agents`, or `/config models`, then choose a role. Direct
+commands such as `/agents swarm`, `/agents review`, and `/agents judge` skip the
+role list. `/config` also points to these controls.
+
+| Role | Selection scope | Control |
+| --- | --- | --- |
+| Main | Current session | Existing `/model` picker |
+| Advisor | Current session; checkpointed across restart/reload | `/advisor` model, then effort |
+| Swarm / subagent | Saved default for new workers | `/agents swarm` |
+| Review | Saved default for new review tasks | `/agents review` |
+| Judge | Saved default for new judge tasks | `/agents judge` |
+| Memory | Saved default for subsequent sidecar tasks | `/agents memory` |
+| Ambient | Saved default for subsequent ambient tasks | `/agents ambient` |
+
+Role pickers use the same authenticated catalog as `/model`. Choose a model row
+with its desired effort, select its connection with the arrow keys, and press
+Enter. A plain model row leaves effort to the provider. `inherit` clears the
+saved model, route and effort together. A session `/subagent-model` override
+still takes precedence over the saved swarm default. Only models actually
+present in the catalog can be selected; display examples are not extra models.
+
+The saved connection includes its subscription/OAuth/API method and named
+endpoint or OpenRouter provider pin, without credentials. Explicit choices run
+on private provider forks and cannot silently fall back to another account or
+model. Missing routes, unsupported efforts, and failed child-session restoration
+produce errors. Ambient also respects `ambient.allow_api_keys`; memory requires
+a provider that can perform tool-free requests. Existing defaults remain usable
+when no role override is set.
+
+Typing `/advisor` now previews the list before Enter. Catalog and effort reads
+remain responsive while the main turn is busy. A stale or disconnected daemon
+produces connection/reload guidance instead of an indefinite loading row. These
+client and server changes require an updated binary and a restarted or reloaded
+daemon; a newly built client alone cannot update an already-running old daemon.
+
+This follow-up starts at merged PR #13 (`b9f9c103`) on `master`; the fork has no
+`main`. Focused coverage includes role config atomicity and environment
+precedence, exact route/effort execution, independent worker paths, sidecar and
+ambient policy, child restart restoration, TUI selection/refresh/cancellation,
+and busy advisor catalogs. The existing isolated selfdev/socket mode and restart
+acceptance remains a required gate. CI results are recorded in the follow-up PR.
+
+One larger gap remains outside this selection change: remote automatic
+end-of-turn review/judge scheduling flags are not consumed. Manual `/review`,
+`/judge`, `/autoreview now`, and `/autojudge now` honor the selected roles; this
+PR does not add a new orchestration scheduler or begin Phases 5–7.
+
 ## Post-merge advisor audit
 
 The follow-up starts from merged `master` at

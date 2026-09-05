@@ -346,3 +346,6 @@ fn catalog_credential_identity_survives_token_refresh_but_changes_accounts() {
         OpenAIProvider::catalog_credential_identity(&credentials("new", "refresh-b", None))
     );
 }
+
+#[path = "openai_tests/role_pinned.rs"]
+mod role_pinned;

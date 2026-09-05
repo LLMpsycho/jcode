@@ -1803,3 +1803,9 @@ fn assert_clear_swarm_plan_reset(app: &App) {
     assert_eq!(app.swarm_plan_version, None);
     assert_eq!(app.swarm_plan_swarm_id, None);
 }
+
+#[path = "tests/role_review_launch.rs"]
+mod role_review_launch;
+
+#[path = "tests/agent_role_picker.rs"]
+mod agent_role_picker;

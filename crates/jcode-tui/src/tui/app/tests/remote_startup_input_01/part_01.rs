@@ -39,38 +39,6 @@ fn test_finish_turn_does_not_duplicate_existing_poke_followup() {
     });
 }
 
-#[test]
-fn test_review_prefers_openai_oauth_gpt_5_4_when_available() {
-    with_temp_jcode_home(|| {
-        let auth_path = crate::storage::jcode_dir()
-            .expect("jcode dir")
-            .join("openai-auth.json");
-        std::fs::write(
-            &auth_path,
-            serde_json::json!({
-                "openai_accounts": [
-                    {
-                        "label": "openai-1",
-                        "access_token": "at_test",
-                        "refresh_token": "rt_test",
-                        "account_id": "acct_test"
-                    }
-                ],
-                "active_openai_account": "openai-1"
-            })
-            .to_string(),
-        )
-        .expect("write auth file");
-
-        assert_eq!(
-            super::commands::preferred_one_shot_review_override(),
-            Some((
-                super::commands::REVIEW_PREFERRED_MODEL.to_string(),
-                "openai".to_string()
-            ))
-        );
-    });
-}
 
 #[test]
 fn test_pending_split_launch_shows_processing_status_in_ui() {
@@ -181,6 +149,8 @@ fn test_judge_startup_prompts_describe_visible_mirror_context() {
 #[test]
 fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_sessions() {
     with_temp_jcode_home(|| {
+        crate::config::Config::set_reasoning_display(crate::config::ReasoningDisplayMode::Full)
+            .expect("show full reasoning in UI");
         for title in ["judge", "autojudge"] {
             let parent_id = format!("parent_{title}_visible_context");
             let child_id = format!("child_{title}_visible_context");
@@ -227,6 +197,9 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
                     ContentBlock::Reasoning {
                         text: "hidden reasoning should never leak".to_string(),
                     },
+                    ContentBlock::ReasoningTrace {
+                        text: "hidden trace should never leak".to_string(),
+                    },
                     ContentBlock::Text {
                         text: "Final visible answer.".to_string(),
                         cache_control: None,
@@ -254,10 +227,10 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
                 &child_id,
                 super::commands::build_judge_startup_message(&parent_id),
                 None,
-                None,
                 Some(title.to_string()),
                 Some(parent_id.clone()),
-            );
+            )
+            .expect("prepare judge session");
 
             let prepared = crate::session::Session::load(&child_id).expect("reload child session");
             let transcript = prepared
@@ -278,6 +251,7 @@ fn test_prepare_review_spawned_session_uses_visible_transcript_for_judge_session
             assert!(transcript.contains("git diff --stat"));
             assert!(!transcript.contains("SECRET_TOOL_OUTPUT_SHOULD_NOT_APPEAR"));
             assert!(!transcript.contains("hidden reasoning should never leak"));
+            assert!(!transcript.contains("hidden trace should never leak"));
             assert_eq!(prepared.parent_id.as_deref(), Some(parent_id.as_str()));
             assert!(prepared.compaction.is_none());
         }

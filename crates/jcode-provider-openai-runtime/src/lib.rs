@@ -719,6 +719,8 @@ pub struct OpenAIProvider {
     /// True when this runtime was created without API credentials. It can still
     /// serve browser-backed models and upgrades in place after a successful login.
     browser_only: Arc<AtomicBool>,
+    /// Explicit helper role models must not follow account-model fallbacks.
+    route_pinned: AtomicBool,
 }
 
 impl OpenAIProvider {
@@ -860,6 +862,7 @@ impl OpenAIProvider {
             persistent_ws: Arc::new(Mutex::new(None)),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::new(AtomicBool::new(browser_only)),
+            route_pinned: AtomicBool::new(false),
         };
         provider.revalidate_reasoning_effort();
         provider
@@ -1264,6 +1267,9 @@ impl OpenAIProvider {
 
     async fn model_id(&self) -> String {
         let current = self.model.read().await.clone();
+        if self.route_pinned() {
+            return current;
+        }
         let availability = jcode_base::provider::model_availability_for_account(&current);
 
         match availability.state {

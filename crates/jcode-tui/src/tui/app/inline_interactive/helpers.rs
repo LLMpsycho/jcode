@@ -45,6 +45,8 @@ pub(super) fn catchup_queue_position(
 
 pub(super) fn agent_model_target_label(target: AgentModelTarget) -> &'static str {
     match target {
+        AgentModelTarget::Main => "Main",
+        AgentModelTarget::Advisor => "Advisor",
         AgentModelTarget::Swarm => "Swarm / subagent",
         AgentModelTarget::Review => "Code review",
         AgentModelTarget::Judge => "Judge",
@@ -55,6 +57,8 @@ pub(super) fn agent_model_target_label(target: AgentModelTarget) -> &'static str
 
 pub(super) fn agent_model_target_slug(target: AgentModelTarget) -> &'static str {
     match target {
+        AgentModelTarget::Main => "main",
+        AgentModelTarget::Advisor => "advisor",
         AgentModelTarget::Swarm => "swarm",
         AgentModelTarget::Review => "review",
         AgentModelTarget::Judge => "judge",
@@ -65,6 +69,8 @@ pub(super) fn agent_model_target_slug(target: AgentModelTarget) -> &'static str 
 
 pub(super) fn agent_model_target_config_path(target: AgentModelTarget) -> &'static str {
     match target {
+        AgentModelTarget::Main => "session model",
+        AgentModelTarget::Advisor => "session advisor",
         AgentModelTarget::Swarm => "agents.swarm_model",
         AgentModelTarget::Review => "autoreview.model",
         AgentModelTarget::Judge => "autojudge.model",
@@ -76,31 +82,13 @@ pub(super) fn agent_model_target_config_path(target: AgentModelTarget) -> &'stat
 pub(super) fn load_agent_model_override(target: AgentModelTarget) -> Option<String> {
     let cfg = crate::config::Config::load();
     match target {
+        AgentModelTarget::Main | AgentModelTarget::Advisor => None,
         AgentModelTarget::Swarm => cfg.agents.swarm_model,
         AgentModelTarget::Review => cfg.autoreview.model,
         AgentModelTarget::Judge => cfg.autojudge.model,
         AgentModelTarget::Memory => cfg.agents.memory_model,
         AgentModelTarget::Ambient => cfg.ambient.model,
     }
-}
-
-pub(super) fn save_agent_model_override(
-    target: AgentModelTarget,
-    model: Option<&str>,
-) -> anyhow::Result<()> {
-    let mut cfg = crate::config::Config::load();
-    let value = model
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    match target {
-        AgentModelTarget::Swarm => cfg.agents.swarm_model = value,
-        AgentModelTarget::Review => cfg.autoreview.model = value,
-        AgentModelTarget::Judge => cfg.autojudge.model = value,
-        AgentModelTarget::Memory => cfg.agents.memory_model = value,
-        AgentModelTarget::Ambient => cfg.ambient.model = value,
-    }
-    cfg.save()
 }
 
 pub(super) fn model_entry_base_name(entry: &PickerEntry) -> String {
@@ -193,7 +181,9 @@ pub(super) fn model_entry_saved_spec(entry: &PickerEntry) -> String {
 pub(super) fn agent_model_inherit_fallback_label(target: AgentModelTarget) -> &'static str {
     match target {
         AgentModelTarget::Memory => "sidecar auto-select",
-        AgentModelTarget::Swarm
+        AgentModelTarget::Main
+        | AgentModelTarget::Advisor
+        | AgentModelTarget::Swarm
         | AgentModelTarget::Review
         | AgentModelTarget::Judge
         | AgentModelTarget::Ambient => "provider default",
@@ -222,15 +212,21 @@ pub(super) fn normalize_agent_model_summary(
 
 pub(super) fn agent_model_default_summary(target: AgentModelTarget, app: &App) -> String {
     let summary = match target {
-        AgentModelTarget::Swarm => load_agent_model_override(target)
-            .or_else(|| app.session.subagent_model.clone())
+        AgentModelTarget::Main => app
+            .remote_provider_model
+            .clone()
+            .or_else(|| Some(app.provider.model())),
+        AgentModelTarget::Advisor => Some("session selection · /advisor status".into()),
+        AgentModelTarget::Swarm => app
+            .session
+            .subagent_model
+            .clone()
+            .or_else(|| load_agent_model_override(target))
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Review => load_agent_model_override(target)
-            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Judge => load_agent_model_override(target)
-            .or_else(|| super::commands::preferred_one_shot_review_override().map(|(m, _)| m))
             .or_else(|| app.session.model.clone())
             .or_else(|| Some(app.provider.model())),
         AgentModelTarget::Memory => load_agent_model_override(target),

@@ -224,6 +224,7 @@ fn test_multi_provider_with_openai() -> MultiProvider {
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
         routes_memo: std::sync::Mutex::new(None),
+        route_pinned: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
 }
@@ -1041,6 +1042,7 @@ fn test_multi_provider_with_cursor() -> MultiProvider {
         startup_notices: RwLock::new(Vec::new()),
         initial_provider: None,
         routes_memo: std::sync::Mutex::new(None),
+        route_pinned: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
 }

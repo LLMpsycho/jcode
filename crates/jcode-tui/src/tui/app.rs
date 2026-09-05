@@ -1522,6 +1522,8 @@ pub struct App {
     pending_split_prompt: Option<PendingSplitPrompt>,
     // Optional model override to apply before opening the next spawned split window.
     pending_split_model_override: Option<String>,
+    // Complete review/judge route captured when the user queues a split.
+    pending_split_role_selection: Option<commands_review::ReviewModelSelection>,
     // Optional provider key override to persist into the next spawned split window.
     pending_split_provider_key_override: Option<String>,
     // Human-friendly label for the next spawned split window flow.

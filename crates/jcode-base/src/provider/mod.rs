@@ -1,6 +1,7 @@
 mod accessors;
 mod account_failover;
 pub mod activation;
+mod agent_roles;
 pub mod anthropic;
 pub mod antigravity;
 pub mod bedrock;
@@ -45,6 +46,7 @@ use registry::ProviderRegistry;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
+pub use agent_roles::{configured_role_route, fork_for_agent_role};
 pub use catalog_routes::{
     append_simplified_anthropic_model_routes, remote_current_openai_compatible_route_for_model,
     remote_model_is_server_copilot_only, remote_model_routes_fallback,
@@ -388,6 +390,8 @@ pub struct MultiProvider {
     /// Shared by forks so the server can wait for real work rather than sleeping
     /// through a fixed quiet period after login.
     post_auth_refreshes_pending: Arc<std::sync::atomic::AtomicUsize>,
+    /// Private helper roles must not switch the user's selected route/account.
+    route_pinned: std::sync::atomic::AtomicBool,
 }
 
 /// Memoized route catalog with the inputs that decide its freshness: build
@@ -613,6 +617,11 @@ impl MultiProvider {
         mode: CompletionMode<'_>,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if self.route_pinned() {
+            return self
+                .complete_selected_route(messages, tools, mode, resume_session_id)
+                .await;
+        }
         self.spawn_anthropic_catalog_refresh_if_needed();
         self.spawn_openai_catalog_refresh_if_needed();
 
@@ -698,6 +707,9 @@ impl MultiProvider {
                 continue;
             }
 
+            // Ordinary session calls retain runtime fallback after any prior
+            // one-off selected-route request on this provider instance.
+            self.set_runtime_route_pinned(candidate, false);
             let attempt = match mode {
                 CompletionMode::Unified { system } => {
                     self.complete_on_provider(candidate, messages, tools, system, resume_session_id)
@@ -1718,6 +1730,15 @@ impl Default for MultiProvider {
 
 #[async_trait]
 impl Provider for MultiProvider {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.route_pinned
+            .store(pinned, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.route_pinned.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -1741,18 +1762,13 @@ impl Provider for MultiProvider {
         system: &str,
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
-        let filtered =
-            image_clamp::filter_unsupported_outbound_images(messages, self.supports_image_input());
-        let messages = filtered.as_deref().unwrap_or(messages);
-        let clamped = image_clamp::clamp_outbound_images(messages);
-        let messages = clamped.as_deref().unwrap_or(messages);
-        let selected = self.active_provider();
-        let stream = self
-            .complete_on_provider(selected, messages, tools, system, resume_session_id)
-            .await?;
-        clear_provider_unavailable_for_account(Self::provider_key(selected));
-        self.record_provider_activity(selected);
-        Ok(stream)
+        self.complete_selected_route(
+            messages,
+            tools,
+            CompletionMode::Unified { system },
+            resume_session_id,
+        )
+        .await
     }
 
     /// Split system prompt completion - delegates to underlying provider for better caching
@@ -2940,6 +2956,7 @@ impl Provider for MultiProvider {
             startup_notices: RwLock::new(Vec::new()),
             initial_provider: self.initial_provider,
             routes_memo: Mutex::new(None),
+            route_pinned: std::sync::atomic::AtomicBool::new(self.route_pinned()),
             post_auth_refreshes_pending: Arc::clone(&self.post_auth_refreshes_pending),
         };
 

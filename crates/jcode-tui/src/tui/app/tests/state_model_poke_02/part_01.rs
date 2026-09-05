@@ -1304,8 +1304,24 @@ fn test_agents_command_opens_agent_picker() {
 #[test]
 fn test_agents_command_suggestions_include_targets() {
     let app = create_test_app();
-    let suggestions = app.get_suggestions_for("/agents re");
-    assert!(suggestions.iter().any(|(cmd, _)| cmd == "/agents review"));
+    for base in ["/agents", "/config agents", "/config models"] {
+        for role in ["main", "swarm", "advisor", "review", "judge", "memory", "ambient"] {
+            let command = format!("{base} {role}");
+            let suggestions = app.get_suggestions_for(&command);
+            assert!(suggestions.iter().any(|(cmd, description)| {
+                cmd == &command && description.contains("effort")
+            }), "missing role completion: {command}");
+        }
+    }
+    for (prefix, command) in [("/config ag", "/config agents"), ("/config mo", "/config models")] {
+        let suggestions = app.get_suggestions_for(prefix);
+        assert!(suggestions.iter().any(|(cmd, _)| cmd == command));
+    }
+    let help = app.command_help("agents").unwrap();
+    assert!(help.contains("Main and advisor affect the current session"));
+    assert!(help.contains("saved defaults"));
+    assert!(app.command_help("config").unwrap().contains("/config models"));
+    assert!(app.command_help("advisor").unwrap().contains("reasoning effort"));
 }
 
 #[test]
@@ -1356,6 +1372,7 @@ fn test_agent_model_picker_inherit_row_uses_provider_default_when_inherited_mode
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
         configure_test_remote_models(&mut app);
+        app.remote_provider_model = Some("unknown".to_string());
         app.open_agent_model_picker(crate::tui::AgentModelTarget::Swarm);
 
         let picker = app

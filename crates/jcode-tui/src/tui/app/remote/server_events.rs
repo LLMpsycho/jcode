@@ -2747,6 +2747,7 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.pending_split_parent_session_id = None;
                 app.pending_split_prompt = None;
                 app.pending_split_model_override = None;
+                app.pending_split_role_selection = None;
                 app.pending_split_provider_key_override = None;
                 app.pending_split_label = None;
                 app.push_display_message(DisplayMessage::system(format!(
@@ -2761,18 +2762,24 @@ pub(in crate::tui::app) fn handle_server_event(
             let startup_message = app.pending_split_startup_message.take();
             let parent_session_id_override = app.pending_split_parent_session_id.take();
             let startup_prompt = app.pending_split_prompt.take();
-            let model_override = app.pending_split_model_override.take();
-            let provider_key_override = app.pending_split_provider_key_override.take();
+            app.pending_split_model_override = None;
+            app.pending_split_provider_key_override = None;
+            let role_selection = app.pending_split_role_selection.take();
             let split_label = app.pending_split_label.take();
             if let Some(startup_message) = startup_message {
-                app_mod::commands::prepare_review_spawned_session(
+                if let Err(error) = app_mod::commands::prepare_review_spawned_session(
                     &new_session_id,
                     startup_message,
-                    model_override,
-                    provider_key_override,
+                    role_selection,
                     split_label.clone().map(|label| label.to_ascii_lowercase()),
                     parent_session_id_override,
-                );
+                ) {
+                    app.push_display_message(DisplayMessage::error(format!(
+                        "Failed to prepare review session: {error}"
+                    )));
+                    app.set_status_notice("Review launch failed");
+                    return false;
+                }
             } else if let Some(startup_prompt) = startup_prompt {
                 App::save_startup_submission_for_session(
                     &new_session_id,

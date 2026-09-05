@@ -31,7 +31,7 @@ impl Config {
     /// Saving those defaults would destroy the user's existing config. It also
     /// deliberately skips environment overrides so transient process settings
     /// are not baked into the file as a side effect of changing one preference.
-    fn load_for_update() -> anyhow::Result<Self> {
+    pub(super) fn load_for_update() -> anyhow::Result<Self> {
         Ok(Self::load_from_file_strict()?.unwrap_or_default())
     }
 

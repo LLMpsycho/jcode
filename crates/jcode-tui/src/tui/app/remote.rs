@@ -133,6 +133,10 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.prune_irrelevant_background_tasks();
     needs_redraw |= app.refresh_side_panel_linked_content_if_due();
     needs_redraw |= app.poll_model_picker_load();
+    // Catalog previews can also be opened by paste, completion, or debug
+    // input, so pending advisor work must progress outside key events too.
+    app.forward_pending_advisor_request(remote).await;
+    needs_redraw |= app.expire_advisor_requests(Instant::now());
     needs_redraw |= app.poll_session_picker_load();
     needs_redraw |= app.poll_session_picker_presence();
     needs_redraw |= app.onboarding_tick();
@@ -1412,6 +1416,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
             let had_prompt = app.pending_split_prompt.take().is_some();
             let label = app.pending_split_label.take();
             app.pending_split_model_override = None;
+            app.pending_split_role_selection = None;
             app.pending_split_provider_key_override = None;
             let flow_label = label.unwrap_or(flow_label);
             app.push_display_message(DisplayMessage::error(format!(

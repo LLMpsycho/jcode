@@ -1282,7 +1282,9 @@ pub enum AccountPickerAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentModelTarget {
+    Main,
     Swarm,
+    Advisor,
     Review,
     Judge,
     Memory,
@@ -1437,6 +1439,16 @@ impl InlineInteractiveState {
                 active_submit_hint: "  ↑↓ ←→ ↵ Esc",
                 shows_default_shortcut_hint: false,
                 preview_activation_column: 2,
+            }
+        } else if self.kind == PickerKind::Model
+            && self
+                .entries
+                .iter()
+                .any(|entry| matches!(entry.action, PickerAction::AgentModelChoice { .. }))
+        {
+            InlineInteractiveSchema {
+                shows_default_shortcut_hint: false,
+                ..self.kind.schema()
             }
         } else {
             self.kind.schema()

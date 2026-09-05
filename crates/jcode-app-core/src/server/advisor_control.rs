@@ -32,6 +32,26 @@ fn handle_with_manager(
     manager: Arc<AdvisorManager>,
 ) {
     let config = crate::advisor::config_for_current_session();
+    if matches!(request, AdvisorRequest::ModelOptions { .. }) {
+        // Catalog reads and effort previews must remain available during a
+        // primary turn, including when this connection attached to a busy
+        // session whose provider differs from the connection template.
+        let result = match super::session_provider::for_agent(agent) {
+            Some(provider) => {
+                model_request(&manager, session, provider.as_ref(), &config, request, 0)
+            }
+            None => {
+                let message = "Advisor model catalog is unavailable for this session; retry /advisor when the current turn finishes.".to_string();
+                AdvisorControlResult {
+                    error: Some(message.clone()),
+                    message,
+                    ..AdvisorControlResult::default()
+                }
+            }
+        };
+        let _ = events.send(ServerEvent::AdvisorResult { id, result });
+        return;
+    }
     if matches!(
         request,
         AdvisorRequest::SelectModel { .. }

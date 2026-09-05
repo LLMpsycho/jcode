@@ -98,6 +98,14 @@ impl Default for JcodeProvider {
 
 #[async_trait]
 impl Provider for JcodeProvider {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.inner.set_route_pinned(pinned);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.inner.route_pinned()
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -306,6 +314,7 @@ impl Provider for JcodeProvider {
     fn fork(&self) -> Arc<dyn Provider> {
         self.ensure_runtime_mode();
         let forked = Self::new();
+        forked.set_route_pinned(self.route_pinned());
         let selected_model = self.model();
         if forked.set_model(&selected_model).is_ok()
             && let Some(effort) = self.reasoning_effort()

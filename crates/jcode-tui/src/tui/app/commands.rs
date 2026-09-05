@@ -18,8 +18,8 @@ pub(super) use super::commands_review::{
     handle_autojudge_command_local, handle_autoreview_command_local, handle_judge_command_local,
     handle_observe_command, handle_review_command_local, launch_forked_session_local,
     launch_prompt_in_new_session_local, maybe_trigger_autojudge_local,
-    maybe_trigger_autoreview_local, preferred_one_shot_review_override,
-    prepare_review_spawned_session, queue_review_spawn_remote, reset_current_session,
+    maybe_trigger_autoreview_local, prepare_review_spawned_session, queue_review_spawn_remote,
+    reset_current_session,
 };
 pub(super) use super::todos_view::handle_todos_view_command;
 use super::{App, DisplayMessage, LocalRewindUndoSnapshot, ProcessingStatus};
@@ -30,7 +30,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-pub(super) const REVIEW_PREFERRED_MODEL: &str = "gpt-5.5";
 const POKE_OFF_UI_HINT: &str = "/poke off to stop.";
 
 const TODO_COMPLETION_CONTINUATION_MESSAGE: &str =
@@ -2943,7 +2942,9 @@ fn handle_show_agentgrep_output_command(app: &mut App, trimmed: &str) -> bool {
 
 fn parse_agents_target(raw: &str) -> Option<crate::tui::AgentModelTarget> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "swarm" | "agent" | "agents" | "subagent" | "subagents" => {
+        "main" | "primary" => Some(crate::tui::AgentModelTarget::Main),
+        "advisor" => Some(crate::tui::AgentModelTarget::Advisor),
+        "swarm" | "agent" | "agents" | "subagent" | "subagents" | "worker" | "workers" => {
             Some(crate::tui::AgentModelTarget::Swarm)
         }
         "review" | "reviewer" | "code-review" | "codereview" => {
@@ -3175,11 +3176,13 @@ mod interactive_editor_tests {
 }
 
 pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/agents") {
+    let Some(rest) = slash_command_rest(trimmed, "/agents")
+        .or_else(|| slash_command_rest(trimmed, "/config agents"))
+        .or_else(|| slash_command_rest(trimmed, "/config models"))
+    else {
         return false;
-    }
-
-    let rest = trimmed.strip_prefix("/agents").unwrap_or_default().trim();
+    };
+    let rest = rest.trim();
     if rest.is_empty() {
         app.open_agents_picker();
         return true;
@@ -3187,7 +3190,8 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
 
     let Some(target) = parse_agents_target(rest) else {
         app.push_display_message(DisplayMessage::error(
-            "Usage: /agents or /agents <swarm|review|judge|memory|ambient>".to_string(),
+            "Usage: /agents or /config models [main|swarm|advisor|review|judge|memory|ambient]"
+                .to_string(),
         ));
         return true;
     };

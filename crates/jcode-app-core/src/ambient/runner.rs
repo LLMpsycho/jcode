@@ -29,6 +29,10 @@ use tokio::sync::{Notify, RwLock};
 
 const MAX_IDLE_POLL_SECS: u64 = 30;
 
+#[path = "model_routing.rs"]
+mod model_routing;
+pub use model_routing::fork_ambient_provider;
+
 /// Shared ambient runner state, accessible from the server, debug socket, and TUI.
 #[derive(Clone)]
 pub struct AmbientRunnerHandle {
@@ -754,7 +758,7 @@ impl AmbientRunnerHandle {
             }
 
             match cycle_result {
-                Ok(result) => {
+                Ok((result, provider_name, model)) => {
                     logging::info(&format!(
                         "Ambient cycle complete: {} memories modified, {} compactions",
                         result.memories_modified, result.compactions
@@ -782,8 +786,8 @@ impl AmbientRunnerHandle {
                             }
                             CycleStatus::Incomplete => crate::safety::TranscriptStatus::Incomplete,
                         },
-                        provider: provider.name().to_string(),
-                        model: provider.model(),
+                        provider: provider_name,
+                        model,
                         actions: Vec::new(),
                         pending_permissions: self.inner.safety.pending_requests().len(),
                         summary: Some(result.summary.clone()),
@@ -909,26 +913,37 @@ impl AmbientRunnerHandle {
     }
 
     /// Run a single ambient cycle. Returns the cycle result.
-    async fn run_cycle(&self, provider: &Arc<dyn Provider>) -> anyhow::Result<AmbientCycleResult> {
-        self.run_cycle_with_visible_launcher(provider, config().ambient.visible, || {
-            let jcode_bin =
-                std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("jcode"));
+    async fn run_cycle(
+        &self,
+        provider: &Arc<dyn Provider>,
+    ) -> anyhow::Result<(AmbientCycleResult, String, String)> {
+        let ambient = &crate::config::Config::load().ambient;
+        let cycle_provider = fork_ambient_provider(provider.as_ref(), ambient)?;
+        let result = self
+            .run_cycle_with_visible_launcher(&cycle_provider, ambient.visible, || {
+                let jcode_bin =
+                    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("jcode"));
 
-            std::process::Command::new("kitty")
-                .args([
-                    "--title",
-                    "🤖 jcode ambient cycle",
-                    "-e",
-                    &jcode_bin.to_string_lossy(),
-                    "ambient",
-                    "run-visible",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-        })
-        .await
+                std::process::Command::new("kitty")
+                    .args([
+                        "--title",
+                        "🤖 jcode ambient cycle",
+                        "-e",
+                        &jcode_bin.to_string_lossy(),
+                        "ambient",
+                        "run-visible",
+                    ])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+            })
+            .await?;
+        Ok((
+            result,
+            cycle_provider.name().to_string(),
+            cycle_provider.model(),
+        ))
     }
 
     async fn run_cycle_with_visible_launcher<F>(
@@ -1141,3 +1156,7 @@ enum VisibleCycleOutcome {
 #[cfg(test)]
 #[path = "runner_tests.rs"]
 mod runner_tests;
+
+#[cfg(test)]
+#[path = "role_selection_tests.rs"]
+mod role_selection_tests;

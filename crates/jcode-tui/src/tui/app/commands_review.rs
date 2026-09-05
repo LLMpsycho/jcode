@@ -1,9 +1,13 @@
-use super::commands::{REVIEW_PREFERRED_MODEL, active_session_id, active_working_dir};
+use super::commands::{active_session_id, active_working_dir};
 use super::{App, DisplayMessage};
 use crate::id;
 use crate::message::{ContentBlock, Role, ToolCall};
 use crate::session::{Session, StoredMessage};
 use std::time::Instant;
+
+#[path = "commands_review_model.rs"]
+mod model_selection;
+pub(super) use model_selection::ReviewModelSelection;
 
 fn review_session_read_only_guardrails() -> &'static str {
     "Important constraints for this session:\n\
@@ -172,8 +176,22 @@ fn judge_visible_tool_summary(tool: &ToolCall) -> Option<String> {
 
 fn build_judge_visible_transcript_messages(parent_session: &Session) -> Vec<StoredMessage> {
     let mut transcript = Vec::new();
+    // The general renderer can include persisted reasoning when the user has
+    // enabled full reasoning display. A judge's context must stay restricted
+    // regardless of that UI preference, including future private block types.
+    let mut visible_parent = parent_session.clone();
+    for message in &mut visible_parent.messages {
+        message.content.retain(|block| {
+            matches!(
+                block,
+                ContentBlock::Text { .. }
+                    | ContentBlock::ToolUse { .. }
+                    | ContentBlock::ToolResult { .. }
+            )
+        });
+    }
 
-    for rendered in crate::session::render_messages(parent_session) {
+    for rendered in crate::session::render_messages(&visible_parent) {
         match rendered.role.as_str() {
             "user" => {
                 if !rendered.content.trim().is_empty() {
@@ -380,42 +398,50 @@ pub(super) fn handle_observe_command(app: &mut App, trimmed: &str) -> bool {
     true
 }
 
-fn current_autoreview_model_summary(app: &App) -> String {
-    crate::config::config()
-        .autoreview
-        .model
+fn current_feedback_model_summary(app: &App) -> String {
+    app.remote_provider_model
         .clone()
         .or_else(|| app.session.model.clone())
         .unwrap_or_else(|| app.provider.model())
 }
 
-fn current_autoreview_model_override() -> Option<String> {
-    crate::config::config().autoreview.model.clone()
-}
-
-fn current_autojudge_model_summary(app: &App) -> String {
-    crate::config::config()
-        .autojudge
-        .model
-        .clone()
-        .or_else(|| app.session.model.clone())
-        .unwrap_or_else(|| app.provider.model())
-}
-
-fn current_autojudge_model_override() -> Option<String> {
-    crate::config::config().autojudge.model.clone()
+fn feedback_role_model_line(
+    label: &str,
+    app: &App,
+    route: Option<&crate::config::ConfigModelRoute>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> String {
+    let model = route.map(|route| route.model.as_str()).or(model);
+    let mut line = match model {
+        Some(model) => format!("{label} model: {model}"),
+        None => format!(
+            "{label} model: inherit current session ({})",
+            current_feedback_model_summary(app)
+        ),
+    };
+    if let Some(route) = route {
+        line.push_str(&format!(
+            " via {} ({})",
+            route.provider_label, route.api_method
+        ));
+    }
+    if let Some(effort) = effort {
+        line.push_str(&format!("; effort: {effort}"));
+    }
+    line
 }
 
 pub(super) fn autoreview_status_message(app: &App) -> String {
     let default_enabled = crate::config::config().autoreview.enabled;
-    let config_model = crate::config::config().autoreview.model.as_deref();
-    let model_line = match config_model {
-        Some(model) => format!("Reviewer model override: {}", model),
-        None => format!(
-            "Reviewer model: inherit current session ({})",
-            current_autoreview_model_summary(app)
-        ),
-    };
+    let config = &crate::config::config().autoreview;
+    let model_line = feedback_role_model_line(
+        "Reviewer",
+        app,
+        config.route.as_ref(),
+        config.model.as_deref(),
+        config.effort.as_deref(),
+    );
     format!(
         "Autoreview: {} (config default: {})\n{}",
         if app.autoreview_enabled {
@@ -434,14 +460,14 @@ pub(super) fn autoreview_status_message(app: &App) -> String {
 
 pub(super) fn autojudge_status_message(app: &App) -> String {
     let default_enabled = crate::config::config().autojudge.enabled;
-    let config_model = crate::config::config().autojudge.model.as_deref();
-    let model_line = match config_model {
-        Some(model) => format!("Judge model override: {}", model),
-        None => format!(
-            "Judge model: inherit current session ({})",
-            current_autojudge_model_summary(app)
-        ),
-    };
+    let config = &crate::config::config().autojudge;
+    let model_line = feedback_role_model_line(
+        "Judge",
+        app,
+        config.route.as_ref(),
+        config.model.as_deref(),
+        config.effort.as_deref(),
+    );
     format!(
         "Autojudge: {} (config default: {})\n{}",
         if app.autojudge_enabled {
@@ -609,41 +635,21 @@ Do not ask the user anything unless absolutely necessary. Keep your own session 
     )
 }
 
-pub(super) fn preferred_one_shot_review_override() -> Option<(String, String)> {
-    let creds = crate::auth::codex::load_credentials().ok()?;
-    let has_oauth = !creds.refresh_token.trim().is_empty() || creds.id_token.is_some();
-    if has_oauth {
-        Some((REVIEW_PREFERRED_MODEL.to_string(), "openai".to_string()))
-    } else {
-        None
-    }
-}
-
-fn current_review_model_override() -> (Option<String>, Option<String>) {
-    preferred_one_shot_review_override()
-        .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-        .unwrap_or_else(|| (current_autoreview_model_override(), None))
-}
-
-fn current_judge_model_override() -> (Option<String>, Option<String>) {
-    preferred_one_shot_review_override()
-        .map(|(model, provider_key)| (Some(model), Some(provider_key)))
-        .unwrap_or_else(|| (current_autojudge_model_override(), None))
-}
-
 fn clone_session_for_review(
     app: &App,
     session_title: &str,
-    initial_model: String,
-    provider_key_override: Option<String>,
+    selection: &ReviewModelSelection,
 ) -> anyhow::Result<(String, String)> {
     let parent_session_id = current_feedback_target_session_id(app);
     let mut child = Session::create(Some(parent_session_id), Some(session_title.to_string()));
     child.replace_messages(app.session.messages.clone());
     child.compaction = app.session.compaction.clone();
     child.working_dir = app.session.working_dir.clone();
-    child.model = Some(initial_model);
-    child.provider_key = provider_key_override.or_else(|| app.session.provider_key.clone());
+    child.model = app.session.model.clone();
+    child.provider_key = app.session.provider_key.clone();
+    child.route_api_method = app.session.route_api_method.clone();
+    child.reasoning_effort = app.session.reasoning_effort.clone();
+    selection.apply(&mut child);
     child.subagent_model = app.session.subagent_model.clone();
     child.autoreview_enabled = Some(false);
     child.autojudge_enabled = Some(false);
@@ -675,30 +681,26 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
 pub(super) fn prepare_review_spawned_session(
     session_id: &str,
     startup_message: String,
-    model_override: Option<String>,
-    provider_key_override: Option<String>,
+    selection: Option<ReviewModelSelection>,
     title_override: Option<String>,
     parent_session_id_override: Option<String>,
-) {
-    if let Ok(mut session) = crate::session::Session::load(session_id) {
-        session.autoreview_enabled = Some(false);
-        session.autojudge_enabled = Some(false);
-        if let Some(parent_session_id) = parent_session_id_override {
-            session.parent_id = Some(parent_session_id);
-        }
-        if let Some(title) = title_override.clone() {
-            session.title = Some(title);
-        }
-        if let Some(model) = model_override {
-            session.model = Some(model);
-        }
-        if provider_key_override.is_some() {
-            session.provider_key = provider_key_override;
-        }
-        apply_judge_visible_context_if_needed(&mut session, title_override.as_deref());
-        let _ = session.save();
+) -> anyhow::Result<()> {
+    let mut session = crate::session::Session::load(session_id)?;
+    session.autoreview_enabled = Some(false);
+    session.autojudge_enabled = Some(false);
+    if let Some(parent_session_id) = parent_session_id_override {
+        session.parent_id = Some(parent_session_id);
     }
+    if let Some(title) = title_override.clone() {
+        session.title = Some(title);
+    }
+    if let Some(selection) = selection {
+        selection.apply(&mut session);
+    }
+    apply_judge_visible_context_if_needed(&mut session, title_override.as_deref());
+    session.save()?;
     App::save_startup_message_for_session(session_id, startup_message);
+    Ok(())
 }
 
 pub(super) fn launch_prompt_in_new_session_local(
@@ -766,26 +768,16 @@ fn launch_review_window_local(
     session_title: &str,
     label: &str,
     startup_message: String,
-    model_override: Option<String>,
-    provider_key_override: Option<String>,
 ) -> anyhow::Result<bool> {
-    let initial_model = model_override
-        .clone()
-        .unwrap_or_else(|| current_autoreview_model_summary(app));
-    let (session_id, session_name) = clone_session_for_review(
-        app,
-        session_title,
-        initial_model,
-        provider_key_override.clone(),
-    )?;
+    let selection = ReviewModelSelection::for_role(app, session_title)?;
+    let (session_id, session_name) = clone_session_for_review(app, session_title, &selection)?;
     prepare_review_spawned_session(
         &session_id,
         startup_message,
-        model_override,
-        provider_key_override,
+        Some(selection),
         Some(session_title.to_string()),
         None,
-    );
+    )?;
     let exe = super::launch_client_executable();
     let cwd = active_working_dir(app)
         .filter(|path| path.is_dir())
@@ -816,21 +808,16 @@ fn launch_autoreview_window_local(app: &mut App) -> anyhow::Result<bool> {
         "autoreview",
         "Autoreview",
         build_autoreview_startup_message(&parent_session_id),
-        current_autoreview_model_override(),
-        None,
     )
 }
 
 fn launch_review_once_local(app: &mut App) -> anyhow::Result<bool> {
-    let (model_override, provider_key_override) = current_review_model_override();
     let parent_session_id = current_feedback_target_session_id(app);
     launch_review_window_local(
         app,
         "review",
         "Review",
         build_review_startup_message(&parent_session_id),
-        model_override,
-        provider_key_override,
     )
 }
 
@@ -841,21 +828,16 @@ fn launch_autojudge_window_local(app: &mut App) -> anyhow::Result<bool> {
         "autojudge",
         "Autojudge",
         build_autojudge_startup_message(&parent_session_id),
-        current_autojudge_model_override(),
-        None,
     )
 }
 
 fn launch_judge_once_local(app: &mut App) -> anyhow::Result<bool> {
-    let (model_override, provider_key_override) = current_judge_model_override();
     let parent_session_id = current_feedback_target_session_id(app);
     launch_review_window_local(
         app,
         "judge",
         "Judge",
         build_judge_startup_message(&parent_session_id),
-        model_override,
-        provider_key_override,
     )
 }
 
@@ -864,17 +846,18 @@ pub(super) fn queue_review_spawn_remote(
     label: &str,
     parent_session_id: String,
     startup_message: String,
-    model_override: Option<String>,
-    provider_key_override: Option<String>,
-) {
+) -> anyhow::Result<()> {
+    let selection = ReviewModelSelection::for_role(app, label)?;
     app.pending_split_parent_session_id = Some(parent_session_id);
     app.pending_split_startup_message = Some(startup_message);
-    app.pending_split_model_override = model_override;
-    app.pending_split_provider_key_override = provider_key_override;
+    app.pending_split_model_override = None;
+    app.pending_split_provider_key_override = None;
+    app.pending_split_role_selection = Some(selection);
     app.pending_split_label = Some(label.to_string());
     app.pending_split_started_at = Some(Instant::now());
     app.pending_split_request = true;
     app.set_status_notice(format!("{} queued", label));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -886,14 +869,16 @@ pub(super) fn queue_autojudge_remote(app: &mut App) {
         return;
     }
     let parent_session_id = current_feedback_target_session_id(app);
-    queue_review_spawn_remote(
+    if let Err(error) = queue_review_spawn_remote(
         app,
         "Autojudge",
         parent_session_id.clone(),
         build_autojudge_startup_message(&parent_session_id),
-        current_autojudge_model_override(),
-        None,
-    );
+    ) {
+        app.push_display_message(DisplayMessage::error(format!(
+            "Failed to queue autojudge: {error}"
+        )));
+    }
 }
 
 pub(super) fn maybe_trigger_autoreview_local(app: &mut App) {

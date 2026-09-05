@@ -18,6 +18,8 @@ pub(super) struct AdvisorPickerState {
 struct AdvisorInFlight {
     session_id: Option<String>,
     opens_picker: bool,
+    sent_at: std::time::Instant,
+    timed_out: bool,
 }
 
 pub(super) fn command(input: &str) -> Option<Result<AdvisorRequest, &'static str>> {
@@ -47,6 +49,26 @@ pub(super) fn command(input: &str) -> Option<Result<AdvisorRequest, &'static str
         return Some(Err(usage()));
     }
     Some(Ok(request))
+}
+
+fn preview_filter(input: &str) -> Option<String> {
+    let trimmed = input.trim_start();
+    let rest = trimmed.strip_prefix("/advisor")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let first = rest.split_whitespace().next().unwrap_or_default();
+    if matches!(
+        first,
+        "inherit" | "status" | "inspect" | "on" | "off" | "dismiss" | "ack"
+    ) {
+        return None;
+    }
+    if matches!(first, "model" | "models") {
+        return Some(rest[first.len()..].trim_start().to_string());
+    }
+    Some(rest.to_string())
 }
 
 fn usage() -> &'static str {
@@ -85,6 +107,123 @@ fn entry(
 }
 
 impl App {
+    pub(super) fn handle_unavailable_advisor_command(&mut self, input: &str) -> bool {
+        let Some(request) = command(input) else {
+            return false;
+        };
+        let message = match request {
+            Err(usage) => usage,
+            Ok(_) if self.is_remote => {
+                "Advisor controls require a live server connection. Reconnect, then use /advisor to choose a model or /advisor status to inspect saved settings."
+            }
+            Ok(_) => {
+                "Advisor controls are available in a regular jcode server session. Open jcode and use /advisor to choose its model and effort."
+            }
+        };
+        self.push_display_message(DisplayMessage::system(message));
+        true
+    }
+
+    /// Share the ordinary model picker's as-you-type entry point while keeping
+    /// advisor selection and its authenticated catalog owned by the server.
+    pub(super) fn sync_advisor_picker_preview_from_input(&mut self) -> bool {
+        let advisor_preview = self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(|picker| picker.preview && picker.is_advisor_picker());
+        let filter = self
+            .is_remote
+            .then(|| preview_filter(&self.input))
+            .flatten();
+        let Some(filter) = filter else {
+            if advisor_preview {
+                self.cancel_advisor_picker();
+            }
+            return false;
+        };
+        if !advisor_preview {
+            let input = self.input.clone();
+            let cursor = self.cursor_pos;
+            self.queue_advisor_request(AdvisorRequest::ModelOptions { selection: None });
+            if let Some(picker) = self.inline_interactive_state.as_mut() {
+                picker.preview = true;
+            }
+            self.input = input;
+            self.cursor_pos = cursor;
+        }
+        let loading =
+            self.advisor_picker.pending.is_some() || self.advisor_picker.request_id.is_some();
+        if let Some(picker) = self.inline_interactive_state.as_mut() {
+            picker.filter = filter;
+            // Keep the loading row visible while the user starts filtering.
+            if !loading {
+                Self::apply_inline_interactive_filter(picker);
+            }
+        }
+        true
+    }
+
+    /// Opening a bare command or confirming its loading row is not consent to
+    /// enable the advisor with the first (inherit) entry.
+    pub(super) fn focus_advisor_picker_preview(&mut self) -> bool {
+        let Some(picker) = self.inline_interactive_state.as_mut() else {
+            return false;
+        };
+        if !picker.preview || !picker.is_advisor_picker() {
+            return false;
+        }
+        let loading =
+            self.advisor_picker.pending.is_some() || self.advisor_picker.request_id.is_some();
+        if !loading && !(picker.filter.is_empty() && picker.selected == 0) {
+            return false;
+        }
+        picker.preview = false;
+        picker.column = 0;
+        self.input.clear();
+        self.cursor_pos = 0;
+        true
+    }
+
+    /// Retain expired request IDs for late error correlation; never replay a
+    /// control whose durable outcome is unknown after a timeout.
+    pub(super) fn expire_advisor_requests(&mut self, now: std::time::Instant) -> bool {
+        const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        let mut model_timeout = false;
+        let mut control_timeout = false;
+        for (id, request) in &mut self.advisor_picker.in_flight {
+            if request.timed_out || now.saturating_duration_since(request.sent_at) < REQUEST_TIMEOUT
+            {
+                continue;
+            }
+            request.timed_out = true;
+            if request.session_id != self.remote_session_id {
+                continue;
+            }
+            if request.opens_picker {
+                model_timeout |= self.advisor_picker.request_id == Some(*id);
+            } else {
+                control_timeout = true;
+            }
+        }
+        let picker_open = self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(|picker| picker.is_advisor_picker());
+        model_timeout &= picker_open;
+        if model_timeout {
+            self.cancel_advisor_picker();
+            self.push_display_message(DisplayMessage::error(
+                "Advisor model list did not arrive within 30 seconds. Retry /advisor after the current turn. If it persists, update and reload both the client and server with /reload; for a source build, run jcode self-dev --build.",
+            ));
+        }
+        if control_timeout {
+            self.push_display_message(DisplayMessage::error(
+                "Advisor control confirmation timed out. Its saved outcome is unknown; check /advisor status before retrying. If requests keep timing out, reload the updated client and server with /reload.",
+            ));
+        }
+        model_timeout || control_timeout
+    }
+
     pub(super) fn cancel_advisor_picker(&mut self) {
         self.advisor_picker.pending = None;
         self.advisor_picker.request_id = None;
@@ -114,6 +253,11 @@ impl App {
     }
 
     fn show_advisor_entries(&mut self, entries: Vec<PickerEntry>) {
+        let preview_filter = self
+            .inline_interactive_state
+            .as_ref()
+            .filter(|picker| picker.preview && picker.is_advisor_picker())
+            .map(|picker| picker.filter.clone());
         let selected = entries
             .iter()
             .position(|entry| entry.is_current)
@@ -126,11 +270,17 @@ impl App {
             entries,
             selected,
             column: 0,
-            filter: String::new(),
-            preview: false,
+            filter: preview_filter.clone().unwrap_or_default(),
+            preview: preview_filter.is_some(),
         });
-        self.input.clear();
-        self.cursor_pos = 0;
+        if preview_filter.is_some() {
+            if let Some(picker) = self.inline_interactive_state.as_mut() {
+                Self::apply_inline_interactive_filter(picker);
+            }
+        } else {
+            self.input.clear();
+            self.cursor_pos = 0;
+        }
     }
 
     pub(super) fn queue_advisor_request(&mut self, request: AdvisorRequest) {
@@ -172,6 +322,8 @@ impl App {
                     AdvisorInFlight {
                         session_id: self.remote_session_id.clone(),
                         opens_picker,
+                        sent_at: std::time::Instant::now(),
+                        timed_out: false,
                     },
                 );
                 while self.advisor_picker.in_flight.len() > 64 {

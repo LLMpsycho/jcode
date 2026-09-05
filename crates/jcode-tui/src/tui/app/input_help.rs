@@ -38,7 +38,10 @@ impl App {
                 "/refresh-model-list\nForce-refresh provider model catalogs, update /model, and persist the refreshed cache."
             }
             "agents" => {
-                "/agents\nOpen the agent-model config picker.\n\n/agents <swarm|review|judge|memory|ambient>\nJump straight to that agent role's saved model override."
+                "/agents\nChoose a model, authenticated provider route, and reasoning effort for each agent role.\n\n/agents <main|swarm|advisor|review|judge|memory|ambient>\nOpen that role's picker. Main and advisor affect the current session; swarm, review, judge, memory, and ambient are saved defaults for future work.\n\n/config agents or /config models\nOpen the same role picker."
+            }
+            "advisor" => {
+                "/advisor\nChoose the advisor model and reasoning effort from your available signed-in providers. Selection affects this session's advisor and leaves the main model unchanged.\n\n/advisor status\nShow the active advisor selection.\n\n/advisor inherit\nFollow the main model and effort.\n\n/advisor off\nDisable the advisor for this session."
             }
             "swarm-prompt" => {
                 "/swarm-prompt\nOpen the active swarm routing prompt in $VISUAL or $EDITOR.\n\nJcode uses a nonblank project override at ./.jcode/swarm-prompt.md when present, then ~/.jcode/swarm-prompt.md, then the built-in default. If no editable override exists, this command creates the global file from the built-in default. Restart or reload Jcode after editing because running agent tool registries cache the prompt."
@@ -178,7 +181,7 @@ impl App {
             "changelog" => "/changelog\nShow recent changes embedded in this build.",
             "quit" => "/quit\nExit jcode.",
             "config" => {
-                "/config\nShow active configuration.\n\n/config init\nCreate default config file.\n\n/config edit\nOpen config in $EDITOR."
+                "/config\nShow active configuration.\n\n/config agents or /config models\nChoose models and reasoning effort by role. Main and advisor affect the current session; other role defaults are saved for future work.\n\n/config init\nCreate default config file.\n\n/config edit\nOpen config in $EDITOR."
             }
             "alignment" => {
                 "/alignment\nShow the current alignment and the saved default.\n\n/alignment centered\nSave centered alignment as the default and apply it immediately.\n\n/alignment left\nSave left-aligned mode as the default and apply it immediately.\n\nPress Alt+C anytime to toggle alignment just for the current session."

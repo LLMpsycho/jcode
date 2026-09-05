@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "inline_interactive/agent_models.rs"]
+mod agent_models;
+use agent_models::{picker_agent_target, picker_uses_model_catalog};
+
 #[path = "inline_interactive/helpers.rs"]
 mod helpers;
 #[path = "inline_interactive/openers.rs"]
@@ -20,7 +24,6 @@ use helpers::{
     agent_model_default_summary, agent_model_target_label, catchup_candidates,
     catchup_queue_position, model_entry_base_name, model_entry_saved_spec,
     openrouter_route_model_id, picker_route_model_spec, picker_route_selection,
-    save_agent_model_override,
 };
 
 pub(super) fn subagent_picker_model_spec(entry: &PickerEntry) -> String {
@@ -1091,11 +1094,46 @@ impl App {
     }
 
     pub(super) fn open_model_picker(&mut self) {
+        self.pending_model_picker_load = None;
+        self.inline_interactive_state = None;
         self.open_model_picker_inner(false);
     }
 
     fn open_model_picker_preserving_input(&mut self) {
+        let previous = self.inline_interactive_state.clone();
         self.open_model_picker_inner(true);
+        if let Some(previous) = previous {
+            if let Some(target) = picker_agent_target(&previous) {
+                // Cached, synchronous and loading rebuilds must retain the role.
+                if self
+                    .inline_interactive_state
+                    .as_ref()
+                    .and_then(picker_agent_target)
+                    .is_none()
+                {
+                    self.configure_agent_model_picker(target);
+                }
+            }
+            if let Some(picker) = self.inline_interactive_state.as_mut() {
+                if previous
+                    .entries
+                    .iter()
+                    .any(|entry| matches!(entry.action, PickerAction::SubagentModelChoice { .. }))
+                {
+                    Self::configure_subagent_model_picker(
+                        picker,
+                        self.session.subagent_model.as_deref(),
+                    );
+                }
+                picker.preview = previous.preview;
+                picker.filter = previous.filter;
+                Self::apply_inline_interactive_filter(picker);
+                picker.selected = previous
+                    .selected
+                    .min(picker.filtered.len().saturating_sub(1));
+                picker.column = previous.column.min(picker.max_navigable_column());
+            }
+        }
     }
 
     /// Rebuild an already-open `/model` picker after a fresh catalog arrives.
@@ -1108,7 +1146,7 @@ impl App {
         let picker_open = self
             .inline_interactive_state
             .as_ref()
-            .is_some_and(picker_is_runtime_model_picker);
+            .is_some_and(picker_uses_model_catalog);
         if picker_open && !self.auth_catalog_refresh_pending {
             self.open_model_picker_preserving_input();
         }
@@ -1125,7 +1163,7 @@ impl App {
         let picker_open = self
             .inline_interactive_state
             .as_ref()
-            .is_some_and(picker_is_runtime_model_picker);
+            .is_some_and(picker_uses_model_catalog);
         if was_pending && picker_open {
             self.open_model_picker_preserving_input();
         }
@@ -1393,6 +1431,14 @@ impl App {
     }
 
     pub(super) fn poll_model_picker_load(&mut self) -> bool {
+        if !self
+            .inline_interactive_state
+            .as_ref()
+            .is_some_and(picker_uses_model_catalog)
+        {
+            self.pending_model_picker_load = None;
+            return false;
+        }
         let Some(pending) = self.pending_model_picker_load.as_ref() else {
             return false;
         };
@@ -1930,6 +1976,10 @@ impl App {
             );
         }
 
+        let previous_role = self
+            .inline_interactive_state
+            .as_ref()
+            .and_then(picker_agent_target);
         let previous_picker = self.inline_interactive_state.as_ref().and_then(|picker| {
             if picker.kind == PickerKind::Model {
                 Some((
@@ -1973,6 +2023,9 @@ impl App {
             preview: false,
         });
 
+        if let Some(target) = previous_role {
+            self.configure_agent_model_picker(target);
+        }
         if let Some((preview, filter, selected, column, subagent_model)) = previous_picker
             && let Some(ref mut picker) = self.inline_interactive_state
         {
@@ -2254,6 +2307,9 @@ impl App {
                 Ok(true)
             }
             KeyCode::Enter => {
+                if self.focus_advisor_picker_preview() {
+                    return Ok(true);
+                }
                 if let Some(ref mut picker) = self.inline_interactive_state {
                     if picker.filtered.is_empty() {
                         self.inline_interactive_state = None;
@@ -2291,6 +2347,13 @@ impl App {
                 Ok(true)
             }
             KeyCode::Esc => {
+                if self
+                    .inline_interactive_state
+                    .as_ref()
+                    .is_some_and(|picker| picker.is_advisor_picker())
+                {
+                    self.cancel_advisor_picker();
+                }
                 self.inline_interactive_state = None;
                 self.input.clear();
                 self.cursor_pos = 0;
@@ -3431,6 +3494,11 @@ impl App {
                 let route = &entry.options[entry.selected_option];
 
                 if !route.available {
+                    // Loading and unavailable advisor rows are information,
+                    // not selectable actions. Keep their explanation visible.
+                    if matches!(entry.action, PickerAction::Advisor(None)) {
+                        return Ok(());
+                    }
                     let detail = if route.detail.is_empty() {
                         "not available".to_string()
                     } else {
@@ -3483,41 +3551,7 @@ impl App {
                         target,
                         clear_override,
                     } => {
-                        self.inline_interactive_state = None;
-                        let result = if clear_override {
-                            save_agent_model_override(target, None)
-                        } else {
-                            let spec = model_entry_saved_spec(&entry);
-                            save_agent_model_override(target, Some(&spec))
-                        };
-                        match result {
-                            Ok(()) => {
-                                let label = agent_model_target_label(target);
-                                if clear_override {
-                                    self.push_display_message(DisplayMessage::system(format!(
-                                        "{} model override cleared. It now inherits `{}`.",
-                                        label,
-                                        agent_model_default_summary(target, self)
-                                    )));
-                                    self.set_status_notice(format!("{} model: inherit", label));
-                                } else {
-                                    let spec = model_entry_saved_spec(&entry);
-                                    self.push_display_message(DisplayMessage::system(format!(
-                                        "Saved {} model override: `{}`.",
-                                        label, spec
-                                    )));
-                                    self.set_status_notice(format!("{} model → {}", label, spec));
-                                }
-                            }
-                            Err(error) => {
-                                self.push_display_message(DisplayMessage::error(format!(
-                                    "Failed to save {} model override: {}",
-                                    agent_model_target_label(target),
-                                    error
-                                )));
-                                self.set_status_notice("Agent model save failed");
-                            }
-                        }
+                        self.apply_agent_model_choice(target, clear_override, &entry);
                     }
                     PickerAction::SubagentModelChoice { inherit } => {
                         self.inline_interactive_state = None;

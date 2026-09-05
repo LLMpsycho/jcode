@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+mod agent_models;
+pub use agent_models::{AgentModelRole, ConfigModelRoute};
 mod display;
 pub use display::DisplayConfig;
 pub mod keybindings;
@@ -549,6 +551,8 @@ pub struct AgentsConfig {
     /// string only when you deliberately want every swarm worker pinned to a
     /// specific model regardless of which model spawned them.
     pub swarm_model: Option<String>,
+    /// Exact authenticated catalog route selected through the agent picker.
+    pub swarm_route: Option<ConfigModelRoute>,
     /// Optional default reasoning effort for spawned swarm/subagent sessions
     /// (`"low"`, `"medium"`, `"high"`, ...). Applied when a `swarm spawn`
     /// call does not pass an explicit `effort`. Leave unset to let workers
@@ -569,6 +573,10 @@ pub struct AgentsConfig {
     pub swarm_strip_layout: SwarmStripLayout,
     /// Optional default model override for the memory sidecar.
     pub memory_model: Option<String>,
+    /// Exact authenticated catalog route for memory relevance/extraction.
+    pub memory_route: Option<ConfigModelRoute>,
+    /// Reasoning effort for the memory model, when supported by its route.
+    pub memory_effort: Option<String>,
     /// Whether memory should use the sidecar for relevance/extraction.
     ///
     /// Defaults to `true`: the LLM precision-judge path is the only memory mode
@@ -655,11 +663,14 @@ impl Default for AgentsConfig {
     fn default() -> Self {
         Self {
             swarm_model: None,
+            swarm_route: None,
             swarm_effort: None,
             swarm_spawn_mode: SwarmSpawnMode::default(),
             swarm_gallery_max_pct: None,
             swarm_strip_layout: SwarmStripLayout::default(),
             memory_model: None,
+            memory_route: None,
+            memory_effort: None,
             memory_sidecar_enabled: default_memory_sidecar_enabled(),
             memory_rerank_cadence: default_memory_rerank_cadence(),
             memory_rerank_votes: default_memory_rerank_votes(),
@@ -908,6 +919,10 @@ pub struct AutoReviewConfig {
     pub enabled: bool,
     /// Optional model override for autoreview reviewer sessions.
     pub model: Option<String>,
+    /// Exact authenticated catalog route; takes precedence over the legacy model string.
+    pub route: Option<ConfigModelRoute>,
+    /// Reasoning effort for the selected reviewer model.
+    pub effort: Option<String>,
 }
 
 /// Internal second-model advisor configuration.
@@ -1016,6 +1031,10 @@ pub struct AutoJudgeConfig {
     pub enabled: bool,
     /// Optional model override for autojudge sessions.
     pub model: Option<String>,
+    /// Exact authenticated catalog route; takes precedence over the legacy model string.
+    pub route: Option<ConfigModelRoute>,
+    /// Reasoning effort for the selected judge model.
+    pub effort: Option<String>,
 }
 
 /// Keybinding configuration
@@ -1366,6 +1385,10 @@ pub struct AmbientConfig {
     pub provider: Option<String>,
     /// Model override (default: provider's strongest)
     pub model: Option<String>,
+    /// Exact authenticated catalog route; takes precedence over the legacy model string.
+    pub route: Option<ConfigModelRoute>,
+    /// Reasoning effort for the selected ambient model.
+    pub effort: Option<String>,
     /// Allow API key usage (default: false, only OAuth)
     pub allow_api_keys: bool,
     /// Daily token budget when using API keys
@@ -1390,6 +1413,8 @@ impl Default for AmbientConfig {
             enabled: false,
             provider: None,
             model: None,
+            route: None,
+            effort: None,
             allow_api_keys: false,
             api_daily_budget: None,
             min_interval_minutes: 5,

@@ -113,6 +113,13 @@ impl Agent {
         self.session.provider_key = Some(selection.runtime_key.stable_id());
         self.session.route_api_method = Some(selection.api_method.clone());
         self.session.model = Some(self.provider_model());
+        if self.session.role_model_selection.is_some() {
+            self.session.role_model_selection = Some(crate::config::ConfigModelRoute {
+                model: selection.model.clone(),
+                api_method: selection.api_method.clone(),
+                provider_label: selection.provider_label.clone(),
+            });
+        }
         let event = crate::provider::ProviderStateEvent::selected_model(source, resolved_model);
         self.provider_runtime_state.apply(event);
         self.refresh_compaction_budget();
@@ -134,6 +141,10 @@ impl Agent {
         source: crate::provider::ProviderModelSelectionSource,
     ) -> Result<()> {
         crate::provider::set_model_with_auth_refresh(self.provider.as_ref(), model)?;
+        if source == crate::provider::ProviderModelSelectionSource::User {
+            self.session.role_model_selection = None;
+            self.provider.set_route_pinned(false);
+        }
         let resolved_model = self.provider.model();
         self.session.provider_key =
             crate::provider::MultiProvider::session_provider_key_after_model_switch(

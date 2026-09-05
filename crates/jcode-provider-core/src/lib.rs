@@ -84,6 +84,16 @@ pub trait Provider: Send + Sync {
         resume_session_id: Option<&str>,
     ) -> Result<EventStream>;
 
+    /// Require ordinary completions to remain on the selected runtime/model/account.
+    /// Orchestrators must preserve this setting on private forks and suppress
+    /// automatic failover. Single-runtime providers have no alternate route.
+    fn set_route_pinned(&self, _pinned: bool) {}
+
+    /// Whether this provider orchestrator has automatic route failover disabled.
+    fn route_pinned(&self) -> bool {
+        false
+    }
+
     /// Complete on the selected runtime and account without automatic failover.
     /// Single-runtime providers may use their normal transport. Orchestrators
     /// must override this so helper requests cannot rotate shared credentials.

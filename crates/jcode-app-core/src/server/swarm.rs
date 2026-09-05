@@ -1532,30 +1532,52 @@ pub(super) async fn run_swarm_task(
     prompt: &str,
 ) -> Result<String> {
     let started = Instant::now();
-    let (provider, registry, session_id, working_dir, coordinator_model, provider_key, route) = {
+    let (provider, registry, session_id, working_dir, coordinator) = {
         let agent = agent.lock().await;
         (
             agent.provider_fork(),
             agent.registry(),
             agent.session_id().to_string(),
             agent.working_dir().map(PathBuf::from),
-            agent.provider_model(),
-            agent.session_provider_key(),
-            agent.session_route_api_method(),
+            super::comm_session::CoordinatorSpawnIdentity {
+                model: Some(agent.provider_model()),
+                provider_key: agent.session_provider_key(),
+                route_api_method: agent.session_route_api_method(),
+                subagent_model: agent.subagent_model(),
+                reasoning_effort: agent.provider_handle().reasoning_effort(),
+                is_canary: agent.is_canary(),
+            },
         )
     };
+    let config = &crate::config::Config::load().agents;
+    let role = super::comm_session::swarm_role::resolve(config, &coordinator, None);
+    let model_request = role.selection.model.as_ref().map(|model| {
+        crate::provider::MultiProvider::model_switch_request_for_session_route(
+            model,
+            role.selection.provider_key.as_deref(),
+            role.selection.route_api_method.as_deref(),
+        )
+    });
+    let provider = crate::provider::fork_for_agent_role(
+        provider.as_ref(),
+        role.route.as_ref().and(config.swarm_route.as_ref()),
+        model_request.as_deref(),
+        role.effort.as_deref(),
+    )?;
     let parent_session_id = session_id.clone();
     let mut session = Session::create(
         Some(session_id),
         Some(format!("{} (@{} swarm)", description, subagent_type)),
     );
     let child_session_id = session.id.clone();
-    session.model = Some(coordinator_model);
+    session.model = role.selection.model;
     // Inherit the coordinator's exact auth identity so the forked worker keeps
     // the same provider/auth route (OAuth vs API, openai-compatible profile)
     // instead of silently falling back to the config default on persistence.
-    session.provider_key = provider_key;
-    session.route_api_method = route;
+    session.provider_key = role.selection.provider_key;
+    session.route_api_method = role.selection.route_api_method;
+    session.reasoning_effort = role.effort.clone();
+    session.role_model_selection = role.route.as_ref().and(config.swarm_route.clone());
     if let Some(dir) = working_dir {
         session.working_dir = Some(dir.display().to_string());
     }
@@ -1580,7 +1602,13 @@ pub(super) async fn run_swarm_task(
         .tools
         .apply_to_allowed_set(&mut allowed);
 
-    let mut worker = Agent::new_with_session(provider, registry, session, Some(allowed));
+    let mut worker = Agent::new_with_role_session(provider, registry, session, Some(allowed))?;
+    if let Some(route) = role.route.as_ref() {
+        worker.set_route_selection(route)?;
+    }
+    if let Some(effort) = role.effort.as_deref() {
+        worker.set_reasoning_effort(effort)?;
+    }
     match worker.run_once_capture(prompt).await {
         Ok(output) => {
             log_swarm_lifecycle(

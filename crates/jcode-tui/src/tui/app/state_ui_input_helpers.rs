@@ -48,7 +48,10 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::hidden("/model-status", "Alias for /provider-test-coverage"),
     RegisteredCommand::public("/refresh-model-list", "Refresh provider model catalogs"),
-    RegisteredCommand::public("/agents", "Configure models for agent roles"),
+    RegisteredCommand::public(
+        "/agents",
+        "Choose models and reasoning effort by agent role",
+    ),
     RegisteredCommand::public(
         "/swarm-prompt",
         "Open the active swarm routing prompt in your editor",
@@ -537,16 +540,24 @@ impl App {
             return self.rank_suggestions(input, suggestions);
         }
 
-        if prefix.starts_with("/agents ") {
+        if let Some(base) = ["/agents", "/config agents", "/config models"]
+            .into_iter()
+            .find(|base| prefix.starts_with(&format!("{base} ")))
+        {
             return self.rank_suggestions(
                 input,
-                vec![
-                    ("/agents swarm".into(), "Configure swarm/subagent model"),
-                    ("/agents review".into(), "Configure code review model"),
-                    ("/agents judge".into(), "Configure judge model"),
-                    ("/agents memory".into(), "Configure memory sidecar model"),
-                    ("/agents ambient".into(), "Configure ambient model"),
-                ],
+                [
+                    ("main", "Choose this session's main model and effort"),
+                    ("swarm", "Save the swarm/subagent model and effort"),
+                    ("advisor", "Choose this session's advisor model and effort"),
+                    ("review", "Save the code review model and effort"),
+                    ("judge", "Save the judge model and effort"),
+                    ("memory", "Save the memory sidecar model and effort"),
+                    ("ambient", "Save the ambient model and effort"),
+                ]
+                .into_iter()
+                .map(|(role, description)| (format!("{base} {role}"), description))
+                .collect(),
             );
         }
 
@@ -679,7 +690,7 @@ impl App {
         }
 
         if prefix_trimmed == "/agents" {
-            return vec![("/agents".into(), "Open agent model config picker")];
+            return vec![("/agents".into(), "Choose models and effort by agent role")];
         }
 
         if prefix.starts_with("/help ") || prefix.starts_with("/? ") {
@@ -1087,6 +1098,11 @@ impl App {
             return self.rank_suggestions(
                 input,
                 vec![
+                    (
+                        "/config agents".into(),
+                        "Choose models and effort by agent role",
+                    ),
+                    ("/config models".into(), "Alias for /config agents"),
                     ("/config init".into(), "Create a default config file"),
                     ("/config create".into(), "Alias for /config init"),
                     ("/config edit".into(), "Open the config file in $EDITOR"),

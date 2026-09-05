@@ -28,6 +28,67 @@ impl CompletionMode<'_> {
 }
 
 impl MultiProvider {
+    pub(super) fn set_runtime_route_pinned(&self, provider: ActiveProvider, pinned: bool) {
+        let runtime = match provider {
+            ActiveProvider::Claude => self.anthropic_provider().or_else(|| self.claude_provider()),
+            ActiveProvider::OpenAI => self.openai_provider(),
+            ActiveProvider::Copilot => self.copilot_provider(),
+            ActiveProvider::Antigravity => self.antigravity_provider(),
+            ActiveProvider::Gemini => self.gemini_provider(),
+            ActiveProvider::Cursor => self.cursor_provider(),
+            ActiveProvider::Bedrock => {
+                if let Some(runtime) = self.bedrock_provider() {
+                    runtime.set_route_pinned(pinned);
+                }
+                return;
+            }
+            ActiveProvider::OpenRouter => self.active_openrouter_execution_provider(),
+        };
+        if let Some(runtime) = runtime {
+            runtime.set_route_pinned(pinned);
+        }
+    }
+
+    pub(super) async fn complete_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        mode: CompletionMode<'_>,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let filtered =
+            image_clamp::filter_unsupported_outbound_images(messages, self.supports_image_input());
+        let messages = filtered.as_deref().unwrap_or(messages);
+        let clamped = image_clamp::clamp_outbound_images(messages);
+        let messages = clamped.as_deref().unwrap_or(messages);
+        let selected = self.active_provider();
+        self.reconcile_auth_if_provider_missing(selected);
+        self.set_runtime_route_pinned(selected, true);
+        let stream = match mode {
+            CompletionMode::Unified { system } => {
+                self.complete_on_provider(selected, messages, tools, system, resume_session_id)
+                    .await?
+            }
+            CompletionMode::Split {
+                system_static,
+                system_dynamic,
+            } => {
+                self.complete_split_on_provider(
+                    selected,
+                    messages,
+                    tools,
+                    system_static,
+                    system_dynamic,
+                    resume_session_id,
+                )
+                .await?
+            }
+        };
+        clear_provider_unavailable_for_account(Self::provider_key(selected));
+        self.record_provider_activity(selected);
+        Ok(stream)
+    }
+
     pub(super) fn estimate_request_input(
         messages: &[Message],
         tools: &[ToolDefinition],

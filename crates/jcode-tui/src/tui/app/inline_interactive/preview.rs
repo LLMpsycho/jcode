@@ -117,6 +117,9 @@ impl App {
     }
 
     pub(crate) fn sync_model_picker_preview_from_input(&mut self) {
+        if self.sync_advisor_picker_preview_from_input() {
+            return;
+        }
         let Some(request) = self.inline_picker_preview_request(&self.input) else {
             if self
                 .inline_interactive_state
@@ -179,6 +182,9 @@ impl App {
     }
 
     pub(crate) fn activate_picker_from_preview(&mut self) -> bool {
+        if self.focus_advisor_picker_preview() {
+            return true;
+        }
         if !self
             .inline_interactive_state
             .as_ref()

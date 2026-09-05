@@ -117,6 +117,8 @@ struct DirectTransportConfig {
     headers: std::result::Result<HeaderMap, String>,
     auth_mode: String,
     auth_header: String,
+    #[cfg(test)]
+    oauth_fixture_url: Option<String>,
 }
 
 impl DirectTransportConfig {
@@ -127,6 +129,8 @@ impl DirectTransportConfig {
             auth_mode: direct_auth_mode(),
             auth_header: std::env::var("JCODE_ANTHROPIC_AUTH_HEADER")
                 .unwrap_or_else(|_| "x-api-key".to_string()),
+            #[cfg(test)]
+            oauth_fixture_url: None,
         }
     }
 }
@@ -463,6 +467,7 @@ struct CachedCredentials {
 pub struct AnthropicProvider {
     client: Client,
     model: Arc<std::sync::RwLock<String>>,
+    route_pinned: AtomicBool,
     reasoning_effort: Arc<std::sync::RwLock<Option<String>>>,
     service_tier: Arc<std::sync::RwLock<Option<String>>>,
     /// Cached OAuth credentials (None if using API key)
@@ -516,13 +521,27 @@ impl AnthropicProvider {
         is_oauth: bool,
         selected_model: String,
     ) -> String {
-        if !is_oauth || !selected_model.to_ascii_lowercase().contains("fable") {
+        if self.route_pinned()
+            || !is_oauth
+            || !selected_model.to_ascii_lowercase().contains("fable")
+        {
             return selected_model;
         }
         let Ok(usage) = jcode_base::usage::fetch_usage_for_access_token(token).await else {
             return selected_model;
         };
-        let Some(fallback) = Self::fallback_for_model_scoped_usage(&selected_model, &usage) else {
+        self.model_after_oauth_usage(selected_model, &usage)
+    }
+
+    fn model_after_oauth_usage(
+        &self,
+        selected_model: String,
+        usage: &jcode_base::usage::UsageData,
+    ) -> String {
+        if self.route_pinned() {
+            return selected_model;
+        }
+        let Some(fallback) = Self::fallback_for_model_scoped_usage(&selected_model, usage) else {
             return selected_model;
         };
         jcode_base::logging::warn(&format!(
@@ -627,6 +646,7 @@ impl AnthropicProvider {
         Self {
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model)),
+            route_pinned: AtomicBool::new(false),
             reasoning_effort: Arc::new(std::sync::RwLock::new(reasoning_effort)),
             service_tier: Arc::new(std::sync::RwLock::new(None)),
             credentials: Arc::new(RwLock::new(None)),
@@ -1169,6 +1189,14 @@ fn log_anthropic_canonical_input(
 
 #[async_trait]
 impl Provider for AnthropicProvider {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.route_pinned.store(pinned, Ordering::Relaxed);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.route_pinned.load(Ordering::Relaxed)
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -1240,6 +1268,7 @@ impl Provider for AnthropicProvider {
         let oauth_session_id = self.oauth_session_id.clone();
         let model_state = Arc::clone(&self.model);
         let direct_transport = self.direct_transport.clone();
+        let route_pinned = self.route_pinned();
 
         // Spawn task to handle streaming with retry logic.
         // This includes forced OAuth refresh on auth failures.
@@ -1264,6 +1293,7 @@ impl Provider for AnthropicProvider {
                 oauth_session_id,
                 model_state,
                 direct_transport,
+                route_pinned,
             )
             .await;
         });
@@ -1521,6 +1551,7 @@ impl Provider for AnthropicProvider {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .clone(),
             )),
+            route_pinned: AtomicBool::new(self.route_pinned()),
             reasoning_effort: Arc::new(std::sync::RwLock::new(self.stored_reasoning_effort())),
             service_tier: Arc::new(std::sync::RwLock::new(self.service_tier())),
             credentials: Arc::new(RwLock::new(None)),
@@ -1619,6 +1650,7 @@ impl Provider for AnthropicProvider {
         let oauth_session_id = self.oauth_session_id.clone();
         let model_state = Arc::clone(&self.model);
         let direct_transport = self.direct_transport.clone();
+        let route_pinned = self.route_pinned();
 
         // Spawn task to handle streaming with retry logic
         tokio::spawn(async move {
@@ -1642,6 +1674,7 @@ impl Provider for AnthropicProvider {
                 oauth_session_id,
                 model_state,
                 direct_transport,
+                route_pinned,
             )
             .await;
         });
@@ -1665,6 +1698,7 @@ async fn run_stream_with_retries(
     oauth_session_id: String,
     model_state: Arc<std::sync::RwLock<String>>,
     direct_transport: DirectTransportConfig,
+    route_pinned: bool,
 ) {
     let mut token = initial_token;
     let mut last_error = None;
@@ -1772,6 +1806,22 @@ async fn run_stream_with_retries(
                             return;
                         }
                     }
+                }
+
+                // A chosen role model and effort must fail visibly when the
+                // provider rejects them. Retrying another model or removing
+                // reasoning would silently change the user's orchestration.
+                if route_pinned
+                    && !saw_output
+                    && (is_model_not_found_error(&error_str)
+                        || (is_oauth && is_fable_scoped_limit_error(&model_name, &error_str))
+                        || ((request.thinking.is_some() || request.output_config.is_some())
+                            && is_reasoning_unsupported_error(&error_str)))
+                {
+                    let _ = tx.send(Err(e.context(
+                        "Selected Anthropic model or effort was rejected; automatic substitution is disabled for this role",
+                    ))).await;
+                    return;
                 }
 
                 // Model not found (e.g. a retired or renamed model id): the
@@ -2004,6 +2054,19 @@ async fn stream_response(
         API_URL_OAUTH
     } else {
         direct_transport.api_url.as_str()
+    };
+    // OAuth keeps its fixed production endpoint. Unit tests can exercise its
+    // retry policy with a local HTTP fixture and dummy credentials only.
+    #[cfg(test)]
+    let url = if is_oauth && let Some(fixture_url) = &direct_transport.oauth_fixture_url {
+        let parsed = reqwest::Url::parse(fixture_url)?;
+        anyhow::ensure!(
+            parsed.scheme() == "http" && parsed.host_str() == Some("127.0.0.1"),
+            "OAuth test fixtures must use HTTP loopback"
+        );
+        fixture_url.as_str()
+    } else {
+        url
     };
 
     let mut req = client.post(url);

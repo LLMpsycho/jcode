@@ -2103,3 +2103,6 @@ fn test_anthropic_unknown_content_block_start_does_not_drop_event() {
         );
     }
 }
+
+#[path = "role_pinned_tests.rs"]
+mod role_pinned_tests;

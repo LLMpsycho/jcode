@@ -525,3 +525,294 @@ fn advisor_picker_explains_empty_permitted_catalog() {
         assert!(picker.entries[1].options[0].provider.contains("/login"));
     });
 }
+
+#[test]
+fn advisor_picker_typing_opens_and_filters_before_enter() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_session_id = Some("advisor_typed_preview".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+            let mut reader = tokio::io::BufReader::new(peer);
+            for ch in "/advisor".chars() {
+                app.handle_remote_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut remote)
+                    .await
+                    .unwrap();
+            }
+            let picker = app.inline_interactive_state.as_ref().unwrap();
+            assert!(picker.preview && picker.is_advisor_picker());
+            assert_eq!(app.input, "/advisor");
+            let (id, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["action"], "model_options");
+            for ch in " gpt".chars() {
+                app.handle_remote_key(KeyCode::Char(ch), KeyModifiers::NONE, &mut remote)
+                    .await
+                    .unwrap();
+            }
+            let picker = app.inline_interactive_state.as_ref().unwrap();
+            assert_eq!(picker.filter, "gpt");
+            assert!(
+                !picker.filtered.is_empty(),
+                "loading remains visible while filtering"
+            );
+            app.forward_pending_advisor_request(&mut remote).await;
+            use tokio::io::AsyncBufReadExt;
+            let mut extra = String::new();
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    reader.read_line(&mut extra)
+                )
+                .await
+                .is_err(),
+                "filtering must not repeatedly request the catalog"
+            );
+            app.handle_advisor_result(id, advisor_test_result(None));
+            let picker = app.inline_interactive_state.as_ref().unwrap();
+            assert!(picker.preview);
+            assert_eq!(app.input, "/advisor gpt");
+            assert_eq!(picker.filtered.len(), 1);
+            assert_eq!(
+                picker.entries[picker.filtered[0]].options[0].api_method,
+                "openai-oauth"
+            );
+            app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+                .await
+                .unwrap();
+            let (_, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["action"], "model_options");
+            assert!(request["selection"].is_object());
+            assert!(app.pending_model_switch.is_none());
+            assert!(app.pending_route_selection.is_none());
+        });
+    });
+}
+
+#[test]
+fn advisor_picker_bare_preview_enter_focuses_without_enabling_or_closing_loading() {
+    with_temp_jcode_home(|| {
+        for ready in [false, true] {
+            let mut app = create_test_app();
+            app.is_remote = true;
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let mut remote = crate::tui::backend::RemoteConnection::dummy();
+                let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+                let mut reader = tokio::io::BufReader::new(peer);
+                app.input = "/advisor".into();
+                app.cursor_pos = app.input.len();
+                app.sync_model_picker_preview_from_input();
+                let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+                if ready {
+                    app.handle_advisor_result(id, advisor_test_result(None));
+                }
+                app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+                    .await
+                    .unwrap();
+                let picker = app.inline_interactive_state.as_ref().unwrap();
+                assert!(picker.is_advisor_picker() && !picker.preview);
+                assert!(app.input.is_empty());
+                app.forward_pending_advisor_request(&mut remote).await;
+                use tokio::io::AsyncBufReadExt;
+                let mut line = String::new();
+                assert!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(20),
+                        reader.read_line(&mut line)
+                    )
+                    .await
+                    .is_err(),
+                    "opening /advisor must not enable it"
+                );
+                if !ready {
+                    // A second Enter while the server is still loading must
+                    // not dismiss the only visible progress indication.
+                    app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+                        .await
+                        .unwrap();
+                    assert!(app.inline_interactive_state.is_some());
+                    app.handle_advisor_result(id, advisor_test_result(None));
+                    assert!(
+                        app.inline_interactive_state
+                            .as_ref()
+                            .unwrap()
+                            .is_advisor_picker()
+                    );
+                }
+            });
+        }
+    });
+}
+
+#[test]
+fn advisor_picker_preview_control_input_and_escape_cancel_pending_catalog() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+            let mut reader = tokio::io::BufReader::new(peer);
+            for input in ["/advisor status", "/advisor off", "/model"] {
+                app.input = "/advisor".into();
+                app.cursor_pos = app.input.len();
+                app.sync_model_picker_preview_from_input();
+                let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+                app.input = input.into();
+                app.cursor_pos = app.input.len();
+                app.sync_model_picker_preview_from_input();
+                app.handle_advisor_result(id, advisor_test_result(None));
+                assert!(
+                    !app.inline_interactive_state
+                        .as_ref()
+                        .is_some_and(|picker| picker.is_advisor_picker())
+                );
+            }
+            app.input = "/advisor".into();
+            app.cursor_pos = app.input.len();
+            app.sync_model_picker_preview_from_input();
+            app.handle_remote_key(KeyCode::Esc, KeyModifiers::NONE, &mut remote)
+                .await
+                .unwrap();
+            app.forward_pending_advisor_request(&mut remote).await;
+            assert!(app.inline_interactive_state.is_none());
+            use tokio::io::AsyncBufReadExt;
+            let mut line = String::new();
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(20),
+                    reader.read_line(&mut line)
+                )
+                .await
+                .is_err(),
+                "Escape must cancel the unsent catalog request"
+            );
+        });
+    });
+}
+
+#[test]
+fn advisor_picker_timeout_explains_reload_and_ignores_late_error() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+            let mut reader = tokio::io::BufReader::new(peer);
+            app.queue_advisor_request(crate::protocol::AdvisorRequest::ModelOptions {
+                selection: None,
+            });
+            let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            let now = std::time::Instant::now();
+            assert!(!app.expire_advisor_requests(now));
+            assert!(app.expire_advisor_requests(now + std::time::Duration::from_secs(31)));
+            assert!(app.inline_interactive_state.is_none());
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("/reload")
+            );
+            let messages = app.display_messages.len();
+            assert!(!app.expire_advisor_requests(now + std::time::Duration::from_secs(60)));
+            app.is_processing = true;
+            assert!(app.handle_advisor_request_error(id, "late catalog failure"));
+            assert!(app.is_processing);
+            assert_eq!(app.display_messages.len(), messages);
+            app.queue_advisor_request(crate::protocol::AdvisorRequest::Disable);
+            let (_, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert!(app.expire_advisor_requests(
+                std::time::Instant::now() + std::time::Duration::from_secs(31)
+            ));
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("saved outcome is unknown")
+            );
+        });
+    });
+}
+
+#[test]
+fn advisor_picker_local_and_disconnected_commands_explain_connection_requirement() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        for is_remote in [false, true] {
+            app.is_remote = is_remote;
+            assert!(crate::tui::app::commands_dispatch::dispatch_local_command(
+                &mut app, "/advisor"
+            ));
+            assert!(!app.is_processing);
+            assert!(!app.pending_turn);
+            assert!(app.inline_interactive_state.is_none());
+            let message = &app.display_messages.last().unwrap().content;
+            assert!(message.contains(if is_remote {
+                "live server connection"
+            } else {
+                "regular jcode server session"
+            }));
+        }
+        assert!(!app.handle_unavailable_advisor_command("/advisory"));
+    });
+}
+
+#[test]
+fn advisor_picker_config_aliases_open_roles_and_route_advisor_selection() {
+    with_temp_jcode_home(|| {
+        for command in ["/agents", "/config agents", "/config models"] {
+            let mut app = create_test_app();
+            app.is_remote = true;
+            app.input = command.into();
+            app.cursor_pos = app.input.len();
+            app.submit_input();
+            let picker = app.inline_interactive_state.as_ref().unwrap();
+            for target in [
+                crate::tui::AgentModelTarget::Main,
+                crate::tui::AgentModelTarget::Advisor,
+            ] {
+                assert!(picker.entries.iter().any(|entry| matches!(
+                    entry.action,
+                    crate::tui::PickerAction::AgentTarget(found) if found == target
+                )));
+            }
+            assert!(!app.is_processing);
+        }
+        for command in [
+            "/agents advisor",
+            "/config agents advisor",
+            "/config models advisor",
+        ] {
+            let mut app = create_test_app();
+            app.is_remote = true;
+            app.input = command.into();
+            app.cursor_pos = app.input.len();
+            app.submit_input();
+            assert!(
+                app.inline_interactive_state
+                    .as_ref()
+                    .unwrap()
+                    .is_advisor_picker()
+            );
+            assert!(!app.is_processing);
+            assert!(app.pending_model_switch.is_none());
+        }
+        let mut app = create_test_app();
+        assert!(!crate::tui::app::commands::handle_agents_command(
+            &mut app,
+            "/agents-extra"
+        ));
+        assert!(!crate::tui::app::commands::handle_agents_command(
+            &mut app,
+            "/config models-extra"
+        ));
+    });
+}
