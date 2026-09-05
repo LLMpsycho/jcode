@@ -116,6 +116,42 @@ pub enum ToolExecutionMode {
     Direct,
 }
 
+/// Effects declared by the tool implementation for the actual call. Unknown
+/// implementations fail closed; names and provider-supplied annotations are
+/// never evidence that a tool is safe. Delegates must route every child call
+/// through the registry before it can execute.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolCapability {
+    ReadOnly,
+    WriteFiles,
+    Execute,
+    ExternalEffect,
+    ChangeState,
+    Delegate,
+    #[default]
+    Unknown,
+}
+
+impl ToolCapability {
+    pub fn requires_advisor_clearance(self) -> bool {
+        !matches!(self, Self::ReadOnly | Self::Delegate)
+    }
+
+    /// Safe actions are an explicit allowlist owned by each implementation.
+    /// Absent, malformed, and future actions retain the mutating capability.
+    pub fn for_actions(input: &Value, read_only: &[&str], otherwise: Self) -> Self {
+        if input
+            .get("action")
+            .and_then(Value::as_str)
+            .is_some_and(|action| read_only.contains(&action))
+        {
+            Self::ReadOnly
+        } else {
+            otherwise
+        }
+    }
+}
+
 impl ToolContext {
     pub fn for_subcall(&self, tool_call_id: String) -> Self {
         Self {
@@ -151,6 +187,12 @@ pub trait Tool: Send + Sync {
 
     /// JSON Schema for the input parameters.
     fn parameters_schema(&self) -> Value;
+
+    /// Declare possible effects before execution, including effects selected
+    /// by action/apply arguments. A newly registered tool is gated by default.
+    fn capability(&self, _input: &Value) -> ToolCapability {
+        ToolCapability::Unknown
+    }
 
     /// Execute the tool with the given input.
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput>;

@@ -1,3 +1,7 @@
+#[path = "lsp/diagnostic_output.rs"]
+mod diagnostic_output;
+use diagnostic_output::{diagnostic_evidence, prioritized_diagnostics};
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,6 +81,38 @@ struct LspInput {
 
 #[async_trait]
 impl Tool for LspTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        if input
+            .get("apply")
+            .is_some_and(|v| !v.is_null() && v != &serde_json::Value::Bool(false))
+        {
+            return ToolCapability::WriteFiles;
+        }
+        ToolCapability::for_actions(
+            input,
+            &[
+                "status",
+                "diagnostics",
+                "hover",
+                "definition",
+                "references",
+                "document_symbols",
+                "workspace_symbols",
+                "rename",
+                "rename_file",
+                "code_actions",
+                "implementation",
+                "type_definition",
+                "signature_help",
+                "incoming_calls",
+                "outgoing_calls",
+                "capabilities",
+            ],
+            ToolCapability::Execute,
+        )
+    }
+
     fn name(&self) -> &str {
         "lsp"
     }
@@ -272,7 +308,7 @@ impl Tool for LspTool {
                             &workspace,
                             Some(document.version),
                             text,
-                            json!({"count": items.len()}),
+                            json!({"count": items.len(), "diagnostic_evidence": {"path": file, "freshness": freshness, "items": diagnostic_evidence(items)}}),
                             max_chars,
                             freshness,
                         ))
@@ -683,7 +719,9 @@ fn shaped_output(
     if truncated {
         text = text.chars().take(max_chars).collect::<String>();
         text.push_str("\n… output truncated");
-        items = json!([]);
+        if !matches!(action, LspAction::Diagnostics) {
+            items = json!([]);
+        }
     }
     ToolOutput::new(text)
         .with_title(format!("lsp {}", action.as_str()))
@@ -703,8 +741,8 @@ fn render_diagnostics(items: &[Diagnostic], root: &Path, file: &Path) -> String 
         return "No diagnostics.".to_owned();
     }
     let path = file.strip_prefix(root).unwrap_or(file).display();
-    items
-        .iter()
+    prioritized_diagnostics(items)
+        .into_iter()
         .map(|diagnostic| {
             let severity = match diagnostic.severity {
                 Some(DiagnosticSeverity::ERROR) => "error",

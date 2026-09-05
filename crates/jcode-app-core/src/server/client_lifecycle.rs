@@ -1,4 +1,6 @@
 use super::available_models_dedup::available_models_dedup_key;
+#[path = "processing_completion.rs"]
+mod processing_completion;
 use super::client_actions::{
     AgentTaskContext, NotifySessionContext, handle_agent_task, handle_compact, handle_input_shell,
     handle_notify_session, handle_rename_session, handle_run_subagent, handle_set_feature,
@@ -62,6 +64,7 @@ use crate::transport::Stream;
 use anyhow::Result;
 use futures::FutureExt;
 use jcode_agent_runtime::{InterruptSignal, SoftInterruptSource, StreamError};
+use processing_completion::ProcessingCompletion;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{
@@ -487,7 +490,7 @@ pub(super) async fn handle_client(
     let mut client_is_processing = false;
     let mut crash_on_disconnect = false;
     let (processing_done_tx, mut processing_done_rx) =
-        mpsc::unbounded_channel::<(u64, Result<()>, Option<String>)>();
+        mpsc::unbounded_channel::<ProcessingCompletion>();
     let mut processing_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut processing_message_id: Option<u64> = None;
     let mut processing_session_id: Option<String> = None;
@@ -735,8 +738,9 @@ pub(super) async fn handle_client(
                 }
             }
             done = processing_done_rx.recv() => {
-                if let Some((done_id, result, completion_report)) = done {
+                if let Some((done_id, result, completion_report, ready)) = done {
                     if Some(done_id) != processing_message_id {
+                        let _ = ready.send(false);
                         crate::logging::warn(&format!(
                             "Done event id={} doesn't match processing_message_id={:?}, dropping",
                             done_id, processing_message_id
@@ -812,6 +816,7 @@ pub(super) async fn handle_client(
                             }
                         }
                     }
+                    let _ = ready.send(true);
                 } else {
                     break;
                 }
@@ -1435,11 +1440,12 @@ pub(super) async fn handle_client(
                         let enabled = manager.is_enabled(&session_id, configured);
                         match manager.snapshot(&session_id) {
                             Some(snapshot) => format!(
-                                "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s)",
+                                "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); {}",
                                 if enabled { "on" } else { "off" },
                                 snapshot.status,
                                 snapshot.unresolved_blocking_notes,
-                                manager.notes(&session_id).len()
+                                manager.notes(&session_id).len(),
+                                snapshot.last_error.as_deref().unwrap_or("no error")
                             ),
                             None => format!(
                                 "Advisor: {} (idle); no retained notes",
@@ -1474,36 +1480,38 @@ pub(super) async fn handle_client(
                         }
                     }
                     AdvisorRequest::Dismiss(note_id) => {
-                        if manager.resolve_note(
+                        match manager.resolve_note(
                             &session_id,
                             &note_id,
                             AdvisorNoteDisposition::Dismissed,
                         ) {
-                            format!("Dismissed advisor note {note_id}.")
-                        } else {
-                            format!("Advisor note {note_id} was not found.")
+                            Ok(true) => format!("Dismissed advisor note {note_id}."),
+                            Ok(false) => format!("Advisor note {note_id} was not found."),
+                            Err(error) => error.to_string(),
                         }
                     }
                     AdvisorRequest::Acknowledge(note_id) => {
-                        if manager.resolve_note(
+                        match manager.resolve_note(
                             &session_id,
                             &note_id,
                             AdvisorNoteDisposition::Acknowledged,
                         ) {
-                            format!("Acknowledged advisor note {note_id}.")
-                        } else {
-                            format!("Advisor note {note_id} was not found.")
+                            Ok(true) => format!("Acknowledged advisor note {note_id}."),
+                            Ok(false) => format!("Advisor note {note_id} was not found."),
+                            Err(error) => error.to_string(),
                         }
                     }
-                    AdvisorRequest::Enable => {
-                        manager.set_enabled(&session_id, true);
-                        "Advisor enabled for this session.".to_string()
-                    }
-                    AdvisorRequest::Disable => {
-                        manager.set_enabled(&session_id, false);
-                        "Advisor disabled for this session; future risky tools are released."
-                            .to_string()
-                    }
+                    AdvisorRequest::Enable => match manager.set_enabled(&session_id, true) {
+                        Ok(()) => "Advisor enabled for this session.".to_string(),
+                        Err(error) => error.to_string(),
+                    },
+                    AdvisorRequest::Disable => match manager.set_enabled(&session_id, false) {
+                        Ok(()) => {
+                            "Advisor disabled for this session; future risky tools are released."
+                                .to_string()
+                        }
+                        Err(error) => error.to_string(),
+                    },
                 };
                 let json = encode_event(&ServerEvent::AdvisorResult {
                     id,
@@ -2978,7 +2986,7 @@ async fn start_processing_message(
     state: &mut ProcessingState<'_>,
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-    processing_done_tx: &mpsc::UnboundedSender<(u64, Result<()>, Option<String>)>,
+    processing_done_tx: &mpsc::UnboundedSender<ProcessingCompletion>,
     client_terminal_env: Vec<(String, String)>,
     swarm: &SwarmStatusRefs<'_>,
 ) {
@@ -3117,8 +3125,15 @@ async fn start_processing_message(
                     .and_then(|stream_error| stream_error.retry_after_secs),
             },
         };
-        let _ = tx.send(terminal_event);
-        let _ = done_tx.send((id, result, completion_report));
+        processing_completion::publish(
+            id,
+            result,
+            completion_report,
+            terminal_event,
+            &tx,
+            &done_tx,
+        )
+        .await;
     }));
 }
 

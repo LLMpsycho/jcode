@@ -17,8 +17,13 @@ impl Agent {
             eprintln!("[trace] session_id {}", self.session.id);
         }
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(
+            &self.session.id,
+            &crate::advisor::config_for_current_session(),
+        );
         let result = self.run_turn(true).await.map(|_| ());
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
+            .await;
         result
     }
 
@@ -46,8 +51,13 @@ impl Agent {
             eprintln!("[trace] session_id {}", self.session.id);
         }
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(
+            &self.session.id,
+            &crate::advisor::config_for_current_session(),
+        );
         let result = self.run_turn(false).await;
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
+            .await;
         result
     }
 
@@ -111,11 +121,16 @@ impl Agent {
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
+        crate::advisor::advisor_manager().begin_capture(
+            &self.session.id,
+            &crate::advisor::config_for_current_session(),
+        );
         self.fire_turn_start_hook("chat");
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index);
+        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
+            .await;
         result
     }
 
@@ -207,7 +222,7 @@ impl Agent {
         crate::hooks::dispatch_observer(event);
     }
 
-    fn schedule_advisor_review(
+    async fn schedule_advisor_review(
         &self,
         objective: &str,
         turn_succeeded: bool,
@@ -215,15 +230,25 @@ impl Agent {
     ) {
         let config = crate::advisor::config_for_current_session();
         let manager = crate::advisor::advisor_manager();
-        if !manager.is_enabled(&self.session.id, config.enabled) {
+        if config.max_reviews_per_session == 0
+            || config.max_notes_per_turn == 0
+            || !manager.is_enabled(&self.session.id, config.enabled)
+        {
             return;
         }
-        let input = crate::advisor::AdvisorTurnInput::from_completed_turn(
+        let mut input = crate::advisor::AdvisorTurnInput::from_completed_turn(
             objective,
             self.latest_assistant_text_after(start_message_index),
-            self.get_tool_call_summaries(12),
+            Vec::new(),
             turn_succeeded,
         );
+        manager
+            .enrich_input(
+                &self.session.id,
+                &mut input,
+                self.session.working_dir.as_deref(),
+            )
+            .await;
         let _ = manager.schedule_turn(
             self.session.id.clone(),
             self.provider_fork(),
@@ -305,7 +330,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
-        crate::advisor::advisor_manager().remove(&self.session.id);
+        crate::advisor::advisor_manager().reset_history(&self.session.id);
         self.persist_session_best_effort("conversation rewind");
         Ok(removed)
     }
@@ -324,7 +349,7 @@ impl Agent {
         self.cache_tracker.reset();
         self.locked_tools = None;
         self.reset_tool_output_tracking();
-        crate::advisor::advisor_manager().remove(&self.session.id);
+        crate::advisor::advisor_manager().reset_history(&self.session.id);
         self.persist_session_best_effort("conversation rewind undo");
         Ok(restored)
     }
@@ -709,6 +734,7 @@ impl Agent {
         // Restore provider_session_id for Claude CLI session resume
         self.provider_session_id = session.provider_session_id.clone();
         self.session = session;
+        crate::advisor::advisor_manager().resume(&self.session.id);
         self.refresh_agents_md_snapshot();
         crate::tool::clear_session_tool_policy(&previous_session_id);
         crate::tool::set_session_tool_policy(

@@ -567,6 +567,15 @@ impl SelfDevTool {
 
 #[async_trait]
 impl Tool for SelfDevTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(
+            input,
+            &["status", "find-config", "socket-info", "socket-help"],
+            ToolCapability::Execute,
+        )
+    }
+
     fn name(&self) -> &str {
         "selfdev"
     }

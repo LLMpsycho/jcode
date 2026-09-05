@@ -203,6 +203,10 @@ fn normalize_batch_input(mut input: Value) -> Value {
 
 #[async_trait]
 impl Tool for BatchTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Delegate
+    }
+
     fn name(&self) -> &str {
         "batch"
     }

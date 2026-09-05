@@ -672,19 +672,26 @@ swarm_max_concurrent_agents = 32
 enabled = false
 # interactive | selfdev-guardian | final-review
 mode = "interactive"
-# Optional model-selection request accepted by the active provider. It is
-# applied only to the fork and does not mutate the primary session. Use the
-# same canonical syntax accepted by /model, for example
-# "openrouter:anthropic/claude-sonnet-4".
-# model = "openrouter:anthropic/claude-sonnet-4"
+# Optional explicit model route, taking precedence over the role defaults.
+# Select an available canonical route from /model. Bare model IDs must resolve
+# unambiguously; unavailable or denied routes never fall back to another one.
+# model = "claude-api:claude-sonnet-4"
+# Interactive/selfdev-guardian reviewer role, and final-review verifier role.
+# reviewer_model = "claude-api:claude-sonnet-4"
+# verification_model = "openai-api:gpt-5"
+# Optional endpoint/auth allowlist using exact runtime keys. Empty denies all.
+# Examples: claude-oauth, anthropic-api-key, openai-oauth, openai-api-key,
+# openrouter, openai-compatible:<profile-id>. Omit to inherit provider access.
+# allowed_runtime_keys = ["claude-oauth", "openai-oauth"]
 # Maximum notes delivered for one completed primary turn.
 max_notes_per_turn = 1
 # Review one out of every N completed primary turns. The first turn is reviewed.
 review_every_n_turns = 1
-# Maximum provider reviews started during one session runtime.
+# Lifetime provider review budget, preserved across restart and history resets.
 max_reviews_per_session = 100
+# Skip this many completed turns after ack/dismiss (0 disables, capped at 100).
+handled_note_immunity_turns = 2
 # Minimum severity allowed to mark a future risky operation as blocked.
-# Phase 4's first slice records this policy but does not enforce tool gating yet.
 block_on_severity = "blocker"
 # Redact recognized credentials and secret-like values before advisor context
 # is retained or sent.

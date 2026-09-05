@@ -87,6 +87,7 @@ pub fn redact_secrets(text: &str) -> String {
 
     let direct_patterns = DIRECT_PATTERNS.get_or_init(|| {
         compile_static_regexes(&[
+            r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}",
             r"sk-ant-(?:oat|ort)01-[A-Za-z0-9_-]{20,}",
             r"sk-or-v1-[A-Za-z0-9_-]{20,}",
             r"ghp_[A-Za-z0-9]{20,}",
@@ -138,6 +139,10 @@ pub fn redact_secrets(text: &str) -> String {
             r"(?m)^\s*(GITHUB_TOKEN\s*=\s*)[^\r\n]+",
             r"(?im)^\s*([A-Z][A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|COOKIE)\s*=\s*)[^\r\n]+",
             r"(?im)^\s*(AUTHORIZATION\s*[:=]\s*)[^\r\n]+",
+            // Tool intent and advisor notes may embed assignments mid-sentence.
+            // Bound unquoted values at shell/JSON delimiters; quoted values may
+            // contain spaces. Keep the assignment label for useful evidence.
+            r#"(?i)(\b(?:[A-Z][A-Z0-9_]*_)?(?:API_KEY|TOKEN|SECRET|PASSWORD|COOKIE)\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;\}"']+)"#,
         ])
     });
 

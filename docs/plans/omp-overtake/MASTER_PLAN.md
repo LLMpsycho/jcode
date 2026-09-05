@@ -1533,19 +1533,19 @@ Add a second model that catches requirement drift, unsafe assumptions, incomplet
 
 ## Implementation status
 
-The first advisor foundation slice is implemented on `feat/phase4-advisor-foundation`:
+The foundation and live-session controls from PRs #6/#7 are extended by PR #10
+with bounded evidence enrichment, redacted restart-safe controls, handled-note
+immunity, first-class tool capabilities, permission-aware reviewer/verification
+routing, and an evidence-grounded final-review contract. Deterministic unit tests
+and isolated selfdev/socket acceptance passed for all three modes, including
+restart, actual reload, and concern suppression.
 
-- disabled-by-default typed configuration for all three planned modes;
-- a session-scoped internal `AdvisorManager` connected to streaming and non-streaming turn completion;
-- independent provider forks with an optional advisor model route, without mutating the primary provider;
-- bounded and optionally redacted turn evidence, bounded private context, structured notes, severity policy, deduplication, and per-turn note budgets;
-- safe-boundary delivery through the existing soft-interrupt queue, including preflight delivery before the next provider request;
-- graceful malformed-response/provider failure handling and cleanup when a session closes.
-
-This does **not** complete Phase 4. Remaining work is tracked in
-[`PHASE4_ADVISOR.md`](./PHASE4_ADVISOR.md), especially richer evidence capture,
-resume/rewind/compaction semantics, handled-note immunity, blocker tool gating,
-user controls, and mode-specific final verdict behavior.
+The full Phase 4 acceptance gate remains open until the opt-in live-model probe
+runs with an available provider credential. Local HTTP fixture success is not a
+live-model result. Current implementation, limits, commands, validation provenance,
+and final-head CI status are tracked in
+[`PHASE4_ADVISOR.md`](./PHASE4_ADVISOR.md) and PR #10. The bounded prior-phase audit
+is in [`PHASE0_3_AUDIT.md`](./PHASE0_3_AUDIT.md); it does not start Phases 5–7.
 
 ## 10.1 Integrate at existing turn lifecycle
 

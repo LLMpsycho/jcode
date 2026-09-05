@@ -177,6 +177,23 @@ fn is_mutating(action: &str) -> bool {
 
 #[async_trait]
 impl Tool for ComputerTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(
+            input,
+            &[
+                "screenshot",
+                "ocr",
+                "ui",
+                "find_element",
+                "get_value",
+                "check_permissions",
+                "discover",
+            ],
+            ToolCapability::ExternalEffect,
+        )
+    }
+
     fn name(&self) -> &str {
         "macos_computer_use"
     }

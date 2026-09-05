@@ -132,6 +132,10 @@ fn normalize_read_range(params: &ReadInput) -> Result<NormalizedReadRange> {
 
 #[async_trait]
 impl Tool for ReadTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "read"
     }

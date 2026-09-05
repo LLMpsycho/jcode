@@ -78,6 +78,10 @@ fn payload(input: FeedbackInput) -> Result<String> {
 
 #[async_trait]
 impl Tool for MaintainerFeedbackTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ExternalEffect
+    }
+
     fn name(&self) -> &str {
         "maintainer_feedback"
     }

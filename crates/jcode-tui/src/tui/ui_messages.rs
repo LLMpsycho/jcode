@@ -1709,6 +1709,18 @@ fn render_todo_plan_update(
                     inner_width,
                 )
             }
+            crate::todo::TodoPlanField::AcceptanceCriteria => push_todo_text_update(
+                &mut lines,
+                "Acceptance criteria",
+                update
+                    .after
+                    .as_ref()
+                    .and_then(|plan| plan.acceptance_criteria.as_ref())
+                    .map(|items| items.join("; "))
+                    .as_deref(),
+                base_indent,
+                inner_width,
+            ),
             crate::todo::TodoPlanField::UserIntention => {}
         }
     }

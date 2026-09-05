@@ -45,6 +45,10 @@ struct Section<'a> {
 
 #[async_trait]
 impl Tool for JcodeDocsTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "jcode_docs"
     }

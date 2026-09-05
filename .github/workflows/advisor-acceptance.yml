@@ -1,0 +1,87 @@
+name: Advisor acceptance
+
+on:
+  push:
+    branches: [feat/phase4-advisor-completion-codex-20260904]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/**'
+      - 'scripts/test_advisor*'
+      - '.github/workflows/advisor-acceptance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisor-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  advisor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+      - name: Acceptance report safety and provenance
+        run: python3 scripts/test_advisor_acceptance_tests.py -v
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, rust-analyzer, rust-src
+      - name: Verify real LSP audit dependency
+        run: rust-analyzer --version
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Formatting
+        id: formatting
+        continue-on-error: true
+        run: |
+          cargo fmt --all
+          git diff --binary > "$RUNNER_TEMP/advisor-format.patch"
+          git diff --exit-code
+      - uses: actions/upload-artifact@v4
+        if: steps.formatting.outcome == 'failure'
+        with:
+          name: advisor-format-patch
+          path: ${{ runner.temp }}/advisor-format.patch
+          retention-days: 1
+      - name: Advisor runtime and capability regressions
+        run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor
+      - name: Client completion and stream ordering
+        run: scripts/dev_cargo.sh test --locked -p jcode-app-core --lib server::client_lifecycle
+      - name: Advisor configuration
+        run: scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
+      - name: Tool contracts
+        run: scripts/dev_cargo.sh test --locked -p jcode-tool-core --lib
+      - name: Build isolated selfdev binary
+        id: build
+        run: scripts/dev_cargo.sh build --locked --profile selfdev --bin jcode
+      - uses: actions/upload-artifact@v4
+        with:
+          name: advisor-selfdev-binary
+          path: target/selfdev/jcode
+          retention-days: 1
+      - name: Isolated socket restart, reload, immunity and mode acceptance
+        run: python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode --report "$RUNNER_TEMP/advisor-fixture-report.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: advisor-fixture-report
+          path: ${{ runner.temp }}/advisor-fixture-report.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Phase 0-3 focused audit regressions
+        run: |
+          python3 -m unittest discover -s scripts/competitive_eval/tests -v
+          python3 scripts/check_dependency_boundaries.py
+          scripts/dev_cargo.sh test --locked -p jcode-edit-core -p jcode-lsp -p jcode-dap --lib
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib tool::lsp
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib tool::dap
+      - name: Enforce formatting result
+        if: always() && steps.formatting.outcome == 'failure'
+        run: exit 1

@@ -3,6 +3,33 @@ use crate::message::{Message, ToolDefinition};
 use crate::provider::{EventStream, Provider};
 use jcode_lsp::Position;
 
+#[test]
+fn advisor_diagnostics_keep_errors_before_truncated_hints_and_omit_raw_data() {
+    let hint: Diagnostic = serde_json::from_value(json!({
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+        "severity": 4, "message": "hint", "data": {"private": "raw server data"}
+    }))
+    .expect("diagnostic");
+    let mut diagnostics = vec![hint.clone(); 40];
+    diagnostics.push(Diagnostic {
+        severity: Some(DiagnosticSeverity::ERROR),
+        message: "Critical error OPENAI_API_KEY=fixture-private-value".into(),
+        ..hint
+    });
+    let text = render_diagnostics(
+        &diagnostics,
+        Path::new("/project"),
+        Path::new("/project/a.rs"),
+    );
+    assert!(text.starts_with("error a.rs:1:1: Critical error"));
+    let metadata = diagnostic_evidence(&diagnostics);
+    assert_eq!(metadata.len(), 32);
+    assert_eq!(metadata[0]["severity"], 1);
+    let encoded = serde_json::to_string(&metadata).expect("metadata");
+    assert!(!encoded.contains("raw server data"));
+    assert!(!encoded.contains("fixture-private-value"));
+}
+
 struct MockProvider;
 
 #[async_trait]

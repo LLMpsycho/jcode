@@ -411,6 +411,7 @@ impl Agent {
         session: Session,
         allowed_tools: Option<HashSet<String>>,
     ) -> Self {
+        crate::advisor::advisor_manager().resume(&session.id);
         let tool_selection = if let Some(allowed_tools) = allowed_tools {
             crate::config::ToolSelection {
                 allowed_tools: Some(allowed_tools),

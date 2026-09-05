@@ -33,6 +33,11 @@ struct SidePanelInput {
 
 #[async_trait]
 impl Tool for SidePanelTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(input, &["status", "load"], ToolCapability::ChangeState)
+    }
+
     fn name(&self) -> &str {
         "side_panel"
     }

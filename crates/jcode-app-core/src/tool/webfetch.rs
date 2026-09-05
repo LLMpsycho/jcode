@@ -40,6 +40,10 @@ struct WebFetchInput {
 
 #[async_trait]
 impl Tool for WebFetchTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "webfetch"
     }

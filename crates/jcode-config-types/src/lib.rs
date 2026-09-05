@@ -920,12 +920,21 @@ pub struct AdvisorConfig {
     pub mode: AdvisorMode,
     /// Optional model-selection request applied to the forked provider.
     pub model: Option<String>,
+    /// Optional reviewer role used by interactive and selfdev-guardian modes.
+    pub reviewer_model: Option<String>,
+    /// Optional verification role used by final-review mode.
+    pub verification_model: Option<String>,
+    /// Exact runtime keys allowed to receive advisor evidence. None inherits
+    /// authenticated provider availability; an empty list denies every route.
+    pub allowed_runtime_keys: Option<Vec<String>>,
     /// Maximum notes the advisor may publish for one primary turn.
     pub max_notes_per_turn: usize,
     /// Review one out of every N completed primary turns.
     pub review_every_n_turns: usize,
     /// Maximum provider reviews started during one advisor runtime.
     pub max_reviews_per_session: usize,
+    /// Completed primary turns to skip after a note is handled (default: 2).
+    pub handled_note_immunity_turns: usize,
     /// Minimum severity that may gate a future risky operation.
     pub block_on_severity: AdvisorSeverity,
     /// Redact recognized secrets before advisor context is retained or sent.
@@ -938,9 +947,13 @@ impl Default for AdvisorConfig {
             enabled: false,
             mode: AdvisorMode::Interactive,
             model: None,
+            reviewer_model: None,
+            verification_model: None,
+            allowed_runtime_keys: None,
             max_notes_per_turn: 1,
             review_every_n_turns: 1,
             max_reviews_per_session: 100,
+            handled_note_immunity_turns: 2,
             block_on_severity: AdvisorSeverity::Blocker,
             redact: true,
         }

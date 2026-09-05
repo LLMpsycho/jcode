@@ -92,6 +92,10 @@ struct OpenOutcome {
 
 #[async_trait]
 impl Tool for OpenTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ExternalEffect
+    }
+
     fn name(&self) -> &str {
         "open"
     }

@@ -1,0 +1,68 @@
+name: Advisor live acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'scripts/test_advisor*'
+      - '.github/workflows/advisor-live-acceptance.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: advisor-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    # Only this owned completion PR may start billable calls automatically.
+    # Manual dispatch becomes available once the workflow reaches the default branch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.head.ref == 'feat/phase4-advisor-completion-codex-20260904')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
+      ADVISOR_ACCEPTANCE_MODEL: ${{ vars.ADVISOR_ACCEPTANCE_MODEL || 'gpt-5' }}
+    steps:
+      - name: Require the dedicated live acceptance credential
+        env:
+          OPENAI_API_KEY: ${{ secrets.ADVISOR_ACCEPTANCE_OPENAI_API_KEY }}
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::Configure repository Actions secret ADVISOR_ACCEPTANCE_OPENAI_API_KEY, then rerun this failed job. No provider calls were made."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Verify acceptance report safety
+        run: python3 scripts/test_advisor_acceptance_tests.py -v
+      - name: Build isolated selfdev binary
+        run: scripts/dev_cargo.sh build --locked --profile selfdev --bin jcode
+      - name: Live model verdicts and restart controls in all three modes
+        timeout-minutes: 15
+        env:
+          OPENAI_API_KEY: ${{ secrets.ADVISOR_ACCEPTANCE_OPENAI_API_KEY }}
+        run: |
+          python3 scripts/test_advisor_acceptance.py \
+            --binary target/selfdev/jcode --live \
+            --model "$ADVISOR_ACCEPTANCE_MODEL" \
+            --report "$RUNNER_TEMP/advisor-live-report.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: advisor-live-report
+          path: ${{ runner.temp }}/advisor-live-report.json
+          if-no-files-found: error
+          retention-days: 7

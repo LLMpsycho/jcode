@@ -90,6 +90,15 @@ struct MemoryInput {
 
 #[async_trait]
 impl Tool for MemoryTool {
+    fn capability(&self, input: &serde_json::Value) -> crate::tool::ToolCapability {
+        use crate::tool::ToolCapability;
+        ToolCapability::for_actions(
+            input,
+            &["recall", "search", "list", "related"],
+            ToolCapability::ChangeState,
+        )
+    }
+
     fn name(&self) -> &str {
         "memory"
     }

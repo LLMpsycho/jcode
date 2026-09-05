@@ -50,6 +50,10 @@ struct EditInput {
 
 #[async_trait]
 impl Tool for EditTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::WriteFiles
+    }
+
     fn name(&self) -> &str {
         "edit"
     }

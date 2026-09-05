@@ -45,6 +45,10 @@ struct DirEntry {
 
 #[async_trait]
 impl Tool for LsTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::ReadOnly
+    }
+
     fn name(&self) -> &str {
         "ls"
     }

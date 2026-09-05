@@ -840,6 +840,10 @@ mod destructive_gate;
 use destructive_gate::destructive_command_refusal;
 #[async_trait]
 impl Tool for BashTool {
+    fn capability(&self, _input: &serde_json::Value) -> crate::tool::ToolCapability {
+        crate::tool::ToolCapability::Execute
+    }
+
     fn name(&self) -> &str {
         "bash"
     }
@@ -853,7 +857,11 @@ impl Tool for BashTool {
     }
 
     fn parameters_schema(&self) -> Value {
-        destructive_gate::bash_parameters_schema()
+        let mut schema = destructive_gate::bash_parameters_schema();
+        schema["properties"]["verification"] = serde_json::json!({
+            "type": "boolean", "description": "Mark this command as an explicit verification check; its actual exit status will be recorded."
+        });
+        schema
     }
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
@@ -1053,7 +1061,9 @@ impl BashTool {
                     output.push_str(&stderr);
                 }
                 let output = format_command_output(output, status.code());
-                Ok(ToolOutput::new(output).with_title(title_for_work))
+                Ok(ToolOutput::new(output)
+                    .with_title(title_for_work)
+                    .with_exit_code(status.code()))
             });
 
         match tokio::time::timeout(timeout_duration, &mut work_handle).await {
@@ -1163,12 +1173,14 @@ impl BashTool {
                 let _ = tokio::fs::remove_file(&info.output_file).await;
                 let _ = tokio::fs::remove_file(&info.status_file).await;
                 return Ok(
-                    ToolOutput::new(format_command_output(output, status.code())).with_title(
-                        params
-                            .intent
-                            .clone()
-                            .unwrap_or_else(|| params.command.clone()),
-                    ),
+                    ToolOutput::new(format_command_output(output, status.code()))
+                        .with_title(
+                            params
+                                .intent
+                                .clone()
+                                .unwrap_or_else(|| params.command.clone()),
+                        )
+                        .with_exit_code(status.code()),
                 );
             }
 
