@@ -104,6 +104,7 @@ pub(super) fn apply_override(
     config: &AdvisorConfig,
     selection: Option<&model_selection::AdvisorModelOverride>,
 ) -> Result<()> {
+    provider.prepare_private_session();
     match selection {
         Some(model_selection::AdvisorModelOverride::Selected {
             selection,
@@ -122,6 +123,8 @@ pub(super) fn apply_override(
         Some(model_selection::AdvisorModelOverride::Primary) => {
             let mut inherited = config.clone();
             inherited.model = None;
+            inherited.route = None;
+            inherited.effort = None;
             inherited.reviewer_model = None;
             inherited.verification_model = None;
             apply(provider, &inherited)
@@ -129,6 +132,7 @@ pub(super) fn apply_override(
         None => apply(provider, config),
     }?;
     require_toolless(provider)?;
+    provider.restrict_to_explicit_tools()?;
     if provider
         .reasoning_effort()
         .as_deref()
@@ -143,9 +147,26 @@ pub(super) fn apply_override(
 /// existing structured selection API on the private fork. No primary prefix,
 /// credential pin, or default provider is mutated. Failed roles never fall back.
 pub(super) fn apply(provider: &dyn Provider, config: &AdvisorConfig) -> Result<()> {
+    if let Some(route) = &config.route {
+        let route = provider
+            .model_routes()
+            .into_iter()
+            .find(|candidate| {
+                candidate.model == route.model
+                    && candidate.api_method == route.api_method
+                    && candidate.provider == route.provider_label
+                    && permitted(candidate, config)
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("configured advisor route is unavailable or not permitted")
+            })?;
+        let canonical = catalog_selection(&route)?;
+        provider.set_route_selection(&canonical)?;
+        return apply_effort(provider, config);
+    }
     let request = role_request(config);
     if request.is_none() && config.allowed_runtime_keys.is_none() {
-        return Ok(()); // Inherit the already-selected primary route unchanged.
+        return apply_effort(provider, config); // Inherit the primary route unchanged.
     }
     let current_model = provider.model();
     let requested = request.unwrap_or(&current_model).trim();
@@ -181,6 +202,16 @@ pub(super) fn apply(provider: &dyn Provider, config: &AdvisorConfig) -> Result<(
     }
     if request.is_some() {
         provider.set_route_selection(&RouteSelection::from_model_route(&routes[0]))?;
+    }
+    apply_effort(provider, config)
+}
+
+fn apply_effort(provider: &dyn Provider, config: &AdvisorConfig) -> Result<()> {
+    if let Some(effort) = &config.effort {
+        if !efforts(provider).contains(effort) {
+            bail!("reasoning effort is not supported by the selected advisor model");
+        }
+        provider.set_reasoning_effort(effort)?;
     }
     Ok(())
 }
@@ -351,5 +382,42 @@ mod tests {
         };
         assert!(apply(&primary, &config).is_err());
         assert!(primary.selected.lock().expect("selection").is_none());
+    }
+    #[test]
+    fn named_config_exact_route_never_falls_back_or_bypasses_permissions() {
+        let primary = provider();
+        let config = AdvisorConfig {
+            model: Some("verifier".into()),
+            route: Some(crate::config::ConfigModelRoute {
+                model: "reviewer".into(),
+                api_method: "openai-api".into(),
+                provider_label: "OpenAI".into(),
+            }),
+            allowed_runtime_keys: Some(vec!["openai-api-key".into()]),
+            ..Default::default()
+        };
+        let fork = primary.fork();
+        apply(fork.as_ref(), &config).expect("exact authenticated route");
+        assert!(primary.selected.lock().unwrap().is_none());
+        let denied = AdvisorConfig {
+            allowed_runtime_keys: Some(vec!["openai-oauth".into()]),
+            ..config.clone()
+        };
+        assert!(apply(&primary, &denied).is_err());
+        assert!(primary.selected.lock().unwrap().is_none());
+        let unavailable = AdvisorConfig {
+            route: Some(crate::config::ConfigModelRoute {
+                api_method: "openai-oauth".into(),
+                ..config.route.clone().unwrap()
+            }),
+            ..config.clone()
+        };
+        assert!(apply(&primary, &unavailable).is_err());
+        assert!(primary.selected.lock().unwrap().is_none());
+        let unsupported_effort = AdvisorConfig {
+            effort: Some("swarm-deep".into()),
+            ..config
+        };
+        assert!(apply(fork.as_ref(), &unsupported_effort).is_err());
     }
 }

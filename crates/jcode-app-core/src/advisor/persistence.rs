@@ -21,6 +21,14 @@ struct Checkpoint {
     #[serde(default)]
     immunity_turns: u64,
     notes: VecDeque<AdvisorNoteMetadata>,
+    #[serde(default)]
+    concerns: suppression::ConcernLedger,
+    #[serde(default)]
+    mode: AdvisorMode,
+    #[serde(default)]
+    max_reviews: u64,
+    #[serde(default)]
+    interruption_immunity_until_turn: u64,
 }
 
 impl AdvisorManager {
@@ -53,6 +61,10 @@ impl AdvisorManager {
             immunity_until_turn: runtime.immunity_until_turn,
             immunity_turns: runtime.immunity_turns,
             notes: runtime.notes.iter().cloned().map(sanitize_note).collect(),
+            concerns: runtime.concerns.clone(),
+            mode: runtime.mode,
+            max_reviews: runtime.max_reviews,
+            interruption_immunity_until_turn: runtime.interruption_immunity_until_turn,
         };
         let result = save(&path, &checkpoint);
         runtime.persistence_failed = result.is_err();
@@ -89,6 +101,11 @@ impl AdvisorManager {
                         immunity_until_turn: checkpoint.immunity_until_turn,
                         immunity_turns: checkpoint.immunity_turns.min(100),
                         notes: checkpoint.notes,
+                        concerns: checkpoint.concerns,
+                        mode: checkpoint.mode,
+                        max_reviews: checkpoint.max_reviews,
+                        interruption_immunity_until_turn: checkpoint
+                            .interruption_immunity_until_turn,
                         ..AdvisorRuntime::default()
                     },
                 );
@@ -109,6 +126,25 @@ impl AdvisorManager {
     /// Changed transcript invalidates review context and notes, but does not
     /// revoke a user's disable or replenish the session's provider budget.
     pub fn reset_history(&self, session: &str) {
+        let keys: Vec<_> = self
+            .sessions
+            .lock()
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .filter(|(key, runtime)| {
+                        key.as_str() == session || runtime.owner_session_id == session
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        for key in keys {
+            self.reset_one_history(&key);
+        }
+    }
+
+    fn reset_one_history(&self, session: &str) {
         let Ok(mut sessions) = self.sessions.lock() else {
             return;
         };
@@ -117,6 +153,12 @@ impl AdvisorManager {
         };
         clear_queued_notes(&previous);
         let mut runtime = AdvisorRuntime {
+            owner_session_id: previous.owner_session_id.clone(),
+            advisor_label: previous.advisor_label.clone(),
+            mode: previous.mode,
+            max_reviews: previous.max_reviews,
+            interruption_immunity_until_turn: previous.interruption_immunity_until_turn,
+            interruption_immunity_turns: previous.interruption_immunity_turns,
             immunity_until_turn: previous.immunity_until_turn,
             immunity_turns: previous.immunity_turns,
             enabled_override: previous.enabled_override,
@@ -188,6 +230,7 @@ fn load(path: &Path) -> Result<Option<Checkpoint>> {
         }
     }
     checkpoint.notes = checkpoint.notes.into_iter().map(sanitize_note).collect();
+    checkpoint.concerns.validate()?;
     Ok(Some(checkpoint))
 }
 

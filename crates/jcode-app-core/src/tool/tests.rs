@@ -60,7 +60,7 @@ impl Provider for BlockingNoteProvider {
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> anyhow::Result<EventStream> {
-        assert!(tools.is_empty());
+        assert!(tools.iter().all(|tool| tool.name == "advise"));
         Ok(Box::pin(stream::iter(vec![
             Ok(StreamEvent::TextDelta(
                 r#"{"severity":"blocker","summary":"verify first","evidence":[],"recommended_action":"acknowledge after verification","blocking":true}"#.to_string(),
@@ -365,6 +365,7 @@ async fn advisor_gate_applies_to_risky_calls_nested_inside_batch() {
         crate::advisor::AdvisorTurnInput::default(),
         crate::config::AdvisorConfig {
             enabled: true,
+            mode: crate::config::AdvisorMode::SelfdevGuardian,
             ..crate::config::AdvisorConfig::default()
         },
     ));

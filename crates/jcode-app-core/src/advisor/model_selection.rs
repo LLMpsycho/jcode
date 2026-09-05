@@ -23,7 +23,10 @@ impl AdvisorManager {
     ) -> AdvisorModelSettings {
         let selected = self.model_override(session);
         let follows_primary = matches!(selected, Some(AdvisorModelOverride::Primary))
-            || (selected.is_none() && routing::role_request(config).is_none());
+            || (selected.is_none()
+                && config.route.is_none()
+                && config.effort.is_none()
+                && routing::role_request(config).is_none());
         let (selection, reasoning_effort) = match selected {
             Some(AdvisorModelOverride::Selected {
                 selection,
@@ -52,14 +55,36 @@ impl AdvisorManager {
                 reasoning_effort.as_deref().unwrap_or("provider default")
             ),
             Some(AdvisorModelOverride::Primary) => "model and effort follow primary".into(),
-            None => routing::role_request(config)
-                .map(|model| {
+            None => {
+                if let Some(route) = &config.route {
                     format!(
-                        "configured model {}",
-                        truncate_utf8(redact_secrets(model), 256)
+                        "configured model {} via {} ({}); effort {}",
+                        truncate_utf8(redact_secrets(&route.model), 256),
+                        truncate_utf8(redact_secrets(&route.provider_label), 256),
+                        truncate_utf8(redact_secrets(&route.api_method), 256),
+                        truncate_utf8(
+                            redact_secrets(config.effort.as_deref().unwrap_or("provider default")),
+                            256
+                        )
                     )
-                })
-                .unwrap_or_else(|| "model and effort follow primary".into()),
+                } else if let Some(model) = routing::role_request(config) {
+                    format!(
+                        "configured model {}; effort {}",
+                        truncate_utf8(redact_secrets(model), 256),
+                        truncate_utf8(
+                            redact_secrets(config.effort.as_deref().unwrap_or("provider default")),
+                            256
+                        )
+                    )
+                } else if let Some(effort) = &config.effort {
+                    format!(
+                        "model follows primary; effort {}",
+                        truncate_utf8(redact_secrets(effort), 256)
+                    )
+                } else {
+                    "model and effort follow primary".into()
+                }
+            }
         }
     }
 
@@ -92,7 +117,10 @@ impl AdvisorManager {
     ) -> AdvisorModelSettings {
         let selected = self.model_override(session);
         let follows_primary = matches!(selected, Some(AdvisorModelOverride::Primary))
-            || (selected.is_none() && routing::role_request(config).is_none());
+            || (selected.is_none()
+                && config.route.is_none()
+                && config.effort.is_none()
+                && routing::role_request(config).is_none());
         let enabled = self.is_enabled(session, config.enabled);
         if let Some(AdvisorModelOverride::Selected {
             selection,
@@ -243,6 +271,7 @@ impl AdvisorManager {
         runtime.pending = None;
         runtime.active_review_id = 0;
         runtime.private_context.clear();
+        runtime.history = super::history::AdvisorHistory::default();
         clear_queued_notes(runtime);
         runtime.status = AdvisorStatus::Idle;
         runtime.last_error = None;

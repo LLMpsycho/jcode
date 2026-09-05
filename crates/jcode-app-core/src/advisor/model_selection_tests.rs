@@ -95,7 +95,10 @@ impl Provider for CatalogProvider {
         _: &str,
         _: Option<&str>,
     ) -> Result<EventStream> {
-        assert!(tools.is_empty(), "advisor must remain toolless");
+        assert!(
+            tools.iter().all(|tool| tool.name == "advise"),
+            "advisor only receives explicitly granted tools"
+        );
         assert!(!self.internal_tools, "unsafe provider must not be called");
         self.calls.lock().expect("calls").push((
             self.selected.lock().expect("model").clone(),
@@ -371,6 +374,8 @@ async fn choosing_a_model_cancels_active_and_pending_reviews_without_losing_note
                 input: AdvisorTurnInput::default(),
                 config: AdvisorConfig::default(),
                 model_override: None,
+                context: AdvisorUpdateContext::default(),
+                cancellation: tokio_util::sync::CancellationToken::new(),
             }),
             ..AdvisorRuntime::default()
         },
@@ -382,6 +387,8 @@ async fn choosing_a_model_cancels_active_and_pending_reviews_without_losing_note
         input: AdvisorTurnInput::default(),
         config: AdvisorConfig::default(),
         model_override: None,
+        context: AdvisorUpdateContext::default(),
+        cancellation: tokio_util::sync::CancellationToken::new(),
     };
     let task = tokio::spawn(async move { running.run_review("stale".into(), 42, pending).await });
     provider.started.notified().await;
