@@ -82,14 +82,30 @@ jobs:
           git apply --check "$RUNNER_TEMP/audit.patch"
           git apply "$RUNNER_TEMP/audit.patch"
           python3 .github/audit-followup.py
+          python3 .github/audit-finalize.py
           cargo fmt --all
-          git rm .github/audit-patch.b64 .github/audit-followup.py .github/workflows/audit-apply.yml
+          git rm .github/audit-patch.b64 .github/audit-followup.py .github/audit-finalize.py .github/workflows/audit-apply.yml
           git add .github/workflows crates/jcode-tui scripts/test_workflow_yaml.py
           git diff --cached --check
+          git diff --exit-code
           git diff --cached --stat
           git diff --cached --binary > "$RUNNER_TEMP/audit-candidate.patch"
           git diff --cached --name-only --diff-filter=ACM > "$RUNNER_TEMP/audit-candidate-files.txt"
           tar -czf "$RUNNER_TEMP/audit-candidate.tar.gz" -T "$RUNNER_TEMP/audit-candidate-files.txt"
+          python3 - <<'PY'
+          import subprocess
+          from pathlib import Path
+          base = '97107d565165c6ad5ef5ea2d7899a03c44dd1c16'
+          paths = subprocess.check_output(['git','diff','--cached','--name-only','--diff-filter=ACM'], text=True).splitlines()
+          for path in paths:
+              if not path.endswith('.rs'):
+                  continue
+              old = subprocess.run(['git','show',f'{base}:{path}'], text=True, capture_output=True)
+              before = len(old.stdout.splitlines()) if old.returncode == 0 else 0
+              after = len(Path(path).read_text().splitlines())
+              assert after <= max(1200, before), (path, before, after)
+          print('No changed oversized Rust file grew; no new oversized Rust files.')
+          PY
       - name: Run patched review and existing advisor regressions
         shell: bash
         run: |
