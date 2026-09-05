@@ -58,12 +58,15 @@ jobs:
       - name: Advisor configuration
         run: scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
       - name: Advisor picker and wire compatibility
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
           scripts/dev_cargo.sh test --locked -p jcode-protocol --lib advisor
           scripts/dev_cargo.sh test --locked -p jcode-tui --lib advisor -- --test-threads=1
       - name: Advisor provider fork isolation
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: scripts/dev_cargo.sh test --locked -p jcode-provider-copilot-runtime --lib advisor_fork -- --test-threads=1
       - name: Tool-free subscription reviews and normal hosted tools
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib advisor_chatgpt
           scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib image_generation
