@@ -115,6 +115,62 @@ fn selected_route() -> ConfigModelRoute {
     }
 }
 
+#[test]
+fn new_memory_role_reads_external_config_edit_without_cache_delay() {
+    let _lock = crate::storage::lock_test_env();
+    struct RestoreEnv(Vec<(&'static str, Option<std::ffi::OsString>)>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => crate::env::set_var(key, value),
+                    None => crate::env::remove_var(key),
+                }
+            }
+            crate::config::Config::invalidate_cache();
+        }
+    }
+    let _restore = RestoreEnv(
+        ["JCODE_HOME", "JCODE_MEMORY_MODEL", "JCODE_MEMORY_EFFORT"]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+    );
+    let temp = tempfile::tempdir().unwrap();
+    crate::env::set_var("JCODE_HOME", temp.path());
+    crate::env::remove_var("JCODE_MEMORY_MODEL");
+    crate::env::remove_var("JCODE_MEMORY_EFFORT");
+    let path = temp.path().join("config.toml");
+    let old = "[agents]\nmemory_model = \"old-role-model\"\nmemory_effort = \"low\" \n";
+    let new = "[agents]\nmemory_model = \"new-role-model\"\nmemory_effort = \"high\"\n";
+    assert_eq!(old.len(), new.len());
+    std::fs::write(&path, old).unwrap();
+    crate::config::Config::invalidate_cache();
+    assert_eq!(
+        crate::config::config().agents.memory_model.as_deref(),
+        Some("old-role-model")
+    );
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    // Simulate another process without invalidating this process's cache.
+    // Keep its fingerprint unchanged to make the stale-cache condition
+    // deterministic even though tests disable the normal 500 ms throttle.
+    std::fs::write(&path, new).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(
+        crate::config::config().agents.memory_model.as_deref(),
+        Some("old-role-model")
+    );
+    let sidecar = Sidecar::new();
+    assert_eq!(sidecar.model_name(), "new-role-model");
+    assert_eq!(sidecar.reasoning_override.as_deref(), Some("high"));
+}
+
 #[tokio::test]
 async fn explicit_memory_route_and_effort_are_used_without_changing_the_primary() {
     let primary = Arc::new(RoleProvider::new(true));

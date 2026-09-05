@@ -165,7 +165,7 @@ impl Sidecar {
     /// Create a new sidecar client, auto-selecting the best available backend.
     /// Prefers OpenAI (GPT-5.6 Luna with no reasoning) if creds exist, falls back to Claude.
     pub fn new() -> Self {
-        let agents = &crate::config::config().agents;
+        let agents = &crate::config::Config::load().agents;
         if agents.memory_route.is_some()
             || agents.memory_model.is_some()
             || agents.memory_effort.is_some()

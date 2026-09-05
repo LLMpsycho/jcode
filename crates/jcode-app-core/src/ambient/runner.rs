@@ -917,7 +917,7 @@ impl AmbientRunnerHandle {
         &self,
         provider: &Arc<dyn Provider>,
     ) -> anyhow::Result<(AmbientCycleResult, String, String)> {
-        let ambient = &config().ambient;
+        let ambient = &crate::config::Config::load().ambient;
         let cycle_provider = fork_ambient_provider(provider.as_ref(), ambient)?;
         let result = self
             .run_cycle_with_visible_launcher(&cycle_provider, ambient.visible, || {

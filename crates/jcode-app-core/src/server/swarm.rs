@@ -1549,7 +1549,7 @@ pub(super) async fn run_swarm_task(
             },
         )
     };
-    let config = &crate::config::config().agents;
+    let config = &crate::config::Config::load().agents;
     let role = super::comm_session::swarm_role::resolve(config, &coordinator, None);
     let model_request = role.selection.model.as_ref().map(|model| {
         crate::provider::MultiProvider::model_switch_request_for_session_route(

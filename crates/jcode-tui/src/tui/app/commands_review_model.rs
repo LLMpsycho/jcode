@@ -17,7 +17,7 @@ pub(crate) struct ReviewModelSelection {
 
 impl ReviewModelSelection {
     pub(super) fn for_role(app: &App, label: &str) -> Result<Self> {
-        let config = crate::config::config();
+        let config = crate::config::Config::load();
         let (route, model, effort) = match label.to_ascii_lowercase().as_str() {
             "review" | "autoreview" => (
                 config.autoreview.route.as_ref(),
