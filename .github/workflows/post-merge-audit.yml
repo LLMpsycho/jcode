@@ -1,0 +1,76 @@
+name: Post-merge audit
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/jcode-tui/**'
+      - 'crates/jcode-base/src/session.rs'
+      - 'crates/jcode-base/src/session/**'
+      - 'crates/jcode-base/src/session_tests/**'
+      - 'crates/jcode-app-core/src/server/client_actions*'
+      - '.github/workflows/**'
+      - 'scripts/test_workflow_yaml.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m pip install PyYAML==6.0.2
+      - name: Reject duplicate workflow mapping keys
+        run: python3 scripts/test_workflow_yaml.py -v
+
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Formatting and module layout
+        run: |
+          cargo fmt --all -- --check
+          python3 scripts/check_module_files.py
+      - name: Child durability and persisted routing regressions
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib session:: -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib post_merge_fork -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib clone_split_session -- --test-threads=1
+      - name: Remote review, prompt forks and role routing regressions
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib post_merge_review -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib review_role -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib queue_autojudge_remote -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib prepare_review_spawned_session -- --test-threads=1
+      - name: Remote and advisor behavior remain intact
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib remote_ -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib advisor -- --test-threads=1
+      - name: Dependency boundaries
+        run: python3 scripts/check_dependency_boundaries.py

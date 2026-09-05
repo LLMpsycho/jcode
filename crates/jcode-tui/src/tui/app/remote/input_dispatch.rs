@@ -55,6 +55,8 @@ pub(in crate::tui::app) async fn begin_remote_send(
         retry_attempts,
         retry_at: None,
     });
+    // A fresh turn invalidates unsent reviews of an older transcript.
+    app.pending_automatic_reviews.clear();
     app.autoreview_after_current_turn = !is_system;
     app.autojudge_after_current_turn = !is_system;
     remote.reset_call_output_tokens_seen();
@@ -178,6 +180,10 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
         return Ok(());
     }
 
+    if super::review_controls::dispatch(app, remote, raw_input.trim()).await {
+        return Ok(());
+    }
+
     // Text that merely starts with `/` is not necessarily a command. A terminal
     // file drop (`/tmp/shot.png`) or a bare path (`/home/me/notes`) is ordinary
     // user input. Routing those through `App::submit_input` stages a *local*
@@ -258,6 +264,10 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
     remote: &mut RemoteConnection,
     prepared: input::PreparedInput,
 ) -> Result<()> {
+    if super::super::commands_review::review_split_pending(app) {
+        restore_prepared_remote_input(app, prepared);
+        anyhow::bail!("A session launch is already pending; the prompt was restored.");
+    }
     app.route_next_prompt_to_new_session = false;
     app.pending_split_startup_message = None;
     app.pending_split_prompt = Some(PendingSplitPrompt {
@@ -273,7 +283,11 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
     app.pending_split_request = false;
     if app.is_processing {
         app.set_status_notice("Prompt launching in new session");
-        if let Err(error) = remote.split().await {
+        let split_result = remote.split().await;
+        if let Ok(id) = &split_result {
+            app.pending_split_request_id = Some(*id);
+        }
+        if let Err(error) = split_result {
             let pending = app
                 .pending_split_prompt
                 .take()
@@ -295,7 +309,11 @@ pub(in crate::tui::app) async fn route_prepared_input_to_new_remote_session(
     }
 
     begin_remote_split_launch(app, "Prompt");
-    if let Err(error) = remote.split().await {
+    let split_result = remote.split().await;
+    if let Ok(id) = &split_result {
+        app.pending_split_request_id = Some(*id);
+    }
+    if let Err(error) = split_result {
         finish_remote_split_launch(app);
         let pending = app
             .pending_split_prompt

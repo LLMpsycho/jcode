@@ -1372,241 +1372,7 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if trimmed == "/autoreview" || trimmed == "/autoreview status" {
-                    app.push_display_message(DisplayMessage::system(
-                        app_mod::commands::autoreview_status_message(app),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autojudge" || trimmed == "/autojudge status" {
-                    app.push_display_message(DisplayMessage::system(
-                        app_mod::commands::autojudge_status_message(app),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autoreview on" {
-                    remote
-                        .set_feature(crate::protocol::FeatureToggle::Autoreview, true)
-                        .await?;
-                    app.set_autoreview_feature_enabled(true);
-                    app.set_status_notice("Autoreview: ON");
-                    app.push_display_message(DisplayMessage::system(
-                        "Autoreview enabled for this session.".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autoreview off" {
-                    remote
-                        .set_feature(crate::protocol::FeatureToggle::Autoreview, false)
-                        .await?;
-                    app.set_autoreview_feature_enabled(false);
-                    app.set_status_notice("Autoreview: OFF");
-                    app.push_display_message(DisplayMessage::system(
-                        "Autoreview disabled for this session.".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autoreview now" {
-                    let parent_session_id =
-                        app_mod::commands::current_feedback_target_session_id(app);
-                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
-                        app,
-                        "Autoreview",
-                        parent_session_id.clone(),
-                        app_mod::commands::build_autoreview_startup_message(&parent_session_id),
-                    ) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to queue autoreview: {error}"
-                        )));
-                        return Ok(());
-                    }
-                    if app.is_processing {
-                        app.set_status_notice("Autoreview queued");
-                    } else {
-                        app.pending_split_request = false;
-                        begin_remote_split_launch(app, "Autoreview");
-                        if let Err(error) = remote.split().await {
-                            finish_remote_split_launch(app);
-                            app.pending_split_startup_message = None;
-                            app.pending_split_parent_session_id = None;
-                            app.pending_split_prompt = None;
-                            app.pending_split_model_override = None;
-                            app.pending_split_role_selection = None;
-                            app.pending_split_provider_key_override = None;
-                            app.pending_split_label = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to launch autoreview session: {}",
-                                error
-                            )));
-                            app.set_status_notice("Autoreview launch failed");
-                        }
-                    }
-                    return Ok(());
-                }
-
-                if trimmed == "/autojudge on" {
-                    remote
-                        .set_feature(crate::protocol::FeatureToggle::Autojudge, true)
-                        .await?;
-                    app.set_autojudge_feature_enabled(true);
-                    app.set_status_notice("Autojudge: ON");
-                    app.push_display_message(DisplayMessage::system(
-                        "Autojudge enabled for this session.".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autojudge off" {
-                    remote
-                        .set_feature(crate::protocol::FeatureToggle::Autojudge, false)
-                        .await?;
-                    app.set_autojudge_feature_enabled(false);
-                    app.set_status_notice("Autojudge: OFF");
-                    app.push_display_message(DisplayMessage::system(
-                        "Autojudge disabled for this session.".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed == "/autojudge now" {
-                    let parent_session_id =
-                        app_mod::commands::current_feedback_target_session_id(app);
-                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
-                        app,
-                        "Autojudge",
-                        parent_session_id.clone(),
-                        app_mod::commands::build_autojudge_startup_message(&parent_session_id),
-                    ) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to queue autojudge: {error}"
-                        )));
-                        return Ok(());
-                    }
-                    if app.is_processing {
-                        app.set_status_notice("Autojudge queued");
-                    } else {
-                        app.pending_split_request = false;
-                        begin_remote_split_launch(app, "Autojudge");
-                        if let Err(error) = remote.split().await {
-                            finish_remote_split_launch(app);
-                            app.pending_split_startup_message = None;
-                            app.pending_split_parent_session_id = None;
-                            app.pending_split_prompt = None;
-                            app.pending_split_model_override = None;
-                            app.pending_split_role_selection = None;
-                            app.pending_split_provider_key_override = None;
-                            app.pending_split_label = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to launch autojudge session: {}",
-                                error
-                            )));
-                            app.set_status_notice("Autojudge launch failed");
-                        }
-                    }
-                    return Ok(());
-                }
-
-                if trimmed == "/review" {
-                    let parent_session_id =
-                        app_mod::commands::current_feedback_target_session_id(app);
-                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
-                        app,
-                        "Review",
-                        parent_session_id.clone(),
-                        app_mod::commands::build_review_startup_message(&parent_session_id),
-                    ) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to queue review: {error}"
-                        )));
-                        return Ok(());
-                    }
-                    if app.is_processing {
-                        app.set_status_notice("Review queued");
-                    } else {
-                        app.pending_split_request = false;
-                        begin_remote_split_launch(app, "Review");
-                        if let Err(error) = remote.split().await {
-                            finish_remote_split_launch(app);
-                            app.pending_split_startup_message = None;
-                            app.pending_split_parent_session_id = None;
-                            app.pending_split_prompt = None;
-                            app.pending_split_model_override = None;
-                            app.pending_split_role_selection = None;
-                            app.pending_split_provider_key_override = None;
-                            app.pending_split_label = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to launch review session: {}",
-                                error
-                            )));
-                            app.set_status_notice("Review launch failed");
-                        }
-                    }
-                    return Ok(());
-                }
-
-                if trimmed == "/judge" {
-                    let parent_session_id =
-                        app_mod::commands::current_feedback_target_session_id(app);
-                    if let Err(error) = app_mod::commands::queue_review_spawn_remote(
-                        app,
-                        "Judge",
-                        parent_session_id.clone(),
-                        app_mod::commands::build_judge_startup_message(&parent_session_id),
-                    ) {
-                        app.push_display_message(DisplayMessage::error(format!(
-                            "Failed to queue judge: {error}"
-                        )));
-                        return Ok(());
-                    }
-                    if app.is_processing {
-                        app.set_status_notice("Judge queued");
-                    } else {
-                        app.pending_split_request = false;
-                        begin_remote_split_launch(app, "Judge");
-                        if let Err(error) = remote.split().await {
-                            finish_remote_split_launch(app);
-                            app.pending_split_startup_message = None;
-                            app.pending_split_parent_session_id = None;
-                            app.pending_split_prompt = None;
-                            app.pending_split_model_override = None;
-                            app.pending_split_role_selection = None;
-                            app.pending_split_provider_key_override = None;
-                            app.pending_split_label = None;
-                            app.push_display_message(DisplayMessage::error(format!(
-                                "Failed to launch judge session: {}",
-                                error
-                            )));
-                            app.set_status_notice("Judge launch failed");
-                        }
-                    }
-                    return Ok(());
-                }
-
-                if trimmed.starts_with("/autoreview ") {
-                    app.push_display_message(DisplayMessage::error(
-                        "Usage: /autoreview [on|off|status|now]".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed.starts_with("/autojudge ") {
-                    app.push_display_message(DisplayMessage::error(
-                        "Usage: /autojudge [on|off|status|now]".to_string(),
-                    ));
-                    return Ok(());
-                }
-
-                if trimmed.starts_with("/review ") {
-                    app.push_display_message(DisplayMessage::error("Usage: /review".to_string()));
-                    return Ok(());
-                }
-
-                if trimmed.starts_with("/judge ") {
-                    app.push_display_message(DisplayMessage::error("Usage: /judge".to_string()));
+                if super::review_controls::dispatch(app, remote, trimmed).await {
                     return Ok(());
                 }
 
@@ -1699,10 +1465,23 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/fork" || trimmed == "/split" {
+                    if app_mod::commands_review::review_split_pending(app) {
+                        app.push_display_message(DisplayMessage::system(
+                            "A session launch is already pending.",
+                        ));
+                        return Ok(());
+                    }
                     app.push_display_message(DisplayMessage::system(
                         "Forking session...".to_string(),
                     ));
-                    remote.split().await?;
+                    app.pending_split_label = Some("Split".to_string());
+                    match remote.split().await {
+                        Ok(id) => app.pending_split_request_id = Some(id),
+                        Err(error) => {
+                            super::review_launch::clear_launch(app);
+                            return Err(error);
+                        }
+                    }
                     return Ok(());
                 }
 
@@ -1914,9 +1693,9 @@ async fn handle_remote_key_internal(
                 }
 
                 if trimmed == "/transfer" {
-                    if app.pending_transfer_request {
+                    if app_mod::commands_review::review_split_pending(app) {
                         app.push_display_message(DisplayMessage::system(
-                            "A transfer is already pending.".to_string(),
+                            "A session launch is already pending.".to_string(),
                         ));
                         app.set_status_notice("Transfer already pending");
                         return Ok(());

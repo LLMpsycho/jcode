@@ -9,6 +9,22 @@ use std::time::Instant;
 mod model_selection;
 pub(super) use model_selection::ReviewModelSelection;
 
+#[path = "commands_review_auto.rs"]
+mod automatic;
+pub(super) use automatic::{
+    PendingAutomaticReview, cancel_automatic_reviews, queue_completed_turn_reviews,
+    stage_next_automatic_review,
+};
+
+pub(super) fn review_split_pending(app: &App) -> bool {
+    app.pending_split_request
+        || app.pending_split_request_id.is_some()
+        || app.pending_transfer_request
+        || app.pending_split_startup_message.is_some()
+        || app.pending_split_prompt.is_some()
+        || app.pending_split_label.is_some()
+}
+
 fn review_session_read_only_guardrails() -> &'static str {
     "Important constraints for this session:\n\
 - This session is analysis-only. Do not do the work yourself.\n\
@@ -658,7 +674,7 @@ fn clone_session_for_review(
     Ok((child.id.clone(), child.display_name().to_string()))
 }
 
-fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
+pub(super) fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
     let parent_session_id = active_session_id(app);
     let mut child = Session::create(Some(parent_session_id.clone()), None);
     child.replace_messages(app.session.messages.clone());
@@ -666,6 +682,9 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
     child.working_dir = app.session.working_dir.clone();
     child.model = app.session.model.clone();
     child.provider_key = app.session.provider_key.clone();
+    child.route_api_method = app.session.route_api_method.clone();
+    child.reasoning_effort = app.session.reasoning_effort.clone();
+    child.role_model_selection = app.session.role_model_selection.clone();
     child.subagent_model = app.session.subagent_model.clone();
     child.autoreview_enabled = app.session.autoreview_enabled;
     child.autojudge_enabled = app.session.autojudge_enabled;
@@ -847,6 +866,10 @@ pub(super) fn queue_review_spawn_remote(
     parent_session_id: String,
     startup_message: String,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !review_split_pending(app),
+        "Another session launch is already pending; wait for it to finish before launching {label}"
+    );
     let selection = ReviewModelSelection::for_role(app, label)?;
     app.pending_split_parent_session_id = Some(parent_session_id);
     app.pending_split_startup_message = Some(startup_message);
@@ -908,7 +931,7 @@ pub(super) fn maybe_trigger_autojudge_local(app: &mut App) {
 }
 
 pub(super) fn handle_review_command_local(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/review") {
+    if trimmed.split_whitespace().next() != Some("/review") {
         return false;
     }
 
@@ -930,7 +953,7 @@ pub(super) fn handle_review_command_local(app: &mut App, trimmed: &str) -> bool 
 }
 
 pub(super) fn handle_autoreview_command_local(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/autoreview") {
+    if trimmed.split_whitespace().next() != Some("/autoreview") {
         return false;
     }
 
@@ -983,7 +1006,7 @@ pub(super) fn handle_autoreview_command_local(app: &mut App, trimmed: &str) -> b
 }
 
 pub(super) fn handle_judge_command_local(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/judge") {
+    if trimmed.split_whitespace().next() != Some("/judge") {
         return false;
     }
 
@@ -1005,7 +1028,7 @@ pub(super) fn handle_judge_command_local(app: &mut App, trimmed: &str) -> bool {
 }
 
 pub(super) fn handle_autojudge_command_local(app: &mut App, trimmed: &str) -> bool {
-    if !trimmed.starts_with("/autojudge") {
+    if trimmed.split_whitespace().next() != Some("/autojudge") {
         return false;
     }
 

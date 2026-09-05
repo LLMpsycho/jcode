@@ -30,7 +30,7 @@ use helpers::*;
 use jcode_tui_messages::DisplayMessage;
 use ratatui::DefaultTerminal;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -61,6 +61,8 @@ mod commands_overnight;
 mod commands_plan;
 mod commands_remote;
 mod commands_review;
+mod pending_requests;
+use pending_requests::{PendingLocalTransfer, PendingRemoteMessage, PendingSplitPrompt};
 mod conversation_state;
 mod copy_selection;
 mod debug;
@@ -109,6 +111,7 @@ mod terminal_setup_command;
 mod todos_view;
 mod tui_lifecycle;
 mod tui_lifecycle_runtime;
+mod tui_reload_restore;
 mod tui_state;
 mod turn;
 mod turn_memory;
@@ -128,27 +131,6 @@ fn active_runtime_provider_key() -> Option<String> {
         .ok()
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())
-}
-
-#[derive(Debug, Clone)]
-struct PendingRemoteMessage {
-    content: String,
-    images: Vec<(String, String)>,
-    is_system: bool,
-    system_reminder: Option<String>,
-    auto_retry: bool,
-    retry_attempts: u8,
-    retry_at: Option<Instant>,
-}
-
-#[derive(Debug, Clone)]
-struct PendingSplitPrompt {
-    content: String,
-    images: Vec<(String, String)>,
-}
-
-struct PendingLocalTransfer {
-    receiver: mpsc::Receiver<anyhow::Result<PreparedTransferSession>>,
 }
 
 /// A reasoning trace anchored in the transcript during the current turn
@@ -1514,6 +1496,8 @@ pub struct App {
     autoreview_after_current_turn: bool,
     // Whether the current remote turn should trigger autojudge after completion.
     autojudge_after_current_turn: bool,
+    // At most one review and one judge for the latest completed remote turn.
+    pending_automatic_reviews: VecDeque<commands_review::PendingAutomaticReview>,
     // Startup message to preload into the next spawned split window.
     pending_split_startup_message: Option<String>,
     // Parent/original session that feedback flows should report back to after a split launch.
@@ -1532,6 +1516,9 @@ pub struct App {
     pending_split_started_at: Option<Instant>,
     // Ask the remote followup loop to issue a split request once idle.
     pending_split_request: bool,
+    // Correlate split controls independently from the active model turn.
+    pending_split_request_id: Option<u64>,
+    last_completed_split_request_id: Option<u64>,
     // Ask the followup loop to issue a transfer request once idle.
     pending_transfer_request: bool,
     // Local transfer preparation currently running in the background.
