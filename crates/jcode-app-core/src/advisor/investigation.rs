@@ -253,11 +253,13 @@ pub(crate) fn bounded_excerpt(value: &str, max_bytes: usize) -> String {
     }
     // Tool arguments and source excerpts also contain JSON credentials, whose
     // opaque values need not resemble a vendor token or shell assignment.
-    static JSON_CREDENTIAL: OnceLock<regex::Regex> = OnceLock::new();
-    let credential = JSON_CREDENTIAL.get_or_init(|| {
+    static JSON_CREDENTIAL: OnceLock<std::result::Result<regex::Regex, regex::Error>> =
+        OnceLock::new();
+    let Ok(credential) = JSON_CREDENTIAL.get_or_init(|| {
         regex::Regex::new(r#"(?i)("(?:[a-z0-9_]*(?:api_key|token|secret|password|cookie|private_key)|authorization)"\s*:\s*)"(?:\\.|[^"\\])*"?"#)
-            .expect("static JSON credential expression")
-    });
+    }) else {
+        return truncate_utf8("[excerpt unavailable: credential redaction failed]".into(), max_bytes);
+    };
     let prefix = credential.replace_all(&prefix, "${1}\"[REDACTED_SECRET]\"");
     let redacted = redact_secrets(&prefix);
     if end < value.len() || redacted.len() > max_bytes {
