@@ -573,6 +573,7 @@ impl Provider for AdvisorQuotaRuntime {
             calls: self.calls.clone(),
             quota_error: self.quota_error,
             route_pinned: std::sync::atomic::AtomicBool::new(self.route_pinned()),
+            private_session: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -606,6 +607,7 @@ fn advisor_selected_route_quota_error_never_rotates_shared_oauth_accounts() {
                     calls: calls.clone(),
                     quota_error: true,
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                 }));
 
                 let error = provider
@@ -638,6 +640,7 @@ fn advisor_selected_route_preserves_successful_request_and_resume_contract() {
                 calls: calls.clone(),
                 quota_error: false,
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
             }));
             let stream = provider
                 .complete_on_selected_route(
@@ -687,6 +690,7 @@ fn assert_pinned_role_quota_preserves_account_and_context(split: bool) {
                         calls: captured.clone(),
                         quota_error: true,
                         route_pinned: std::sync::atomic::AtomicBool::new(false),
+                        private_session: std::sync::atomic::AtomicBool::new(false),
                     })
                 });
                 let role = provider.fork();
@@ -766,6 +770,7 @@ fn agent_role_pinned_missing_runtime_never_uses_another_provider() {
                 calls: calls.clone(),
                 quota_error: false,
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
             }));
             provider.set_active_provider(ActiveProvider::Claude);
             provider.set_route_pinned(true);

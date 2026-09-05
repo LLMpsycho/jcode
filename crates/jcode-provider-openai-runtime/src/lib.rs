@@ -723,6 +723,7 @@ pub struct OpenAIProvider {
     route_pinned: AtomicBool,
     /// Independent helper tool grants must exclude automatically hosted tools.
     explicit_tools_only: AtomicBool,
+    private_session: AtomicBool,
 }
 
 impl OpenAIProvider {
@@ -866,6 +867,7 @@ impl OpenAIProvider {
             browser_only: Arc::new(AtomicBool::new(browser_only)),
             route_pinned: AtomicBool::new(false),
             explicit_tools_only: AtomicBool::new(false),
+            private_session: AtomicBool::new(false),
         };
         provider.revalidate_reasoning_effort();
         provider
@@ -901,40 +903,36 @@ impl OpenAIProvider {
 
     pub(crate) fn set_credential_mode(&self, mode: OpenAICredentialMode) -> Result<()> {
         let credentials = load_credentials_for_mode(mode)?;
-        match self.credentials.try_write() {
-            Ok(mut guard) => {
-                *guard = credentials;
-                self.browser_only.store(false, AtomicOrdering::Release);
-                self.reload_cached_reasoning_efforts();
-            }
-            Err(_) => {
-                anyhow::bail!(
-                    "Cannot change OpenAI credential mode while a request is in progress"
-                );
-            }
-        }
-        match self.credential_mode.try_write() {
-            Ok(mut guard) => {
-                *guard = mode;
-            }
-            Err(_) => {
-                anyhow::bail!(
-                    "Cannot change OpenAI credential mode while a request is in progress"
-                );
-            }
-        }
+        let mut credentials_guard = self.credentials.try_write().map_err(|_| {
+            anyhow::anyhow!("Cannot change OpenAI credential mode while a request is in progress")
+        })?;
+        let mut mode_guard = self.credential_mode.try_write().map_err(|_| {
+            anyhow::anyhow!("Cannot change OpenAI credential mode while a request is in progress")
+        })?;
+        // Both locks are held before changing either half of the auth identity,
+        // so a concurrent fork cannot snapshot new credentials with an old mode.
+        *credentials_guard = credentials;
+        *mode_guard = mode;
+        self.browser_only.store(false, AtomicOrdering::Release);
+        drop(mode_guard);
+        drop(credentials_guard);
+        self.reload_cached_reasoning_efforts();
         self.clear_persistent_ws_try("OpenAI credential mode changed");
         // Keep the runtime provider identity in sync with the explicit credential
         // choice so UI surfaces report the auth method requests will actually use.
         // `Auto` leaves the existing identity untouched.
-        if let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::OpenAI) {
+        if !self.private_session.load(AtomicOrdering::Relaxed)
+            && let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::OpenAI)
+        {
             jcode_base::env::set_var("JCODE_RUNTIME_PROVIDER", route.runtime_provider_key());
         }
         // Drop any cached auth snapshot so surfaces that still consult the cheap
         // cached probe (auto-mode resolution, usage availability, account labels)
         // re-derive from the new credential choice on their next read instead of
         // lingering on a snapshot taken before the switch.
-        jcode_base::auth::AuthStatus::invalidate_cached_status();
+        if !self.private_session.load(AtomicOrdering::Relaxed) {
+            jcode_base::auth::AuthStatus::invalidate_cached_status();
+        }
         Ok(())
     }
 
@@ -1321,3 +1319,5 @@ use self::websocket_health::{
 mod tests;
 
 mod explicit_tools;
+
+mod private_session;

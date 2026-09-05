@@ -341,6 +341,7 @@ impl MultiProvider {
             routes_memo: Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            private_session: std::sync::atomic::AtomicBool::new(false),
         };
 
         // An explicit CLI/environment provider selection owns startup routing.

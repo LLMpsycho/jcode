@@ -226,6 +226,7 @@ fn test_multi_provider_with_openai() -> MultiProvider {
         routes_memo: std::sync::Mutex::new(None),
         route_pinned: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        private_session: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
@@ -1044,6 +1045,7 @@ fn test_multi_provider_with_cursor() -> MultiProvider {
         routes_memo: std::sync::Mutex::new(None),
         route_pinned: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        private_session: std::sync::atomic::AtomicBool::new(false),
     }
 }
 
@@ -1148,3 +1150,6 @@ fn profile_catalog_cache_needs_refresh_for_missing_cache() {
         );
     });
 }
+
+#[path = "tests/private_session.rs"]
+mod private_session;

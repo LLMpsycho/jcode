@@ -12,6 +12,10 @@ fn catalog_error_is_auth_rejection(err: &anyhow::Error) -> bool {
 
 #[async_trait]
 impl Provider for OpenAIProvider {
+    fn prepare_private_session(&self) {
+        self.private_session.store(true, AtomicOrdering::Relaxed);
+    }
+
     fn set_route_pinned(&self, pinned: bool) {
         self.route_pinned.store(pinned, AtomicOrdering::Relaxed);
     }
@@ -1199,10 +1203,16 @@ impl Provider for OpenAIProvider {
 
     fn fork(&self) -> Arc<dyn Provider> {
         let model = self.model();
+        let Ok(credentials) = self.credentials.try_read() else {
+            return Arc::new(super::private_session::UnavailableFork { model });
+        };
+        let Ok(credential_mode) = self.credential_mode.try_read() else {
+            return Arc::new(super::private_session::UnavailableFork { model });
+        };
         Arc::new(OpenAIProvider {
             client: self.client.clone(),
-            credentials: Arc::clone(&self.credentials),
-            credential_mode: Arc::clone(&self.credential_mode),
+            credentials: Arc::new(RwLock::new(credentials.clone())),
+            credential_mode: Arc::new(RwLock::new(*credential_mode)),
             model: Arc::new(RwLock::new(model)),
             prompt_cache_key: self.prompt_cache_key.clone(),
             prompt_cache_retention: self.prompt_cache_retention.clone(),
@@ -1216,7 +1226,12 @@ impl Provider for OpenAIProvider {
                     .map(|guard| guard.clone())
                     .unwrap_or_else(|poisoned| poisoned.into_inner().clone()),
             )),
-            model_reasoning_efforts: Arc::clone(&self.model_reasoning_efforts),
+            model_reasoning_efforts: Arc::new(StdRwLock::new(
+                self.model_reasoning_efforts
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            )),
             service_tier: Arc::new(StdRwLock::new(self.service_tier())),
             native_compaction_mode: self.native_compaction_mode,
             native_compaction_threshold_tokens: self.native_compaction_threshold_tokens,
@@ -1225,7 +1240,8 @@ impl Provider for OpenAIProvider {
             websocket_failure_streaks: Arc::clone(&self.websocket_failure_streaks),
             persistent_ws: Arc::new(Mutex::new(None)),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
-            browser_only: Arc::clone(&self.browser_only),
+            browser_only: Arc::new(AtomicBool::new(self.is_browser_only())),
+            private_session: AtomicBool::new(true),
             route_pinned: AtomicBool::new(self.route_pinned()),
             explicit_tools_only: AtomicBool::new(
                 self.explicit_tools_only.load(AtomicOrdering::Relaxed),

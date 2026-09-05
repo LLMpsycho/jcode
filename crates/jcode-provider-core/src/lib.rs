@@ -191,6 +191,11 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Mark a private session before applying its model or authentication route.
+    /// Implementations must keep mutable authentication choices and runtime hints
+    /// local rather than changing process-wide defaults for another session.
+    fn prepare_private_session(&self) {}
+
     /// Set the model to use (returns error if model not supported).
     fn set_model(&self, _model: &str) -> Result<()> {
         Err(anyhow::anyhow!(

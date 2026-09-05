@@ -190,6 +190,7 @@ fn test_initial_provider_allows_cross_provider_switch_and_reports_target_credent
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -309,6 +310,7 @@ fn test_no_provider_error_mentions_tokens_and_details() {
         initial_provider: None,
         routes_memo: std::sync::Mutex::new(None),
         route_pinned: std::sync::atomic::AtomicBool::new(false),
+        private_session: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
     let err = provider.no_provider_available_error(&[
@@ -350,6 +352,7 @@ fn test_active_compat_profile_counts_as_configured_openrouter_slot() {
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 

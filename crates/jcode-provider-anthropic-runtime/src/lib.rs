@@ -468,6 +468,8 @@ pub struct AnthropicProvider {
     client: Client,
     model: Arc<std::sync::RwLock<String>>,
     route_pinned: AtomicBool,
+    /// Private role runtimes must not change the primary process identity.
+    private_session: AtomicBool,
     reasoning_effort: Arc<std::sync::RwLock<Option<String>>>,
     service_tier: Arc<std::sync::RwLock<Option<String>>>,
     /// Cached OAuth credentials (None if using API key)
@@ -647,6 +649,7 @@ impl AnthropicProvider {
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model)),
             route_pinned: AtomicBool::new(false),
+            private_session: AtomicBool::new(false),
             reasoning_effort: Arc::new(std::sync::RwLock::new(reasoning_effort)),
             service_tier: Arc::new(std::sync::RwLock::new(None)),
             credentials: Arc::new(RwLock::new(None)),
@@ -1092,18 +1095,14 @@ impl AnthropicProvider {
         if let Ok(mut cached) = self.credentials.try_write() {
             *cached = None;
         }
-        // Keep the runtime provider identity in sync with the explicit credential
-        // choice so UI surfaces (model picker, header widget) report the auth
-        // method that requests will actually use, instead of inferring it from
-        // credential presence. `Auto` leaves the existing identity untouched.
-        if let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::Anthropic) {
-            jcode_base::env::set_var("JCODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+        if !self.private_session.load(Ordering::Relaxed) {
+            // Only a primary selection updates the process identity consulted
+            // by global UI/auth probes. A private role owns its choice locally.
+            if let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::Anthropic) {
+                jcode_base::env::set_var("JCODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+            }
+            jcode_base::auth::AuthStatus::invalidate_cached_status();
         }
-        // Drop any cached auth snapshot so surfaces that still consult the cheap
-        // cached probe (auto-mode resolution, usage availability, account labels)
-        // re-derive from the new credential choice on their next read instead of
-        // lingering on a snapshot taken before the switch.
-        jcode_base::auth::AuthStatus::invalidate_cached_status();
         Ok(())
     }
 
@@ -1542,7 +1541,16 @@ impl Provider for AnthropicProvider {
         true
     }
 
+    fn prepare_private_session(&self) {
+        self.private_session.store(true, Ordering::Relaxed);
+    }
+
     fn fork(&self) -> Arc<dyn Provider> {
+        let Ok(credential_mode) = self.credential_mode.try_read().map(|mode| *mode) else {
+            return Arc::new(private_session::UnavailableFork {
+                model: self.model(),
+            });
+        };
         Arc::new(Self {
             client: self.client.clone(),
             model: Arc::new(std::sync::RwLock::new(
@@ -1552,10 +1560,11 @@ impl Provider for AnthropicProvider {
                     .clone(),
             )),
             route_pinned: AtomicBool::new(self.route_pinned()),
+            private_session: AtomicBool::new(true),
             reasoning_effort: Arc::new(std::sync::RwLock::new(self.stored_reasoning_effort())),
             service_tier: Arc::new(std::sync::RwLock::new(self.service_tier())),
             credentials: Arc::new(RwLock::new(None)),
-            credential_mode: Arc::clone(&self.credential_mode),
+            credential_mode: Arc::new(RwLock::new(credential_mode)),
             max_tokens_override: self.max_tokens_override,
             oauth_session_id: self.oauth_session_id.clone(),
             oauth_preflight_done: Arc::new(AtomicBool::new(
@@ -2718,6 +2727,7 @@ use sse_types::{
 };
 
 mod context_window;
+mod private_session;
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]

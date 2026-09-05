@@ -101,6 +101,7 @@ fn test_available_models_display_uses_route_models_and_filters_placeholder_rows(
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -151,6 +152,7 @@ fn test_cerebras_model_routes_are_profile_scoped_and_unique() {
                 initial_provider: Some(ActiveProvider::OpenRouter),
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -249,6 +251,7 @@ fn test_direct_chutes_ignores_legacy_openrouter_catalog_cache() {
                     initial_provider: Some(ActiveProvider::OpenRouter),
                     routes_memo: std::sync::Mutex::new(None),
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
 
@@ -309,6 +312,7 @@ fn test_auth_changed_preserves_existing_direct_profile_session() {
             initial_provider: Some(ActiveProvider::OpenRouter),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -371,6 +375,7 @@ fn test_auth_changed_replaces_template_direct_profile_for_new_logins() {
             initial_provider: Some(ActiveProvider::OpenRouter),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -425,6 +430,7 @@ fn test_state_space_openrouter_default_survives_switch_to_nvidia_nim() {
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -613,6 +619,7 @@ fn test_openrouter_and_compatible_profile_transition_invariants() {
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -687,6 +694,7 @@ fn test_set_model_accepts_bare_openai_openrouter_pin_when_openrouter_available()
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -731,6 +739,7 @@ fn test_active_compatible_route_treats_claude_like_bare_model_as_provider_local(
                             initial_provider: Some(ActiveProvider::OpenRouter),
                             routes_memo: std::sync::Mutex::new(None),
                             route_pinned: std::sync::atomic::AtomicBool::new(false),
+                            private_session: std::sync::atomic::AtomicBool::new(false),
                             post_auth_refreshes_pending: Arc::new(
                                 std::sync::atomic::AtomicUsize::new(0),
                             ),
@@ -768,6 +777,7 @@ fn test_multi_provider_with_openrouter(openrouter: Arc<dyn Provider>) -> MultiPr
         initial_provider: Some(ActiveProvider::OpenRouter),
         routes_memo: std::sync::Mutex::new(None),
         route_pinned: std::sync::atomic::AtomicBool::new(false),
+        private_session: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     }
 }
@@ -866,6 +876,7 @@ fn test_active_compatible_route_preserves_custom_at_sign_model_ids() {
                             initial_provider: Some(ActiveProvider::OpenRouter),
                             routes_memo: std::sync::Mutex::new(None),
                             route_pinned: std::sync::atomic::AtomicBool::new(false),
+                            private_session: std::sync::atomic::AtomicBool::new(false),
                             post_auth_refreshes_pending: Arc::new(
                                 std::sync::atomic::AtomicUsize::new(0),
                             ),
@@ -918,6 +929,7 @@ fn test_config_default_provider_openai_compatible_keeps_gpt_model_provider_local
                             initial_provider: None,
                             routes_memo: std::sync::Mutex::new(None),
                             route_pinned: std::sync::atomic::AtomicBool::new(false),
+                            private_session: std::sync::atomic::AtomicBool::new(false),
                             post_auth_refreshes_pending: Arc::new(
                                 std::sync::atomic::AtomicUsize::new(0),
                             ),
@@ -973,6 +985,7 @@ fn test_custom_compatible_model_routes_do_not_request_openrouter_rewrite() {
                             initial_provider: Some(ActiveProvider::OpenRouter),
                             routes_memo: std::sync::Mutex::new(None),
                             route_pinned: std::sync::atomic::AtomicBool::new(false),
+                            private_session: std::sync::atomic::AtomicBool::new(false),
                             post_auth_refreshes_pending: Arc::new(
                                 std::sync::atomic::AtomicUsize::new(0),
                             ),
@@ -1023,6 +1036,7 @@ fn test_configured_direct_compatible_profiles_are_listed_without_openrouter_key(
                     initial_provider: None,
                     routes_memo: std::sync::Mutex::new(None),
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
 
@@ -1107,6 +1121,7 @@ input = ["image"]
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -1156,6 +1171,7 @@ input = ["image"]
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         provider2
@@ -1193,6 +1209,7 @@ fn test_config_default_provider_deepseek_applies_without_openrouter_key() {
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -1229,6 +1246,7 @@ fn test_profile_prefixed_model_switch_reinitializes_direct_compatible_runtime() 
                     initial_provider: None,
                     routes_memo: std::sync::Mutex::new(None),
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
 
@@ -1287,6 +1305,7 @@ fn test_openai_auth_mode_prefixed_model_switch_changes_credentials() {
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let rt = enter_test_runtime();
@@ -1358,6 +1377,7 @@ fn test_initial_openai_provider_can_switch_to_anthropic_auth_routes() {
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let rt = enter_test_runtime();
@@ -1435,6 +1455,7 @@ fn test_config_default_provider_anthropic_api_pins_api_credential() {
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let rt = enter_test_runtime();
@@ -1515,6 +1536,7 @@ fn test_config_default_model_with_credential_prefix_applies_model_and_pin() {
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
             let rt = enter_test_runtime();
@@ -1590,6 +1612,7 @@ fn test_multi_provider_fork_switch_request_preserves_route_identity_state_space(
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -1664,6 +1687,7 @@ fn test_multi_provider_fork_switch_request_preserves_route_identity_state_space(
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -1705,6 +1729,7 @@ fn test_multi_provider_fork_switch_request_preserves_route_identity_state_space(
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         provider
@@ -1740,6 +1765,7 @@ fn test_multi_provider_fork_switch_request_preserves_route_identity_state_space(
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -1776,6 +1802,7 @@ fn test_deepseek_direct_profile_supports_reasoning_effort_via_multi_provider() {
                 initial_provider: None,
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -1825,6 +1852,7 @@ fn test_explicit_copilot_prefix_treats_claude_like_model_as_provider_local() {
             initial_provider: Some(ActiveProvider::Copilot),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -1861,6 +1889,7 @@ fn test_initial_provider_does_not_block_provider_specific_model_switch() {
                 initial_provider: Some(ActiveProvider::OpenRouter),
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -2437,6 +2466,7 @@ fn bare_openai_compatible_model_ids_route_to_their_profile_not_the_active_provid
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 

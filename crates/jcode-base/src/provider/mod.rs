@@ -393,6 +393,7 @@ pub struct MultiProvider {
     post_auth_refreshes_pending: Arc<std::sync::atomic::AtomicUsize>,
     /// Private helper roles must not switch the user's selected route/account.
     route_pinned: std::sync::atomic::AtomicBool,
+    private_session: std::sync::atomic::AtomicBool,
 }
 
 /// Memoized route catalog with the inputs that decide its freshness: build
@@ -983,6 +984,11 @@ impl MultiProvider {
             config.provider_type,
             crate::config::NamedProviderType::AnthropicCompatible
         ) {
+            if self.is_private_session() {
+                anyhow::bail!(
+                    "This Anthropic-compatible profile needs process-wide activation and cannot be selected by an independent advisor; choose another authenticated route"
+                );
+            }
             crate::provider_catalog::apply_named_provider_profile_env(profile_name)?;
             let provider =
                 external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME)
@@ -1097,6 +1103,11 @@ impl MultiProvider {
                             crate::config::NamedProviderType::AnthropicCompatible
                         )
                     });
+                if switching_from_named_anthropic && self.is_private_session() {
+                    anyhow::bail!(
+                        "Switching from a named Anthropic profile requires process-wide activation; choose another authenticated advisor route"
+                    );
+                }
                 if switching_from_named_anthropic {
                     crate::env::remove_var("JCODE_NAMED_PROVIDER_PROFILE");
                     crate::env::remove_var("JCODE_PROVIDER_PROFILE_ACTIVE");
@@ -1122,7 +1133,10 @@ impl MultiProvider {
                         .write()
                         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(official);
                 }
-                crate::provider_catalog::clear_anthropic_profile_env();
+                if !self.is_private_session() {
+                    crate::provider_catalog::clear_anthropic_profile_env();
+                }
+                self.prepare_private_runtime(self.anthropic_provider());
                 let model = model_name_for_provider(provider, model);
                 if let Some(anthropic) = self.anthropic_provider() {
                     if let Some(mode) = anthropic_credential_mode {
@@ -1157,6 +1171,7 @@ impl MultiProvider {
                         "OpenAI credentials not available. Run `jcode login --provider openai` first."
                     );
                 };
+                self.prepare_private_runtime(Some(Arc::clone(&openai)));
                 if let Some(mode) = openai_credential_mode {
                     openai.set_credential_mode(mode)?;
                 }
@@ -2460,6 +2475,12 @@ impl Provider for MultiProvider {
             .is_some_and(|runtime| runtime.supports_toolless_requests())
     }
 
+    fn prepare_private_session(&self) {
+        self.private_session
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.prepare_all_private_runtimes();
+    }
+
     fn restrict_to_explicit_tools(&self) -> Result<()> {
         self.explicit_tool_runtime()
             .ok_or_else(|| anyhow!("Selected provider runtime is unavailable"))?
@@ -2877,16 +2898,8 @@ impl Provider for MultiProvider {
         } else {
             None
         };
-        let anthropic = if self.anthropic_provider().is_some() {
-            external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME)
-        } else {
-            None
-        };
-        let openai = if self.openai_provider().is_some() {
-            external::instantiate_expected_external_provider(external::OPENAI_RUNTIME)
-        } else {
-            None
-        };
+        let anthropic = self.anthropic_provider().map(|provider| provider.fork());
+        let openai = self.openai_provider().map(|provider| provider.fork());
         // Helper sessions may select another model or effort while sharing the
         // runtime's auth and catalog caches with the primary session.
         let copilot_api = self
@@ -2951,13 +2964,17 @@ impl Provider for MultiProvider {
             initial_provider: self.initial_provider,
             routes_memo: Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(self.route_pinned()),
+            private_session: std::sync::atomic::AtomicBool::new(true),
             post_auth_refreshes_pending: Arc::clone(&self.post_auth_refreshes_pending),
         };
 
+        provider.prepare_private_session();
         provider.spawn_anthropic_catalog_refresh_if_needed();
         provider.spawn_openai_catalog_refresh_if_needed();
         let switch_request = self.fork_model_switch_request(active, &current_model);
-        if provider.set_model(&switch_request).is_ok()
+        let restored = matches!(active, ActiveProvider::Claude | ActiveProvider::OpenAI)
+            || provider.set_model(&switch_request).is_ok();
+        if restored
             && let Some(effort) = self.reasoning_effort()
             && provider.available_efforts().contains(&effort.as_str())
             && let Err(error) = provider.set_reasoning_effort(&effort)
@@ -3071,3 +3088,5 @@ pub fn cache_ttl_for_provider_model(provider: &str, model: Option<&str>) -> Opti
 
 #[cfg(test)]
 mod tests;
+
+mod private_session;
