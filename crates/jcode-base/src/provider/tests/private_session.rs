@@ -1,7 +1,7 @@
 use super::*;
 
-#[test]
-fn private_named_anthropic_selection_rejects_before_process_profile_activation() {
+#[tokio::test]
+async fn private_named_anthropic_selection_rejects_before_process_profile_activation() {
     with_clean_provider_test_env(|| {
         let config = crate::config::Config::path().unwrap();
         std::fs::write(config, "[providers.company]\ntype = 'anthropic-compatible'\nbase_url = 'https://fixture.invalid/v1'\napi_key_env = 'COMPANY_TEST_KEY'\n").unwrap();
