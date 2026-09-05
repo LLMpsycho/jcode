@@ -2972,10 +2972,12 @@ impl Provider for MultiProvider {
         provider.spawn_anthropic_catalog_refresh_if_needed();
         provider.spawn_openai_catalog_refresh_if_needed();
         let switch_request = self.fork_model_switch_request(active, &current_model);
-        let restored = matches!(active, ActiveProvider::Claude | ActiveProvider::OpenAI)
-            || provider.set_model(&switch_request).is_ok();
-        if restored
-            && let Some(effort) = self.reasoning_effort()
+        if !matches!(active, ActiveProvider::Claude | ActiveProvider::OpenAI)
+            && let Err(error) = provider.set_model(&switch_request)
+        {
+            return Arc::new(private_session::UnavailableFork::new(current_model, &error));
+        }
+        if let Some(effort) = self.reasoning_effort()
             && provider.available_efforts().contains(&effort.as_str())
             && let Err(error) = provider.set_reasoning_effort(&effort)
         {

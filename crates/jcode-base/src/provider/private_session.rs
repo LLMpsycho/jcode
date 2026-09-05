@@ -36,3 +36,53 @@ impl MultiProvider {
         }
     }
 }
+
+/// A failed route restoration must never return a usable default runtime: an
+/// inheriting advisor would otherwise send primary evidence to the wrong route.
+pub(super) struct UnavailableFork {
+    model: String,
+    reason: String,
+}
+
+impl UnavailableFork {
+    pub(super) fn new(model: String, error: &anyhow::Error) -> Self {
+        Self {
+            model,
+            reason: crate::message::redact_secrets(&error.to_string()),
+        }
+    }
+    fn error(&self) -> anyhow::Error {
+        anyhow::anyhow!(
+            "Could not preserve the selected route in a private provider fork: {}",
+            self.reason
+        )
+    }
+}
+
+#[async_trait]
+impl Provider for UnavailableFork {
+    fn name(&self) -> &str {
+        "unavailable-private-route"
+    }
+    fn model(&self) -> String {
+        self.model.clone()
+    }
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            model: self.model.clone(),
+            reason: self.reason.clone(),
+        })
+    }
+    fn set_model(&self, _: &str) -> Result<()> {
+        Err(self.error())
+    }
+    async fn complete(
+        &self,
+        _: &[Message],
+        _: &[ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<EventStream> {
+        Err(self.error())
+    }
+}
