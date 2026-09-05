@@ -50,6 +50,7 @@ async fn dispatch_repl(agent: &mut Agent, lines: &[&str]) -> Vec<String> {
 async fn advisor_repl_commands_show_tui_guidance_without_skill_or_provider_dispatch() {
     let sandbox = crate::auth::test_sandbox::AuthTestSandbox::new().unwrap();
     let mut agent = repl_agent(sandbox.root()).await;
+    let initial_messages = serde_json::to_value(&agent.session.messages).unwrap();
     let output = dispatch_repl(
         &mut agent,
         &[
@@ -77,7 +78,10 @@ async fn advisor_repl_commands_show_tui_guidance_without_skill_or_provider_dispa
     );
     assert!(!output.iter().any(|line| line.contains("Unknown skill")));
     assert!(agent.active_skill.is_none());
-    assert!(agent.session.messages.is_empty());
+    assert_eq!(
+        serde_json::to_value(&agent.session.messages).unwrap(),
+        initial_messages
+    );
 }
 
 #[tokio::test]
@@ -93,6 +97,7 @@ async fn advisor_repl_dispatch_preserves_other_skills_and_unknown_names() {
         .unwrap();
     }
     let mut agent = repl_agent(sandbox.root()).await;
+    let initial_messages = serde_json::to_value(&agent.session.messages).unwrap();
     let output = dispatch_repl(
         &mut agent,
         &["/advisory", "/My Custom Skill", "/advisor-missing"],
@@ -120,5 +125,8 @@ async fn advisor_repl_dispatch_preserves_other_skills_and_unknown_names() {
             .any(|line| line.contains("Advisor model selection"))
     );
     assert_eq!(agent.active_skill.as_deref(), Some("My Custom Skill"));
-    assert!(agent.session.messages.is_empty());
+    assert_eq!(
+        serde_json::to_value(&agent.session.messages).unwrap(),
+        initial_messages
+    );
 }
