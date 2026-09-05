@@ -1,0 +1,132 @@
+name: Audit patch validation
+
+on:
+  push:
+    branches: [fix/post-merge-orchestration-audit]
+    paths:
+      - '.github/audit-patch.b64'
+      - '.github/workflows/audit-apply.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: audit-apply-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'LLMpsycho/jcode' && github.ref == 'refs/heads/fix/post-merge-orchestration-audit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify exact audit payload and unmodified source baseline
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 97107d565165c6ad5ef5ea2d7899a03c44dd1c16 HEAD
+          git diff --exit-code 97107d565165c6ad5ef5ea2d7899a03c44dd1c16 HEAD -- crates src scripts sdk
+          python3 - <<'PY'
+          import base64, hashlib, json, os, zlib
+          from pathlib import Path
+          text = Path('.github/audit-patch.b64').read_text().strip()
+          assert hashlib.sha256(text.encode()).hexdigest() == '3ee36ba38c72b55cce6e91f9a684eb3d869ef3c0b67fe7a4c9d18dc130a31042'
+          corrections = [(199,199,'5K'),(600,604,''),(4747,4747,'V'),(7460,7460,'//'),(8971,8971,'RX'),(14877,14878,'')]
+          for start, end, replacement in reversed(corrections):
+              text = text[:start] + replacement + text[end:]
+          data = zlib.decompress(base64.b64decode(text, validate=True))
+          assert hashlib.sha256(data).hexdigest() == '2c7b29f30cb316e3446b5dad42f30dbf99c5a88d3cf13393e87f2b851518b74d'
+          payload = json.loads(data)
+          target = Path(os.environ['RUNNER_TEMP'])
+          (target / 'audit.patch').write_text(payload['patch'])
+          (target / 'baseline-tests.rs').write_text(payload['baseline_tests'])
+          PY
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Compile regression probes against the pre-fix code
+        shell: bash
+        run: |
+          cp "$RUNNER_TEMP/baseline-tests.rs" crates/jcode-tui/src/tui/app/tests/post_merge_review.rs
+          printf '\n#[path = "tests/post_merge_review.rs"]\nmod post_merge_review;\n' >> crates/jcode-tui/src/tui/app/tests.rs
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib --no-run
+      - name: Prove four reported regressions fail on the original code
+        shell: bash
+        run: |
+          for test in post_merge_review_controls_use_wire post_merge_review_collision_preserves post_merge_review_prefixes_do_not post_merge_review_done_schedules; do
+            if scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 > "$RUNNER_TEMP/baseline-$test.log" 2>&1; then
+              cat "$RUNNER_TEMP/baseline-$test.log"
+              echo "Expected regression did not reproduce: $test"
+              exit 1
+            fi
+            grep -q 'running 1 test' "$RUNNER_TEMP/baseline-$test.log"
+            grep -q 'test result: FAILED' "$RUNNER_TEMP/baseline-$test.log"
+            tail -16 "$RUNNER_TEMP/baseline-$test.log"
+          done
+      - name: Apply the exact fixes and remove one-shot transport files
+        shell: bash
+        run: |
+          git restore crates/jcode-tui/src/tui/app/tests.rs
+          rm crates/jcode-tui/src/tui/app/tests/post_merge_review.rs
+          git apply --check "$RUNNER_TEMP/audit.patch"
+          git apply "$RUNNER_TEMP/audit.patch"
+          cargo fmt --all
+          git rm .github/audit-patch.b64 .github/workflows/audit-apply.yml
+          git add .github/workflows crates/jcode-tui scripts/test_workflow_yaml.py
+          git diff --cached --check
+          git diff --cached --stat
+          git diff --cached --binary > "$RUNNER_TEMP/audit-candidate.patch"
+          git diff --cached --name-only --diff-filter=ACM > "$RUNNER_TEMP/audit-candidate-files.txt"
+          tar -czf "$RUNNER_TEMP/audit-candidate.tar.gz" -T "$RUNNER_TEMP/audit-candidate-files.txt"
+      - name: Run patched review and existing advisor regressions
+        shell: bash
+        run: |
+          set -o pipefail
+          for test in post_merge_review review_role queue_autojudge_remote prepare_review_spawned_session advisor; do
+            scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/patched-$test.log"
+          done
+          python3 scripts/check_module_files.py
+          python3 scripts/check_dependency_boundaries.py
+      - name: Workflow and evaluation regressions
+        shell: bash
+        run: |
+          python3 -m pip install PyYAML==6.0.2
+          python3 scripts/test_workflow_yaml.py -v
+          python3 scripts/test_advisor_acceptance_tests.py -v
+          python3 -m unittest discover -s scripts/competitive_eval/tests -v
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audit-validation
+          path: |
+            ${{ runner.temp }}/baseline-*.log
+            ${{ runner.temp }}/patched-*.log
+            ${{ runner.temp }}/audit-candidate.patch
+            ${{ runner.temp }}/audit-candidate.tar.gz
+          if-no-files-found: warn
+          retention-days: 7
+          overwrite: true
+      - name: Publish verified fixes to the owned branch only
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/fix/post-merge-orchestration-audit
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git config user.name 'Besi S'
+          git config user.email '211350563+LLMpsycho@users.noreply.github.com'
+          git commit -m 'fix: complete remote review scheduling and unify command routing'
+          auth="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/fix/post-merge-orchestration-audit
+          git rev-parse HEAD
