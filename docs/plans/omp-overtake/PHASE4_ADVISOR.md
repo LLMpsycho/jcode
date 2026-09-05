@@ -348,8 +348,8 @@ acceptance are enforced and recorded by the **Advisor acceptance** workflow in
 before merge readiness; its uploaded fixture report records exact binary and
 scenario provenance. Local Unix socket creation/connect is denied with `EPERM`,
 so local compilation and unit tests are not claimed as socket acceptance. The
-full TypeScript SDK suite has passed in CI; earlier development validation
-includes a selfdev build and 103 advisor tests. The acceptance harness starts
+full TypeScript SDK suite has passed in CI; local validation
+includes a selfdev build and 108 advisor tests after a clean app-core rebuild. The acceptance harness starts
 its own built binary, home, workspace, runtime directory, socket
 and process group with telemetry disabled. It never installs/promotes a binary
 or contacts an existing daemon. Deterministic mode uses the real Responses API

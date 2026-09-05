@@ -176,8 +176,8 @@ configuration, investigation, retained conversation, live correction, controls,
 transport acceptance and focused review fixes. See the requirement-to-file/test
 mapping and exact published commits in [PR #18](https://github.com/LLMpsycho/jcode/pull/18).
 
-Development validation includes a successful selfdev build, 103 passing advisor
-tests at an earlier runtime checkpoint, and successful real-runtime no-network
+Development validation includes a successful selfdev build, 108 passing advisor
+tests after a clean app-core rebuild, and successful real-runtime no-network
 OpenAI/Anthropic authentication-isolation and explicit-tool tests. The full
 TypeScript SDK typecheck/build/transport suite passed in the PR workflow.
 Module resolution and dependency-boundary checks pass. Later implementation
