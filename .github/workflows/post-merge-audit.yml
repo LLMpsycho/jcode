@@ -1,0 +1,63 @@
+name: Post-merge audit
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'crates/jcode-tui/**'
+      - '.github/workflows/**'
+      - 'scripts/test_workflow_yaml.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.2
+      - name: Reject duplicate workflow keys and lost environment settings
+        run: python scripts/test_workflow_yaml.py -v
+
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JCODE_CI: '1'
+      JCODE_DEV_FEATURE_PROFILE: minimal
+      CARGO_BUILD_JOBS: '2'
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Formatting and module resolution
+        run: |
+          cargo fmt --all -- --check
+          python3 scripts/check_module_files.py
+      - name: Review routing, scheduling, collision and role isolation regressions
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib post_merge_review -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib review_role -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib queue_autojudge_remote -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib prepare_review_spawned_session -- --test-threads=1
+      - name: Dependency boundaries
+        run: python3 scripts/check_dependency_boundaries.py

@@ -574,6 +574,7 @@ pub(in crate::tui::app) async fn handle_post_connect<B: ratatui::backend::Backen
     state: &mut RemoteRunState,
     session_to_resume: Option<&str>,
 ) -> Result<PostConnectOutcome> {
+    super::review_launch::reset_connection(app);
     crate::logging::info(&format!(
         "Reload check: session_to_resume={:?}, remote_session_id={:?}, reconnect_attempts={}",
         session_to_resume, app.remote_session_id, state.reconnect_attempts
