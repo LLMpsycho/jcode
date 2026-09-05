@@ -1,3 +1,5 @@
+use super::*;
+
 fn advisor_test_route(method: &str, available: bool) -> crate::provider::ModelRoute {
     crate::provider::ModelRoute {
         model: "gpt-5".into(),
@@ -33,7 +35,7 @@ async fn advisor_read_request(app: &mut App, remote: &mut crate::tui::backend::R
 
 #[test]
 fn advisor_command_opens_picker_and_preserves_controls() {
-    use super::advisor_picker::command;
+    use crate::tui::app::advisor_picker::command;
     use crate::protocol::AdvisorRequest;
     assert_eq!(command("/advisor").unwrap().unwrap(), AdvisorRequest::ModelOptions { selection: None });
     assert_eq!(command("/advisor model").unwrap().unwrap(), AdvisorRequest::ModelOptions { selection: None });
