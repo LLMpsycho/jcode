@@ -84,6 +84,20 @@ pub trait Provider: Send + Sync {
         resume_session_id: Option<&str>,
     ) -> Result<EventStream>;
 
+    /// Complete on the selected runtime and account without automatic failover.
+    /// Single-runtime providers may use their normal transport. Orchestrators
+    /// must override this so helper requests cannot rotate shared credentials.
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.complete(messages, tools, system, resume_session_id)
+            .await
+    }
+
     /// Send messages with split system prompt for better caching.
     async fn complete_split(
         &self,

@@ -1734,6 +1734,27 @@ impl Provider for MultiProvider {
         .await
     }
 
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        let filtered =
+            image_clamp::filter_unsupported_outbound_images(messages, self.supports_image_input());
+        let messages = filtered.as_deref().unwrap_or(messages);
+        let clamped = image_clamp::clamp_outbound_images(messages);
+        let messages = clamped.as_deref().unwrap_or(messages);
+        let selected = self.active_provider();
+        let stream = self
+            .complete_on_provider(selected, messages, tools, system, resume_session_id)
+            .await?;
+        clear_provider_unavailable_for_account(Self::provider_key(selected));
+        self.record_provider_activity(selected);
+        Ok(stream)
+    }
+
     /// Split system prompt completion - delegates to underlying provider for better caching
     async fn complete_split(
         &self,

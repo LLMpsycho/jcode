@@ -94,6 +94,19 @@ impl Provider for JcodeProvider {
             .await
     }
 
+    async fn complete_on_selected_route(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> Result<EventStream> {
+        self.ensure_runtime_mode();
+        self.inner
+            .complete_on_selected_route(messages, tools, system, resume_session_id)
+            .await
+    }
+
     async fn complete_split(
         &self,
         messages: &[Message],

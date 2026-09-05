@@ -430,3 +430,123 @@ fn advisor_toolless_capability_delegates_to_claude_cli_override() {
         assert!(!provider.supports_toolless_requests());
     });
 }
+
+struct AdvisorQuotaRuntime {
+    calls: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    quota_error: bool,
+}
+
+#[async_trait::async_trait]
+impl Provider for AdvisorQuotaRuntime {
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system: &str,
+        resume_session_id: Option<&str>,
+    ) -> anyhow::Result<EventStream> {
+        assert_eq!(messages.len(), 1);
+        assert!(tools.is_empty());
+        assert_eq!(system, "selected review");
+        assert_eq!(resume_session_id, Some("review-resume"));
+        self.calls
+            .lock()
+            .unwrap()
+            .push(crate::auth::codex::active_account_label());
+        if self.quota_error {
+            anyhow::bail!("429 rate limit exceeded");
+        }
+        Ok(Box::pin(futures::stream::empty()))
+    }
+
+    fn name(&self) -> &str {
+        "openai"
+    }
+
+    fn model(&self) -> String {
+        "gpt-5.5".to_string()
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            calls: self.calls.clone(),
+            quota_error: self.quota_error,
+        })
+    }
+}
+
+#[test]
+fn advisor_selected_route_quota_error_never_rotates_shared_oauth_accounts() {
+    with_clean_provider_test_env(|| {
+        with_env_var("JCODE_SAME_PROVIDER_ACCOUNT_FAILOVER", "true", || {
+            let runtime = enter_test_runtime();
+            runtime.block_on(async {
+                let provider = test_multi_provider_with_openai();
+                let primary = crate::auth::codex::primary_account_label();
+                let secondary = crate::auth::codex::upsert_account_from_tokens(
+                    "secondary",
+                    "test-secondary-access-token",
+                    "test-secondary-refresh-token",
+                    None,
+                    Some(chrono::Utc::now().timestamp_millis() + 86_400_000),
+                )
+                .unwrap();
+                crate::auth::codex::set_active_account_override(Some(primary.clone()));
+                assert!(same_provider_account_failover_enabled());
+                assert!(
+                    crate::auth::codex::list_accounts()
+                        .unwrap()
+                        .iter()
+                        .any(|account| account.label == secondary && account.label != primary)
+                );
+                let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+                *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
+                    calls: calls.clone(),
+                    quota_error: true,
+                }));
+
+                let error = provider
+                    .complete_on_selected_route(
+                        &[Message::user("evidence")],
+                        &[],
+                        "selected review",
+                        Some("review-resume"),
+                    )
+                    .await
+                    .err()
+                    .expect("return the selected account's quota failure");
+                assert!(error.to_string().contains("429"));
+                assert_eq!(*calls.lock().unwrap(), vec![Some(primary.clone())]);
+                assert_eq!(crate::auth::codex::active_account_label(), Some(primary));
+                assert_eq!(provider.active_provider(), ActiveProvider::OpenAI);
+            });
+        });
+    });
+}
+
+#[test]
+fn advisor_selected_route_preserves_successful_request_and_resume_contract() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let provider = test_multi_provider_with_openai();
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
+                calls: calls.clone(),
+                quota_error: false,
+            }));
+            let stream = provider
+                .complete_on_selected_route(
+                    &[Message::user("evidence")],
+                    &[],
+                    "selected review",
+                    Some("review-resume"),
+                )
+                .await
+                .expect("complete on the selected runtime");
+            drop(stream);
+            assert_eq!(calls.lock().unwrap().len(), 1);
+            assert_eq!(provider.active_provider(), ActiveProvider::OpenAI);
+        });
+    });
+}

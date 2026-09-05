@@ -72,6 +72,79 @@ struct PrematureAdvisorProvider {
     emit_error: bool,
 }
 
+struct SelectedRouteFailureProvider {
+    selected_calls: Arc<AtomicUsize>,
+    fallback_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl Provider for SelectedRouteFailureProvider {
+    fn name(&self) -> &str {
+        "selected-route-failure"
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            selected_calls: Arc::clone(&self.selected_calls),
+            fallback_calls: Arc::clone(&self.fallback_calls),
+        })
+    }
+
+    async fn complete(
+        &self,
+        _: &[Message],
+        _: &[crate::message::ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        self.fallback_calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("ordinary completion must not select a fallback for an advisor");
+    }
+
+    async fn complete_on_selected_route(
+        &self,
+        _: &[Message],
+        tools: &[crate::message::ToolDefinition],
+        _: &str,
+        _: Option<&str>,
+    ) -> Result<crate::provider::EventStream> {
+        assert!(tools.is_empty());
+        self.selected_calls.fetch_add(1, Ordering::SeqCst);
+        anyhow::bail!("selected route quota exhausted");
+    }
+}
+
+#[tokio::test]
+async fn advisor_quota_error_keeps_the_selected_route_and_publishes_no_note() {
+    let selected_calls = Arc::new(AtomicUsize::new(0));
+    let fallback_calls = Arc::new(AtomicUsize::new(0));
+    let manager = Arc::new(AdvisorManager::default());
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    assert!(manager.schedule_turn(
+        "selected_quota".into(),
+        Arc::new(SelectedRouteFailureProvider {
+            selected_calls: Arc::clone(&selected_calls),
+            fallback_calls: Arc::clone(&fallback_calls),
+        }),
+        Arc::clone(&queue),
+        AdvisorTurnInput::default(),
+        enabled_config(),
+    ));
+    wait_for_status(&manager, "selected_quota", AdvisorStatus::Failed).await;
+    assert_eq!(selected_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+    assert!(manager.notes("selected_quota").is_empty());
+    assert!(queue.lock().expect("queue").is_empty());
+    assert!(
+        manager
+            .snapshot("selected_quota")
+            .expect("failed state")
+            .last_error
+            .expect("quota error")
+            .contains("selected route quota exhausted")
+    );
+}
+
 #[async_trait]
 impl Provider for PrematureAdvisorProvider {
     fn name(&self) -> &str {
