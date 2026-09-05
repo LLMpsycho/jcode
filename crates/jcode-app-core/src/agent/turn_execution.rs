@@ -16,14 +16,9 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        let start_message_index = self.message_count();
-        crate::advisor::advisor_manager().begin_capture(
-            &self.session.id,
-            &crate::advisor::config_for_current_session(),
-        );
+        let _advisor_guard = self.begin_advisor_turn(user_message).await;
         let result = self.run_turn(true).await.map(|_| ());
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
-            .await;
+        self.advisor_turn = None;
         result
     }
 
@@ -50,14 +45,9 @@ impl Agent {
         if trace_enabled() {
             eprintln!("[trace] session_id {}", self.session.id);
         }
-        let start_message_index = self.message_count();
-        crate::advisor::advisor_manager().begin_capture(
-            &self.session.id,
-            &crate::advisor::config_for_current_session(),
-        );
+        let _advisor_guard = self.begin_advisor_turn(user_message).await;
         let result = self.run_turn(false).await;
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
-            .await;
+        self.advisor_turn = None;
         result
     }
 
@@ -121,16 +111,12 @@ impl Agent {
         crate::telemetry::record_turn();
         let turn_started_at = Instant::now();
         let start_message_index = self.message_count();
-        crate::advisor::advisor_manager().begin_capture(
-            &self.session.id,
-            &crate::advisor::config_for_current_session(),
-        );
+        let _advisor_guard = self.begin_advisor_turn(user_message).await;
         self.fire_turn_start_hook("chat");
         let result = self.run_turn_streaming_mpsc(event_tx).await;
         self.current_turn_system_reminder = None;
         self.fire_turn_end_hook(&result, turn_started_at, start_message_index);
-        self.schedule_advisor_review(user_message, result.is_ok(), start_message_index)
-            .await;
+        self.advisor_turn = None;
         result
     }
 
@@ -220,42 +206,6 @@ impl Agent {
             event = event.field("ERROR", message);
         }
         crate::hooks::dispatch_observer(event);
-    }
-
-    async fn schedule_advisor_review(
-        &self,
-        objective: &str,
-        turn_succeeded: bool,
-        start_message_index: usize,
-    ) {
-        let config = crate::advisor::config_for_current_session();
-        let manager = crate::advisor::advisor_manager();
-        if config.max_reviews_per_session == 0
-            || config.max_notes_per_turn == 0
-            || !manager.is_enabled(&self.session.id, config.enabled)
-        {
-            return;
-        }
-        let mut input = crate::advisor::AdvisorTurnInput::from_completed_turn(
-            objective,
-            self.latest_assistant_text_after(start_message_index),
-            Vec::new(),
-            turn_succeeded,
-        );
-        manager
-            .enrich_input(
-                &self.session.id,
-                &mut input,
-                self.session.working_dir.as_deref(),
-            )
-            .await;
-        let _ = manager.schedule_turn(
-            self.session.id.clone(),
-            self.provider_fork(),
-            self.soft_interrupt_queue(),
-            input,
-            config,
-        );
     }
 
     /// Clear conversation history

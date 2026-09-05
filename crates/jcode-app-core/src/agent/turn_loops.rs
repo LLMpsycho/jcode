@@ -57,6 +57,9 @@ impl Agent {
                 logging::info("Cancel observed at turn-loop head - not starting another request");
                 break;
             }
+            self.observe_advisor_step(false).await;
+            self.display_advisor_asides(None, print_output);
+            self.inject_soft_interrupts();
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 logging::warn(&format!(
@@ -868,6 +871,9 @@ impl Agent {
                         text_content = format!("[provider guardrail] {}", notice);
                     }
                 }
+                if self.finish_advisor_step(None, print_output).await {
+                    continue;
+                }
                 logging::info("Turn complete - no tool calls, returning");
                 if print_output {
                     println!();
@@ -876,6 +882,7 @@ impl Agent {
                 break;
             }
 
+            self.observe_advisor_step(false).await;
             logging::info(&format!(
                 "Turn has {} tool calls to execute",
                 tool_calls.len()
@@ -895,7 +902,11 @@ impl Agent {
                         );
                         continue;
                     }
+                    if self.finish_advisor_step(None, print_output).await {
+                        continue;
+                    }
                     logging::info("Provider handles tools internally - task complete");
+                    final_text = text_content;
                     break;
                 }
                 logging::info("Provider handles tools internally - executing native tools locally");
@@ -1139,6 +1150,7 @@ impl Agent {
                 println!();
             }
 
+            self.observe_advisor_step(false).await;
             // Check for soft interrupts (e.g. Telegram messages) and inject them for the next turn
             let injected = self.inject_soft_interrupts();
             if !injected.is_empty() {
