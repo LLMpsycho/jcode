@@ -83,6 +83,15 @@ fn fact_test_state(input: String, scheduled: bool) -> TestState {
             read_tokens: 9_000,
             ..Default::default()
         }),
+        git_info: Some(info_widget::GitInfo {
+            branch: "master".into(),
+            modified: 2,
+            staged: 1,
+            untracked: 3,
+            ahead: 4,
+            behind: 5,
+            dirty_files: vec!["example.rs".into()],
+        }),
         ambient_info,
         ..Default::default()
     };
@@ -157,6 +166,12 @@ fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
                 "GPT-5.6 Sol high",
                 "OpenAI · OAuth",
                 "~/jcode",
+                "master",
+                "~2",
+                "+1",
+                "?3",
+                "↑4",
+                "↓5",
             ] {
                 assert!(
                     footer.iter().any(|row| row.contains(needle)),
@@ -165,6 +180,7 @@ fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
                 );
                 // The conversation header intentionally retains the directory.
                 if needle != "~/jcode" {
+                    assert_eq!(footer.join("\n").matches(needle).count(), 1);
                     assert!(
                         !rows[..input.y as usize]
                             .iter()
@@ -295,6 +311,7 @@ fn prompt_stats_survive_narrow_widths_without_overwriting_input() {
 fn prompt_stats_wrap_unicode_and_preserve_usage_preferences() {
     let mut state = fact_test_state(String::new(), false);
     state.working_dir = Some("/home/开发/项目".to_string());
+    state.info_widget_data.git_info.as_mut().unwrap().branch = "feature/开发".repeat(8);
     for width in [0, 1, 2, 18, 40, 80, 120] {
         let lines = input_ui::prompt_stats_lines(&state, &state.info_widget_data, width);
         assert!(
@@ -326,6 +343,36 @@ fn prompt_stats_wrap_unicode_and_preserve_usage_preferences() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(!text.contains("5-hour") && !text.contains("KV cache"));
+}
+
+#[test]
+fn prompt_stats_show_clean_branch_without_a_working_directory() {
+    let mut state = fact_test_state(String::new(), false);
+    state.working_dir = None;
+    state.info_widget_data = info_widget::InfoWidgetData {
+        git_info: Some(info_widget::GitInfo {
+            branch: "master".into(),
+            modified: 0,
+            staged: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            dirty_files: Vec::new(),
+        }),
+        ..Default::default()
+    };
+    let text = input_ui::prompt_stats_lines(&state, &state.info_widget_data, 120)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(text.matches("master").count(), 1);
+    state.info_widget_data.git_info = None;
+    assert!(
+        input_ui::prompt_stats_lines(&state, &state.info_widget_data, 120)
+            .iter()
+            .all(|line| !line.to_string().contains("master"))
+    );
 }
 
 #[test]

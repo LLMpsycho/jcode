@@ -2226,14 +2226,7 @@ fn session_fact_lines(
         .working_dir()
         .and_then(|path| overscroll_dir_label(&path))
     {
-        let mut spans = vec![Span::styled(dir, prompt_stats_neutral_style())];
-        if let Some(branch) = overscroll_git_branch(data) {
-            spans.push(Span::styled(
-                format!("  {branch}"),
-                prompt_stats_neutral_style(),
-            ));
-        }
-        lines.push(Line::from(spans));
+        lines.push(Line::from(Span::styled(dir, prompt_stats_neutral_style())));
     }
 
     lines

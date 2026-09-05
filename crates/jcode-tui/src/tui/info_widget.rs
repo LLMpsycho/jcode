@@ -1677,6 +1677,9 @@ pub(crate) fn inline_stats(data: &InfoWidgetData, width: u16) -> Vec<Line<'stati
     if let Some(cache) = &data.cache_hit_info {
         lines.push(render_kv_cache_summary_line(cache));
     }
+    if let Some(info) = &data.git_info {
+        lines.extend(render_git_compact(info, width));
+    }
     lines
 }
 

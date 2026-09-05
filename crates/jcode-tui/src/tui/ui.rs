@@ -3032,6 +3032,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     sidebar_data.model = None;
     sidebar_data.usage_info = None;
     sidebar_data.cache_hit_info = None;
+    sidebar_data.git_info = None;
 
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("prepare_messages".to_string());
