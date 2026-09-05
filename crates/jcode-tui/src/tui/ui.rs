@@ -3019,6 +3019,19 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     let inline_block_height: u16 = inline_ui_height(app);
     let inline_ui_gap_height: u16 = if inline_block_height > 0 { 1 } else { 0 };
     let input_height = base_input_height + hint_line_height;
+    let widget_data_start = Instant::now();
+    let widget_data = app.info_widget_data();
+    let widget_data_elapsed = widget_data_start.elapsed();
+    let prompt_stats_lines = input_ui::prompt_stats_lines(app, &widget_data, chat_area.width);
+    // Stats now live below the input. Keep other sidebar content, including
+    // todos, memory activity and diagrams, without duplicating stats in Overview.
+    let mut sidebar_data = widget_data.clone();
+    sidebar_data.context_info = None;
+    sidebar_data.context_info_stale = false;
+    sidebar_data.observed_context_tokens = None;
+    sidebar_data.model = None;
+    sidebar_data.usage_info = None;
+    sidebar_data.cache_hit_info = None;
 
     if let Some(ref mut capture) = debug_capture {
         capture.render_order.push("prepare_messages".to_string());
@@ -3091,6 +3104,11 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         + input_height
         + overscroll_height
         + donut_height; // status + queued + swarm strip + notification + inline UI + gap + input + overscroll + donut
+    // Footer stats yield to all composer chrome and to a two-row sticky prompt
+    // preview plus three transcript rows when the terminal is short.
+    let prompt_stats_height =
+        (prompt_stats_lines.len() as u16).min(chat_area.height.saturating_sub(fixed_height + 5));
+    let fixed_height = fixed_height + prompt_stats_height;
     let available_height = chat_area.height;
     // Overflow decisions (native scrollbar, and thus the wrap width) must not
     // depend on the transient overscroll row. Otherwise revealing the line at
@@ -3213,8 +3231,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 Constraint::Length(inline_block_height), // 5 Inline UI
                 Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
                 Constraint::Length(input_height),  // 7 Input
-                Constraint::Length(overscroll_height), // 8 Overscroll status line
-                Constraint::Length(donut_height),  // 9 Donut animation
+                Constraint::Length(prompt_stats_height), // 8 Inline stats
+                Constraint::Length(overscroll_height), // 9 Overscroll status line
+                Constraint::Length(donut_height),  // 10 Donut animation
             ]
         } else {
             vec![
@@ -3226,8 +3245,9 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
                 Constraint::Length(inline_block_height),  // 5 Inline UI
                 Constraint::Length(inline_ui_gap_height), // 6 Inline UI/input spacing
                 Constraint::Length(input_height),         // 7 Input
-                Constraint::Length(overscroll_height),    // 8 Overscroll status line
-                Constraint::Length(donut_height),         // 9 Donut animation
+                Constraint::Length(prompt_stats_height),  // 8 Inline stats
+                Constraint::Length(overscroll_height),    // 9 Overscroll status line
+                Constraint::Length(donut_height),         // 10 Donut animation
             ]
         })
         .split(chat_area);
@@ -3472,7 +3492,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         draw_inline_ui(frame, app, chunks[5]);
     }
 
-    let input_cursor = input_ui::draw_input(
+    input_ui::draw_input(
         frame,
         app,
         chunks[7],
@@ -3480,31 +3500,40 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         &mut debug_capture,
     );
 
+    if prompt_stats_height > 0 {
+        let alignment = if app.centered_mode() {
+            Alignment::Center
+        } else {
+            Alignment::Left
+        };
+        frame.render_widget(
+            Paragraph::new(prompt_stats_lines).alignment(alignment),
+            chunks[8],
+        );
+    }
+
     if overscroll_height > 0 {
-        input_ui::draw_overscroll_status(frame, app, chunks[8]);
+        input_ui::draw_overscroll_status(frame, app, chunks[9], prompt_stats_height > 0);
     }
 
     if donut_height > 0 {
-        animations::draw_idle_animation(frame, app, chunks[9]);
+        animations::draw_idle_animation(frame, app, chunks[10]);
     }
     let chrome_elapsed = chrome_start.elapsed();
 
     // Draw info widget overlays (skip during idle animation - they look out of place)
-    let widget_data_start = Instant::now();
-    let widget_data = app.info_widget_data();
-    let widget_data_elapsed = widget_data_start.elapsed();
     let mut widget_render_ms: Option<f32> = None;
     let mut placements: Vec<info_widget::WidgetPlacement> = Vec::new();
     let widget_bounds = messages_area;
     if app.info_widget_overlays_enabled()
-        && !widget_data.is_empty()
+        && !sidebar_data.is_empty()
         && !show_donut
         && !swarm_page_active
     {
         if let Some(ref mut capture) = debug_capture {
             capture.render_order.push("render_info_widgets".to_string());
         }
-        placements = info_widget::calculate_placements(widget_bounds, &margins, &widget_data);
+        placements = info_widget::calculate_placements(widget_bounds, &margins, &sidebar_data);
 
         if let Some(ref mut capture) = debug_capture {
             let placement_captures = capture_widget_placements(&placements);
@@ -3553,7 +3582,7 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
         }
 
         let widget_start = Instant::now();
-        info_widget::render_all(frame, &placements, &widget_data);
+        info_widget::render_all(frame, &placements, &sidebar_data);
         widget_render_ms = Some(widget_start.elapsed().as_secs_f32() * 1000.0);
 
         // Optional visual overlay for placements
@@ -3575,18 +3604,6 @@ fn draw_inner(frame: &mut Frame, app: &dyn TuiState) {
     if visual_debug::overlay_enabled() {
         overlays::draw_debug_overlay(frame, &placements, &chunks);
     }
-
-    // Session facts use actual final-frame cells for collision detection. They
-    // prefer the composer chrome and may climb into a few transcript-tail rows
-    // only when the right suffix is genuinely unused.
-    input_ui::draw_right_fact_stack(
-        frame,
-        app,
-        messages_area,
-        chunks[7],
-        chat_scrollbar_visible,
-        input_cursor,
-    );
 
     // Command-suggestion popover: a late overlay pass so the palette floats
     // over existing rows (blank space, pinned footer, or the transcript tail)

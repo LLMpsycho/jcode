@@ -69,6 +69,20 @@ fn fact_test_state(input: String, scheduled: bool) -> TestState {
         provider_name: Some("openai".to_string()),
         auth_method: info_widget::AuthMethod::OpenAIOAuth,
         observed_context_tokens: Some(74_000),
+        usage_info: Some(info_widget::UsageInfo {
+            provider: info_widget::UsageProvider::OpenAI,
+            available: true,
+            primary_limit_label: Some("5-hour".to_string()),
+            secondary_limit_label: Some("7-day".to_string()),
+            five_hour: 0.25,
+            seven_day: 0.40,
+            ..Default::default()
+        }),
+        cache_hit_info: Some(info_widget::CacheHitInfo {
+            reported_input_tokens: 10_000,
+            read_tokens: 9_000,
+            ..Default::default()
+        }),
         ambient_info,
         ..Default::default()
     };
@@ -92,53 +106,141 @@ fn row_containing(rows: &[String], needle: &str) -> usize {
         .unwrap_or_else(|| panic!("missing {needle:?} in frame:\n{}", rows.join("\n")))
 }
 
-fn fact_stack_rows(rows: &[String]) -> [usize; 4] {
-    [
-        row_containing(rows, "OpenAI · OAuth"),
-        row_containing(rows, "GPT-5.6 Sol high"),
-        row_containing(rows, "~/jcode"),
-        row_containing(rows, "74k/256k"),
-    ]
-}
-
-fn assert_fact_stack_is_contiguous(rows: &[String]) -> [usize; 4] {
-    let positions = fact_stack_rows(rows);
-    assert!(
-        positions.windows(2).all(|pair| pair[1] == pair[0] + 1),
-        "facts must be one uninterrupted OAuth/model/directory/context block:\n{}",
-        rows.join("\n")
-    );
-    positions
-}
-
 #[test]
-fn right_fact_stack_uses_transcript_status_notification_and_input_rows_in_order() {
+fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
     let _lock = viewport_snapshot_test_lock();
-    clear_flicker_frame_history_for_tests();
-    let state = fact_test_state(String::new(), true);
-    let backend = TestBackend::new(120, 18);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| crate::tui::ui::draw(frame, &state))
-        .expect("fact stack frame");
-
-    let rows = buffer_rows(&terminal);
-    let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
-    assert!(oauth_y < model_y && model_y < dir_y && dir_y < context_y);
-    assert!(rows[context_y].contains("▰▰▱▱▱▱ 29%"));
-    assert!(rows[dir_y].contains("next scheduled task in 4m"));
-
-    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
-    let input = layout.input_area.expect("input area");
-    let status = crate::tui::ui::last_status_area().expect("status area");
-    assert_eq!(context_y as u16, input.bottom() - 1);
-    assert_eq!(model_y as u16, status.y);
-    assert_eq!(dir_y as u16, status.y + 1);
-    assert_eq!(oauth_y as u16, layout.messages_area.bottom() - 1);
+    for centered in [false, true] {
+        for (width, height, streaming, scheduled) in [
+            (120, 24, false, true),
+            (80, 24, true, false),
+            (40, 30, false, false),
+            (160, 24, true, true),
+        ] {
+            clear_flicker_frame_history_for_tests();
+            let mut state = fact_test_state("typed text\nsecond line".to_string(), scheduled);
+            state.suppress_info_widgets = false;
+            state.centered_mode = centered;
+            if streaming {
+                state.status = ProcessingStatus::Streaming;
+                state.streaming_text = "live transcript tail".to_string();
+            }
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            terminal
+                .draw(|frame| crate::tui::ui::draw(frame, &state))
+                .expect("stats frame");
+            let rows = buffer_rows(&terminal);
+            let layout = crate::tui::ui::last_layout_snapshot().expect("layout");
+            let input = layout.input_area.expect("input area");
+            let footer = &rows[input.bottom() as usize..];
+            assert!(
+                rows[input.y as usize..input.bottom() as usize]
+                    .iter()
+                    .any(|r| r.contains("typed text"))
+            );
+            assert!(
+                rows[input.y as usize..input.bottom() as usize]
+                    .iter()
+                    .any(|r| r.contains("second line"))
+            );
+            assert!(
+                footer[0].contains("Context"),
+                "stats must start directly under input: {rows:?}"
+            );
+            for needle in [
+                "74k/256k",
+                "5-hour",
+                "75% left",
+                "7-day",
+                "60% left",
+                "KV cache:",
+                "90%",
+                "GPT-5.6 Sol high",
+                "OpenAI · OAuth",
+                "~/jcode",
+            ] {
+                assert!(
+                    footer.iter().any(|row| row.contains(needle)),
+                    "missing {needle} at width {width}:\n{}",
+                    rows.join("\n")
+                );
+                // The conversation header intentionally retains the directory.
+                if needle != "~/jcode" {
+                    assert!(
+                        !rows[..input.y as usize]
+                            .iter()
+                            .any(|row| row.contains(needle)),
+                        "duplicate {needle} above input"
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
-fn right_fact_stack_uses_neutral_gray_except_for_context_usage() {
+fn prompt_stats_do_not_duplicate_during_elastic_or_pinned_overscroll() {
+    let _lock = viewport_snapshot_test_lock();
+    for pinned in [false, true] {
+        clear_flicker_frame_history_for_tests();
+        let mut state = fact_test_state(String::new(), false);
+        state.chat_overscroll_active = true;
+        state.chat_overscroll_pinned = pinned;
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
+        terminal
+            .draw(|frame| crate::tui::ui::draw(frame, &state))
+            .expect("overscroll stats frame");
+        let text = buffer_rows(&terminal).join("\n");
+        for needle in ["74k/256k", "OpenAI · OAuth", "GPT-5.6 Sol high"] {
+            assert_eq!(
+                text.matches(needle).count(),
+                1,
+                "duplicate {needle}: {text}"
+            );
+        }
+        assert_eq!(text.contains("(overscroll"), !pinned);
+    }
+}
+
+#[test]
+fn prompt_stats_leave_git_and_compaction_only_sidebars_available() {
+    let git = info_widget::InfoWidgetData {
+        git_info: Some(info_widget::GitInfo {
+            branch: "main".into(),
+            modified: 1,
+            staged: 0,
+            untracked: 0,
+            ahead: 0,
+            behind: 0,
+            dirty_files: vec!["example.rs".into()],
+        }),
+        ..Default::default()
+    };
+    let compaction = info_widget::InfoWidgetData {
+        compaction_info: Some(info_widget::CompactionInfo {
+            is_compacting: true,
+            compacted_messages: 0,
+            active_messages: 10,
+            summary_chars: 0,
+            mode: "auto".into(),
+        }),
+        ..Default::default()
+    };
+    assert!(!git.is_empty());
+    assert!(
+        git.available_widgets()
+            .contains(&info_widget::WidgetKind::GitStatus)
+    );
+    assert!(!compaction.is_empty());
+    assert!(
+        compaction
+            .available_widgets()
+            .contains(&info_widget::WidgetKind::Compaction)
+    );
+    assert!(info_widget::InfoWidgetData::default().is_empty());
+}
+
+#[test]
+fn prompt_stats_session_facts_use_neutral_gray() {
     use ratatui::style::Color;
     use unicode_width::UnicodeWidthStr;
 
@@ -174,62 +276,7 @@ fn right_fact_stack_uses_neutral_gray_except_for_context_usage() {
 }
 
 #[test]
-fn right_fact_stack_shifts_up_when_scheduled_notification_row_is_absent() {
-    let _lock = viewport_snapshot_test_lock();
-    clear_flicker_frame_history_for_tests();
-    let mut state = fact_test_state(String::new(), false);
-    state.display_messages = vec![DisplayMessage::assistant("first line\nsecond line")];
-    let backend = TestBackend::new(120, 18);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| crate::tui::ui::draw(frame, &state))
-        .expect("fact stack frame without notification");
-
-    let rows = buffer_rows(&terminal);
-    let [oauth_y, model_y, dir_y, context_y] = assert_fact_stack_is_contiguous(&rows);
-    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
-    let input = layout.input_area.expect("input area");
-    let status = crate::tui::ui::last_status_area().expect("status area");
-
-    assert_eq!(context_y as u16, input.bottom() - 1);
-    assert_eq!(dir_y as u16, status.y);
-    assert_eq!(model_y as u16, layout.messages_area.bottom() - 1);
-    assert!(oauth_y < model_y);
-    assert!(!rows.iter().any(|row| row.contains("next scheduled task")));
-}
-
-#[test]
-fn right_fact_stack_leaves_fully_used_input_rows_untouched_and_moves_up() {
-    let _lock = viewport_snapshot_test_lock();
-    clear_flicker_frame_history_for_tests();
-    let input = ["x".repeat(115), "y".repeat(115), "z".repeat(115)].join("\n");
-    let state = fact_test_state(input, true);
-    let backend = TestBackend::new(120, 22);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| crate::tui::ui::draw(frame, &state))
-        .expect("fact stack frame with full input");
-
-    let rows = buffer_rows(&terminal);
-    let layout = crate::tui::ui::last_layout_snapshot().expect("layout snapshot");
-    let input_area = layout.input_area.expect("input area");
-    let input_rows = &rows[input_area.y as usize..input_area.bottom() as usize];
-    assert!(input_rows.iter().all(|row| !row.contains("74k/256k")));
-    assert!(input_rows.iter().all(|row| !row.contains("~/jcode")));
-    assert!(input_rows.iter().all(|row| !row.contains("OAuth")));
-    assert!(
-        input_rows
-            .iter()
-            .map(|row| row.matches('x').count())
-            .sum::<usize>()
-            >= 110
-    );
-    assert!(row_containing(&rows, "74k/256k") < input_area.y as usize);
-    assert_fact_stack_is_contiguous(&rows);
-}
-
-#[test]
-fn right_fact_stack_survives_narrow_widths_without_overwriting_content() {
+fn prompt_stats_survive_narrow_widths_without_overwriting_input() {
     let _lock = viewport_snapshot_test_lock();
     for width in (18_u16..=60).chain([80, 120, 160]) {
         clear_flicker_frame_history_for_tests();
@@ -245,28 +292,40 @@ fn right_fact_stack_survives_narrow_widths_without_overwriting_content() {
 }
 
 #[test]
-fn right_fact_stack_hides_as_a_unit_when_streaming_chrome_cannot_fit_it() {
-    let _lock = viewport_snapshot_test_lock();
-    clear_flicker_frame_history_for_tests();
-    let mut state = fact_test_state(String::new(), true);
-    state.status = ProcessingStatus::Streaming;
-    state.streaming_text = "live transcript tail".to_string();
-    let backend = TestBackend::new(120, 18);
-    let mut terminal = Terminal::new(backend).expect("test terminal");
-    terminal
-        .draw(|frame| crate::tui::ui::draw(frame, &state))
-        .expect("streaming fact stack frame");
-
-    let rows = buffer_rows(&terminal);
-    assert!(
-        rows.iter().all(|row| {
-            !row.contains("OpenAI · OAuth")
-                && !row.contains("GPT-5.6 Sol high")
-                && !row.contains("74k/256k")
-        }),
-        "the stack must hide completely rather than render a partial block:\n{}",
-        rows.join("\n")
-    );
+fn prompt_stats_wrap_unicode_and_preserve_usage_preferences() {
+    let mut state = fact_test_state(String::new(), false);
+    state.working_dir = Some("/home/开发/项目".to_string());
+    for width in [0, 1, 2, 18, 40, 80, 120] {
+        let lines = input_ui::prompt_stats_lines(&state, &state.info_widget_data, width);
+        assert!(
+            lines.iter().all(|line| line.width() <= usize::from(width)),
+            "width {width}: {lines:?}"
+        );
+    }
+    state.info_widget_data.usage_display_used = true;
+    state.info_widget_data.context_info_stale = true;
+    let lines = input_ui::prompt_stats_lines(&state, &state.info_widget_data, 80);
+    let text = lines
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("25% used") && text.contains("40% used"));
+    assert!(text.contains("updating...") && !text.contains("74k/256k"));
+    assert!(text.contains("开发/项目"));
+    state
+        .info_widget_data
+        .usage_info
+        .as_mut()
+        .unwrap()
+        .available = false;
+    state.info_widget_data.cache_hit_info = None;
+    let text = input_ui::prompt_stats_lines(&state, &state.info_widget_data, 80)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!text.contains("5-hour") && !text.contains("KV cache"));
 }
 
 #[test]

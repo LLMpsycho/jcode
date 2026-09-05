@@ -1156,177 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn right_fact_stack_shifts_up_as_a_unit_when_bottom_row_is_occupied() {
-        let area = Rect::new(0, 0, 40, 5);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        for x in 12..40 {
-            buffer[(x, 4)].set_symbol("x");
-        }
-        let lines = ["oauth", "model", "dir", "context"]
-            .into_iter()
-            .map(|text| RightFactLine::new(vec![Span::raw(text)]).expect("fact line"))
-            .collect();
-
-        let placements = right_fact_placements(
-            &buffer,
-            lines,
-            0,
-            5,
-            0,
-            40,
-            Rect::new(0, 0, 40, 3),
-            false,
-            None,
-        );
-        let rows = placements
-            .iter()
-            .map(|placement| placement.area.y)
-            .collect::<Vec<_>>();
-        assert_eq!(rows, vec![0, 1, 2, 3]);
-        assert!(placements.iter().all(|placement| placement.area.y != 4));
-    }
-
-    #[test]
-    fn right_fact_stack_never_leaves_an_occupied_row_between_facts() {
-        let area = Rect::new(0, 0, 40, 7);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        buffer[(39, 4)].set_symbol("x");
-        let lines = ["oauth", "model", "dir", "context"]
-            .into_iter()
-            .map(|text| RightFactLine::new(vec![Span::raw(text)]).expect("fact line"))
-            .collect();
-
-        let placements = right_fact_placements(
-            &buffer,
-            lines,
-            0,
-            7,
-            0,
-            40,
-            Rect::new(0, 0, 40, 5),
-            false,
-            None,
-        );
-        let rows = placements
-            .iter()
-            .map(|placement| placement.area.y)
-            .collect::<Vec<_>>();
-        assert_eq!(rows, vec![0, 1, 2, 3]);
-        assert_eq!(
-            placements
-                .iter()
-                .map(|placement| placement.line.spans[0].content.as_ref())
-                .collect::<Vec<_>>(),
-            vec!["oauth", "model", "dir", "context"]
-        );
-    }
-
-    #[test]
-    fn right_fact_stack_collision_state_space_is_contiguous_or_hidden() {
-        const HEIGHT: u16 = 8;
-        const STACK_HEIGHT: u16 = 4;
-
-        for occupied_mask in 0_u16..(1 << HEIGHT) {
-            let area = Rect::new(0, 0, 40, HEIGHT);
-            let mut buffer = ratatui::buffer::Buffer::empty(area);
-            for row in 0..HEIGHT {
-                if occupied_mask & (1 << row) != 0 {
-                    buffer[(39, row)].set_symbol("x");
-                }
-            }
-            let lines = ["oauth", "model", "dir", "context"]
-                .into_iter()
-                .map(|text| RightFactLine::new(vec![Span::raw(text)]).expect("fact line"))
-                .collect();
-
-            let placements = right_fact_placements(
-                &buffer,
-                lines,
-                0,
-                HEIGHT,
-                0,
-                40,
-                Rect::new(0, 0, 40, HEIGHT),
-                false,
-                None,
-            );
-            let expected_top = (0..=HEIGHT - STACK_HEIGHT).rev().find(|&start| {
-                (start..start + STACK_HEIGHT).all(|row| occupied_mask & (1 << row) == 0)
-            });
-
-            match expected_top {
-                Some(start) => {
-                    assert_eq!(
-                        placements.len(),
-                        STACK_HEIGHT as usize,
-                        "mask {occupied_mask:08b}"
-                    );
-                    assert_eq!(
-                        placements
-                            .iter()
-                            .map(|placement| placement.area.y)
-                            .collect::<Vec<_>>(),
-                        (start..start + STACK_HEIGHT).collect::<Vec<_>>(),
-                        "mask {occupied_mask:08b}"
-                    );
-                    assert_eq!(
-                        placements
-                            .iter()
-                            .map(|placement| placement.line.spans[0].content.as_ref())
-                            .collect::<Vec<_>>(),
-                        vec!["oauth", "model", "dir", "context"],
-                        "mask {occupied_mask:08b}"
-                    );
-                }
-                None => assert!(placements.is_empty(), "mask {occupied_mask:08b}"),
-            }
-        }
-    }
-
-    #[test]
-    fn right_fact_stack_treats_styled_blank_cells_as_occupied() {
-        let area = Rect::new(0, 0, 32, 2);
-        let mut buffer = ratatui::buffer::Buffer::empty(area);
-        for x in 12..32 {
-            buffer[(x, 1)].set_bg(Color::Blue);
-        }
-        let line = RightFactLine::new(vec![Span::raw("context")]).expect("fact line");
-        let placements = right_fact_placements(
-            &buffer,
-            vec![line],
-            0,
-            2,
-            0,
-            32,
-            Rect::new(0, 0, 32, 1),
-            false,
-            None,
-        );
-        assert_eq!(placements.len(), 1);
-        assert_eq!(placements[0].area.y, 0);
-    }
-
-    #[test]
-    fn right_fact_stack_never_draws_over_the_input_cursor() {
-        let area = Rect::new(0, 0, 32, 2);
-        let buffer = ratatui::buffer::Buffer::empty(area);
-        let line = RightFactLine::new(vec![Span::raw("context")]).expect("fact line");
-        let placements = right_fact_placements(
-            &buffer,
-            vec![line],
-            0,
-            2,
-            0,
-            32,
-            Rect::new(0, 0, 32, 1),
-            false,
-            Some(Position::new(28, 1)),
-        );
-        assert_eq!(placements.len(), 1);
-        assert_eq!(placements[0].area.y, 0);
-    }
-
-    #[test]
     fn overscroll_provider_display_is_credential_neutral() {
         // The credential (OAuth vs API key) is reported by the adjacent auth
         // chip from canonical resolution; the provider name must not bake in a
@@ -1915,7 +1744,12 @@ pub(super) fn draw_notification(frame: &mut Frame, app: &dyn TuiState, area: Rec
 /// access method, reasoning level, and context usage percentage, with a live
 /// `(overscroll x.x)` countdown pinned to the right so users can see the line
 /// is temporary and rebounds away on its own.
-pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area: Rect) {
+pub(super) fn draw_overscroll_status(
+    frame: &mut Frame,
+    app: &dyn TuiState,
+    area: Rect,
+    facts_visible: bool,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -1931,6 +1765,20 @@ pub(super) fn draw_overscroll_status(frame: &mut Frame, app: &dyn TuiState, area
             Style::default().fg(rgb(150, 150, 165)).italic(),
         )
     });
+
+    // The prompt footer already owns the facts. Keep only the elastic-scroll
+    // affordance here, falling back to the legacy facts on tiny terminals.
+    if facts_visible {
+        if let Some(countdown) = countdown {
+            let line = Line::from(overscroll_truncate_spans(
+                vec![countdown],
+                area.width as usize,
+            ))
+            .alignment(Alignment::Right);
+            frame.render_widget(Paragraph::new(line), area);
+        }
+        return;
+    }
 
     let mut spans: Vec<Span> = Vec::new();
 
@@ -2279,105 +2127,51 @@ fn overscroll_context_bar(used: usize, limit: usize, cells: usize) -> Vec<Span<'
     spans
 }
 
-const RIGHT_FACT_CONTEXT_CELLS: usize = 6;
-const RIGHT_FACT_GAP: u16 = 2;
-const RIGHT_FACT_PAD: u16 = 1;
-const RIGHT_FACT_TRANSCRIPT_ROWS: u16 = 4;
-
-fn right_fact_neutral_style() -> Style {
+fn prompt_stats_neutral_style() -> Style {
     Style::default().fg(rgb(140, 140, 150))
 }
 
-#[derive(Clone)]
-struct RightFactLine {
-    spans: Vec<Span<'static>>,
-    width: u16,
-}
-
-impl RightFactLine {
-    fn new(spans: Vec<Span<'static>>) -> Option<Self> {
-        use unicode_width::UnicodeWidthStr;
-        let width: usize = spans.iter().map(|span| span.content.width()).sum();
-        let width = u16::try_from(width).ok()?;
-        (width > 0).then_some(Self { spans, width })
-    }
-}
-
-#[derive(Clone)]
-struct RightFactPlacement {
-    line: RightFactLine,
-    area: Rect,
-}
-
-/// Draw session facts as a bottom-anchored stack in otherwise unused cells on
-/// the right side of the composer chrome. When chrome rows are occupied, the
-/// stack may climb into at most the last few transcript rows, but only where
-/// the final rendered buffer has a genuinely blank suffix. It never reflows or
-/// overwrites transcript, status, notification, inline UI, or input content.
-pub(super) fn draw_right_fact_stack(
-    frame: &mut Frame,
+/// Session facts and live stats share reserved rows below the composer, rather
+/// than opportunistically covering blank cells in the transcript.
+pub(super) fn prompt_stats_lines(
     app: &dyn TuiState,
-    messages_area: Rect,
-    input_area: Rect,
-    transcript_scrollbar_visible: bool,
-    input_cursor: Option<Position>,
-) {
-    // The legacy overscroll row owns these same facts while it is visible.
-    // Standing down here avoids duplicates and keeps its elastic reveal from
-    // changing transcript-tail overlays mid-gesture. Users with overscroll off
-    // get the compact stack continuously.
-    if app.chat_overscroll_active() || input_area.width == 0 || input_area.height == 0 {
-        return;
+    data: &crate::tui::info_widget::InfoWidgetData,
+    width: u16,
+) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
     }
-
-    let lines = right_fact_lines(app);
-    if lines.is_empty() {
-        return;
+    let mut facts = crate::tui::info_widget::inline_stats(data, width.min(28));
+    facts.extend(session_fact_lines(app, data));
+    let mut lines = Vec::new();
+    let mut row = Line::default();
+    for fact in facts.into_iter().filter(|line| line.width() > 0) {
+        if row.width() > 0 && row.width() + 3 + fact.width() > usize::from(width) {
+            lines.extend(crate::tui::markdown::wrap_line(row, usize::from(width)));
+            row = Line::default();
+        }
+        if row.width() > 0 {
+            row.spans
+                .push(Span::styled(" · ", prompt_stats_neutral_style()));
+        }
+        row.spans.extend(fact.spans);
     }
-
-    // Never composite into a live transcript while a turn is processing. Its
-    // tail changes every frame, so even collision-safe facts could appear to
-    // jump as streaming rows arrive. Chrome rows remain available.
-    let transcript_rows = if app.auto_scroll_paused() || app.is_processing() {
-        0
-    } else {
-        RIGHT_FACT_TRANSCRIPT_ROWS.min(messages_area.height)
-    };
-    let top = messages_area.bottom().saturating_sub(transcript_rows);
-    let bottom = input_area.bottom();
-    if top >= bottom {
-        return;
+    if row.width() > 0 {
+        lines.extend(crate::tui::markdown::wrap_line(row, usize::from(width)));
     }
-
-    let placements = {
-        let buffer = frame.buffer_mut();
-        right_fact_placements(
-            buffer,
-            lines,
-            top,
-            bottom,
-            input_area.x,
-            input_area.right(),
-            messages_area,
-            transcript_scrollbar_visible,
-            input_cursor,
-        )
-    };
-
-    for placement in placements {
-        frame.render_widget(
-            Paragraph::new(Line::from(placement.line.spans)),
-            placement.area,
-        );
+    // The markdown wrapper may retain trailing spaces or a glyph wider than
+    // the entire terminal. Use the existing cell-width truncator at this edge.
+    for line in &mut lines {
+        line.spans = overscroll_truncate_spans(std::mem::take(&mut line.spans), usize::from(width));
     }
+    lines
 }
 
-/// Build fact rows in their visual top-to-bottom order: provider/auth, model,
-/// directory, then context usage. Placement walks this list in reverse so the
-/// context row is anchored nearest the input whenever space permits.
-fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
-    let data = app.info_widget_data();
-    let sep = || Span::styled(" · ", right_fact_neutral_style());
+fn session_fact_lines(
+    app: &dyn TuiState,
+    data: &crate::tui::info_widget::InfoWidgetData,
+) -> Vec<Line<'static>> {
+    let sep = || Span::styled(" · ", prompt_stats_neutral_style());
     let mut lines = Vec::with_capacity(4);
 
     let mut access = Vec::new();
@@ -2389,17 +2183,20 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
     if !provider.is_empty() && !overscroll_is_runtime_placeholder(&provider) {
         access.push(Span::styled(
             overscroll_provider_display(&provider),
-            right_fact_neutral_style(),
+            prompt_stats_neutral_style(),
         ));
     }
     if let Some((label, _)) = overscroll_auth_label(data.auth_method) {
         if !access.is_empty() {
             access.push(sep());
         }
-        access.push(Span::styled(label.to_string(), right_fact_neutral_style()));
+        access.push(Span::styled(
+            label.to_string(),
+            prompt_stats_neutral_style(),
+        ));
     }
-    if let Some(line) = RightFactLine::new(access) {
-        lines.push(line);
+    if !access.is_empty() {
+        lines.push(Line::from(access));
     }
 
     let model = data
@@ -2410,7 +2207,7 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
     if !model.is_empty() && !overscroll_is_placeholder(&model) {
         let mut spans = vec![Span::styled(
             session_facts::pretty_model(&model),
-            right_fact_neutral_style(),
+            prompt_stats_neutral_style(),
         )];
         if let Some(effort) = data
             .reasoning_effort
@@ -2419,165 +2216,27 @@ fn right_fact_lines(app: &dyn TuiState) -> Vec<RightFactLine> {
         {
             spans.push(Span::styled(
                 format!(" {effort}"),
-                right_fact_neutral_style(),
+                prompt_stats_neutral_style(),
             ));
         }
-        if let Some(line) = RightFactLine::new(spans) {
-            lines.push(line);
-        }
+        lines.push(Line::from(spans));
     }
 
     if let Some(dir) = app
         .working_dir()
         .and_then(|path| overscroll_dir_label(&path))
     {
-        let mut spans = vec![Span::styled(dir, right_fact_neutral_style())];
-        if let Some(branch) = overscroll_git_branch(&data) {
+        let mut spans = vec![Span::styled(dir, prompt_stats_neutral_style())];
+        if let Some(branch) = overscroll_git_branch(data) {
             spans.push(Span::styled(
                 format!("  {branch}"),
-                right_fact_neutral_style(),
+                prompt_stats_neutral_style(),
             ));
         }
-        if let Some(line) = RightFactLine::new(spans) {
-            lines.push(line);
-        }
-    }
-
-    if let Some((used, limit)) = overscroll_context_usage(&data) {
-        let mut spans = vec![Span::styled(
-            format!(
-                "{}/{} ",
-                overscroll_format_tokens(used),
-                overscroll_format_tokens(limit)
-            ),
-            right_fact_neutral_style(),
-        )];
-        spans.extend(overscroll_context_bar(
-            used,
-            limit,
-            RIGHT_FACT_CONTEXT_CELLS,
-        ));
-        if let Some(line) = RightFactLine::new(spans) {
-            lines.push(line);
-        }
+        lines.push(Line::from(spans));
     }
 
     lines
-}
-
-#[allow(clippy::too_many_arguments)]
-fn right_fact_placements(
-    buffer: &ratatui::buffer::Buffer,
-    lines: Vec<RightFactLine>,
-    top: u16,
-    bottom: u16,
-    left: u16,
-    right: u16,
-    messages_area: Rect,
-    transcript_scrollbar_visible: bool,
-    protected_position: Option<Position>,
-) -> Vec<RightFactPlacement> {
-    if top >= bottom || left >= right || lines.is_empty() {
-        return Vec::new();
-    }
-
-    let Ok(block_height) = u16::try_from(lines.len()) else {
-        return Vec::new();
-    };
-    if bottom.saturating_sub(top) < block_height {
-        return Vec::new();
-    }
-
-    // Facts are one visual object. Probe complete consecutive blocks from the
-    // bottom upward; if any row collides, move the entire stack rather than
-    // skipping that row and letting unrelated content split the facts apart.
-    let mut block_bottom = bottom;
-    loop {
-        let Some(block_top) = block_bottom.checked_sub(block_height) else {
-            return Vec::new();
-        };
-        if block_top < top {
-            return Vec::new();
-        }
-
-        let areas = lines
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let row = block_top + index as u16;
-                right_fact_area_on_row(
-                    buffer,
-                    line,
-                    row,
-                    left,
-                    right,
-                    messages_area,
-                    transcript_scrollbar_visible,
-                    protected_position,
-                )
-            })
-            .collect::<Option<Vec<_>>>();
-        if let Some(areas) = areas {
-            return lines
-                .into_iter()
-                .zip(areas)
-                .map(|(line, area)| RightFactPlacement { line, area })
-                .collect();
-        }
-
-        if block_top == top {
-            return Vec::new();
-        }
-        block_bottom = block_bottom.saturating_sub(1);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn right_fact_area_on_row(
-    buffer: &ratatui::buffer::Buffer,
-    line: &RightFactLine,
-    row: u16,
-    left: u16,
-    right: u16,
-    messages_area: Rect,
-    transcript_scrollbar_visible: bool,
-    protected_position: Option<Position>,
-) -> Option<Rect> {
-    let row_right =
-        if transcript_scrollbar_visible && row >= messages_area.y && row < messages_area.bottom() {
-            right.saturating_sub(1)
-        } else {
-            right
-        };
-
-    let required = line
-        .width
-        .saturating_add(RIGHT_FACT_GAP)
-        .saturating_add(RIGHT_FACT_PAD);
-    if row_right.saturating_sub(left) < required {
-        return None;
-    }
-
-    let fact_right = row_right.saturating_sub(RIGHT_FACT_PAD);
-    let fact_left = fact_right.saturating_sub(line.width);
-    let probe_left = fact_left.saturating_sub(RIGHT_FACT_GAP);
-    if probe_left < left
-        || !(probe_left..row_right).all(|x| {
-            protected_position != Some(Position::new(x, row))
-                && right_fact_cell_is_blank(&buffer[(x, row)])
-        })
-    {
-        return None;
-    }
-
-    Some(Rect::new(fact_left, row, line.width, 1))
-}
-
-fn right_fact_cell_is_blank(cell: &ratatui::buffer::Cell) -> bool {
-    cell.symbol().trim().is_empty()
-        && cell.bg == Color::Reset
-        && cell.modifier.is_empty()
-        && !cell.skip
 }
 
 pub(super) fn draw_input(
