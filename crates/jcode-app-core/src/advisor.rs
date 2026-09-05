@@ -4,6 +4,7 @@
 //! enforcement. Provider context and in-flight reviews are never persisted.
 
 mod evidence;
+mod model_selection;
 mod persistence;
 mod routing;
 
@@ -244,6 +245,7 @@ struct PendingReview {
     queue: SoftInterruptQueue,
     input: AdvisorTurnInput,
     config: AdvisorConfig,
+    model_override: Option<model_selection::AdvisorModelOverride>,
 }
 
 #[derive(Default)]
@@ -259,7 +261,9 @@ struct AdvisorRuntime {
     active_review_id: u64,
     pending: Option<PendingReview>,
     enabled_override: Option<bool>,
+    model_override: Option<model_selection::AdvisorModelOverride>,
     immunity_until_turn: u64,
+    model_selection_id: u64,
     immunity_turns: u64,
     delivery_queue: Option<std::sync::Weak<Mutex<Vec<SoftInterruptMessage>>>>,
     capture: Option<evidence::TurnEvidence>,
@@ -315,6 +319,7 @@ impl AdvisorManager {
                 .lock()
                 .map_err(|_| anyhow::anyhow!("advisor state unavailable"))?;
             let runtime = sessions.entry(owner_session_id.to_string()).or_default();
+            runtime.model_selection_id = self.next_review_id.fetch_add(1, AtomicOrdering::Relaxed).saturating_add(1);
             runtime.enabled_override = Some(enabled);
             if !enabled {
                 clear_queued_notes(runtime);
@@ -427,11 +432,12 @@ impl AdvisorManager {
         let max_reviews_per_session = config.max_reviews_per_session as u64;
 
         let input = input.bounded(config.redact);
-        let pending = PendingReview {
+        let mut pending = PendingReview {
             provider,
             queue,
             input,
             config,
+            model_override: None,
         };
         let review_id = self
             .next_review_id
@@ -449,6 +455,7 @@ impl AdvisorManager {
                 return false;
             }
             let runtime = sessions.entry(owner_session_id.clone()).or_default();
+            pending.model_override = runtime.model_override.clone();
             if runtime.persistence_failed {
                 return false;
             }
@@ -466,18 +473,12 @@ impl AdvisorManager {
                 runtime.pending = Some(pending);
                 return true;
             }
-            let PendingReview {
-                provider,
-                queue,
-                input,
-                config,
-            } = pending;
             runtime.cursor = runtime.cursor.saturating_add(1);
             runtime.status = AdvisorStatus::Reviewing;
             runtime.notes_emitted = 0;
             runtime.last_error = None;
             runtime.active_review_id = review_id;
-            runtime.private_context.push(input.clone());
+            runtime.private_context.push(pending.input.clone());
             if runtime.private_context.len() > MAX_PRIVATE_CONTEXT {
                 runtime.private_context.remove(0);
             }
@@ -486,7 +487,7 @@ impl AdvisorManager {
                 return false;
             }
             drop(sessions);
-            self.spawn_review(owner_session_id, review_id, provider, queue, input, config);
+            self.spawn_review(owner_session_id, review_id, pending);
         }
         true
     }
@@ -495,22 +496,12 @@ impl AdvisorManager {
         self: &Arc<Self>,
         owner_session_id: String,
         review_id: u64,
-        provider: Arc<dyn Provider>,
-        queue: SoftInterruptQueue,
-        input: AdvisorTurnInput,
-        config: AdvisorConfig,
+        pending: PendingReview,
     ) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             manager
-                .run_review(
-                    owner_session_id.clone(),
-                    review_id,
-                    provider,
-                    queue,
-                    input,
-                    config,
-                )
+                .run_review(owner_session_id.clone(), review_id, pending)
                 .await;
             manager.start_pending(owner_session_id);
         });
@@ -552,35 +543,18 @@ impl AdvisorManager {
             }
             (review_id, pending)
         };
-        self.spawn_review(
-            owner_session_id,
-            next.0,
-            next.1.provider,
-            next.1.queue,
-            next.1.input,
-            next.1.config,
-        );
+        self.spawn_review(owner_session_id, next.0, next.1);
     }
 
     async fn run_review(
         &self,
         owner_session_id: String,
         review_id: u64,
-        provider: Arc<dyn Provider>,
-        queue: SoftInterruptQueue,
-        input: AdvisorTurnInput,
-        config: AdvisorConfig,
+        pending: PendingReview,
     ) {
         if tokio::time::timeout(
             ADVISOR_REVIEW_TIMEOUT,
-            self.run_review_inner(
-                owner_session_id.clone(),
-                review_id,
-                provider,
-                queue,
-                input,
-                config,
-            ),
+            self.run_review_inner(owner_session_id.clone(), review_id, pending),
         )
         .await
         .is_err()
@@ -597,12 +571,15 @@ impl AdvisorManager {
         &self,
         owner_session_id: String,
         review_id: u64,
-        provider: Arc<dyn Provider>,
-        queue: SoftInterruptQueue,
-        input: AdvisorTurnInput,
-        config: AdvisorConfig,
+        pending: PendingReview,
     ) {
-        if let Err(error) = routing::apply(provider.as_ref(), &config) {
+        let PendingReview { provider, queue, input, config, model_override } = pending;
+        if !self.sessions.lock().ok().is_some_and(|sessions| {
+            sessions.get(&owner_session_id).is_some_and(|runtime| runtime.active_review_id == review_id)
+        }) {
+            return;
+        }
+        if let Err(error) = routing::apply_override(provider.as_ref(), &config, model_override.as_ref()) {
             self.fail(
                 &owner_session_id,
                 review_id,

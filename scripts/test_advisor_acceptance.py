@@ -4,6 +4,8 @@
 Default: deterministic local Responses API fixture; no external provider or user daemon.
 --live: opt-in OpenAI API calls for all three modes, using OPENAI_API_KEY already
 provided by the caller. Never claims the fixture is a live-model acceptance run.
+That optional harness route is not an advisor requirement: /advisor uses the
+same authenticated model routes as /model, including subscription/OAuth routes.
 """
 
 import argparse
@@ -31,6 +33,9 @@ PROMPT = (
     f"Synthetic redaction fixture OPENAI_API_KEY={SYNTHETIC_SECRET}"
 )
 PRIMARY = "Implementation complete; tests were not run."
+FIXTURE_ADVISOR_MODEL = "gpt-5-mini"
+FIXTURE_ADVISOR_EFFORT = "high"
+FIXTURE_PRIMARY_EFFORT = "low"
 MAX_REPORT_BYTES = 128 * 1024
 
 
@@ -83,6 +88,7 @@ class Fixture(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), Handler)
         self.reviews = []
         self.primary_tools = []
+        self.primary_settings = []
         self.errors = []
 
 
@@ -91,7 +97,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        data = json.dumps({"object": "list", "data": [{"id": "gpt-5", "object": "model"}]}).encode()
+        data = json.dumps({"object": "list", "data": [
+            {"id": model, "object": "model"} for model in ("gpt-5", FIXTURE_ADVISOR_MODEL)
+        ]}).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -133,9 +141,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 })
             else:
                 self.server.primary_tools.append(len(body.get("tools", [])))
+                self.server.primary_settings.append({
+                    "model": body.get("model"),
+                    "reasoning_effort": body.get("reasoning", {}).get("effort"),
+                })
                 result = PRIMARY
             response = {
-                "id": "resp_fixture", "status": "completed", "model": "gpt-5",
+                "id": "resp_fixture", "status": "completed", "model": body.get("model"),
                 "output": [{"id": "msg_fixture", "type": "message", "role": "assistant",
                             "status": "completed", "content": [{"type": "output_text", "text": result}]}],
                 "usage": {"input_tokens": 12, "output_tokens": 12, "total_tokens": 24},
@@ -201,12 +213,22 @@ class Client:
                 return event
         raise TimeoutError("isolated socket request timed out")
 
-    def control(self, action, note_id=None):
-        request = {"action": action}
+    def advisor_result(self, action, note_id=None, **fields):
+        request = {"action": action, **fields}
         if note_id:
             request["note_id"] = note_id
         rid = self.send("advisor", request=request)
-        return self.until(lambda item: item.get("type") == "advisor_result" and item.get("id") == rid)["result"]["message"]
+        result = self.until(lambda item: item.get("type") == "advisor_result" and item.get("id") == rid)["result"]
+        assert not result.get("error"), "advisor control failed; inspect its private local log"
+        return result
+
+    def control(self, action, note_id=None):
+        return self.advisor_result(action, note_id)["message"]
+
+    def set_primary_effort(self, effort):
+        rid = self.send("set_reasoning_effort", effort=effort)
+        result = self.until(lambda item: item.get("type") == "reasoning_effort_changed" and item.get("id") == rid)
+        assert not result.get("error") and result.get("effort") == effort, "primary effort was not applied"
 
     def turn(self):
         rid = self.send("message", content=PROMPT)
@@ -226,6 +248,50 @@ class Client:
 
     def close(self):
         self.socket.close()
+
+
+def assert_advisor_selection(client, selection, effort, *, enabled=True, follows_primary=False):
+    settings = client.advisor_result("status")["model_settings"]
+    assert settings == {
+        "enabled": enabled, "selection": selection, "reasoning_effort": effort,
+        "follows_primary": follows_primary,
+    }, "advisor model/effort settings did not survive the session operation"
+
+
+def configure_fixture_advisor(client):
+    client.set_primary_effort(FIXTURE_PRIMARY_EFFORT)
+    initial = client.advisor_result("model_options")
+    assert initial["model_settings"]["follows_primary"], "new advisor did not follow the primary model"
+    primary_selection = initial["model_settings"]["selection"]
+    assert primary_selection["api_method"] == "openai-api-key", "fixture primary route has unexpected authentication"
+    options = initial["model_options"]
+    routes = [route for route in options["available_routes"] if (
+        route["model"] == FIXTURE_ADVISOR_MODEL and route["api_method"] == "openai-api-key"
+    )]
+    assert len(routes) == 1 and routes[0]["available"], "fixture model is missing from advisor options"
+    route = routes[0]
+    selection = {
+        "model": route["model"], "runtime_key": primary_selection["runtime_key"],
+        "api_method": route["api_method"], "provider_label": route["provider"],
+    }
+    options = client.advisor_result("model_options", selection=selection)["model_options"]
+    assert FIXTURE_ADVISOR_EFFORT in options["available_efforts"], "selected model has no high effort option"
+    assert "swarm" not in options["available_efforts"], "advisor exposed a tool-executing swarm effort"
+    selection = options["selection"]
+    client.advisor_result("select_model", selection=selection, reasoning_effort=FIXTURE_ADVISOR_EFFORT)
+    assert_advisor_selection(client, selection, FIXTURE_ADVISOR_EFFORT)
+    return selection, primary_selection
+
+
+def assert_fixture_provider_settings(fixture, primary_model, review_offset, primary_offset):
+    reviews = fixture.reviews[review_offset:]
+    assert reviews, "fixture captured no advisor requests"
+    assert all(request.get("model") == FIXTURE_ADVISOR_MODEL for request in reviews), "advisor used the primary model"
+    assert all(request.get("reasoning", {}).get("effort") == FIXTURE_ADVISOR_EFFORT for request in reviews), "advisor effort was not applied"
+    primary = fixture.primary_settings[primary_offset:]
+    assert primary, "fixture captured no primary requests"
+    assert all(settings == {"model": primary_model, "reasoning_effort": FIXTURE_PRIMARY_EFFORT}
+               for settings in primary), "advisor selection changed the primary model or effort"
 
 
 class Daemon:
@@ -303,6 +369,9 @@ def exercise(binary, mode, fixture, model):
         try:
             client = daemon.start()
             session = client.session_id
+            if fixture:
+                review_offset, primary_offset = len(fixture.reviews), len(fixture.primary_settings)
+                selection, primary_selection = configure_fixture_advisor(client)
             client.turn()
             note, message = client.note()
             assert "Evidence:" in message, "review has no evidence"
@@ -313,6 +382,7 @@ def exercise(binary, mode, fixture, model):
             client = daemon.start(session)
             assert note in client.control("inspect") and "Acknowledged" in client.control("inspect")
             if fixture:
+                assert_advisor_selection(client, selection, FIXTURE_ADVISOR_EFFORT)
                 review_count = len(fixture.reviews)
                 for _ in range(2):
                     client.turn()
@@ -333,6 +403,7 @@ def exercise(binary, mode, fixture, model):
                 client.close()
                 client = daemon.connect(session)
                 assert second in client.control("inspect") and "Dismissed" in client.control("inspect")
+                assert_advisor_selection(client, selection, FIXTURE_ADVISOR_EFFORT)
             assert "disabled" in client.control("disable")
             client.close()
             daemon.stop()
@@ -347,10 +418,20 @@ def exercise(binary, mode, fixture, model):
             assert "Advisor: off" in client.control("status")
             daemon.checkpoint()
             if fixture:
+                assert_advisor_selection(client, selection, FIXTURE_ADVISOR_EFFORT, enabled=False)
+                assert_fixture_provider_settings(fixture, model, review_offset, primary_offset)
+                client.advisor_result("use_primary")
+                assert_advisor_selection(client, primary_selection, FIXTURE_PRIMARY_EFFORT, follows_primary=True)
+                client.close()
+                daemon.stop()
+                client = daemon.start(session)
+                assert_advisor_selection(client, primary_selection, FIXTURE_PRIMARY_EFFORT, follows_primary=True)
+                daemon.checkpoint()
                 assert not fixture.errors, fixture.errors
                 assert any(fixture.primary_tools), "primary lost normal tools"
             return {"mode": mode, "status": "passed", "restart": True,
                     "reload_and_immunity": bool(fixture), "rewind": True,
+                    "advisor_model_effort_and_primary_isolation": bool(fixture),
                     "advisor_verdict": {"note_id": note, "inspect": message}}
         except Exception:
             if fixture:
@@ -368,7 +449,7 @@ def exercise(binary, mode, fixture, model):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=Path("target/selfdev/jcode"))
-    parser.add_argument("--live", action="store_true", help="Use the caller's OpenAI API key (billable).")
+    parser.add_argument("--live", action="store_true", help="Run this optional OpenAI-specific live test using the caller's API key (billable); /advisor also supports signed-in subscription routes.")
     parser.add_argument("--model", default="gpt-5")
     parser.add_argument("--report", type=Path, help="Save the bounded, redacted successful verdict report.")
     args = parser.parse_args(argv)

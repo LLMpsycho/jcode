@@ -2,14 +2,14 @@ use super::*;
 use crate::provider::{ModelRoute, RouteSelection, RuntimeKey, model_route_provider_labels_match};
 use anyhow::{Result, bail};
 
-fn role_request(config: &AdvisorConfig) -> Option<&str> {
+pub(super) fn role_request(config: &AdvisorConfig) -> Option<&str> {
     config.model.as_deref().or(match config.mode {
         AdvisorMode::FinalReview => config.verification_model.as_deref(),
         AdvisorMode::Interactive | AdvisorMode::SelfdevGuardian => config.reviewer_model.as_deref(),
     })
 }
 
-fn permitted(route: &ModelRoute, config: &AdvisorConfig) -> bool {
+pub(super) fn permitted(route: &ModelRoute, config: &AdvisorConfig) -> bool {
     route.available
         && config.allowed_runtime_keys.as_ref().is_none_or(|keys| {
             keys.contains(
@@ -20,7 +20,7 @@ fn permitted(route: &ModelRoute, config: &AdvisorConfig) -> bool {
         })
 }
 
-fn current_runtime(route: &ModelRoute, provider: &dyn Provider) -> bool {
+pub(super) fn current_runtime(route: &ModelRoute, provider: &dyn Provider) -> bool {
     if let Some((label, api, _)) = provider.direct_openai_compatible_route_parts() {
         return route.provider == label && route.api_method == api;
     }
@@ -35,6 +35,93 @@ fn current_runtime(route: &ModelRoute, provider: &dyn Provider) -> bool {
         }
         _ => true,
     }
+}
+
+pub(super) fn canonical_selection(
+    provider: &dyn Provider,
+    config: &AdvisorConfig,
+    selection: &RouteSelection,
+) -> Result<RouteSelection> {
+    let matching = provider.model_routes().into_iter().find(|route| {
+        let candidate = RouteSelection::from_model_route(route);
+        permitted(route, config)
+            && candidate.model == selection.model
+            && candidate.runtime_key == selection.runtime_key
+            && candidate.api_method == selection.api_method
+            && candidate.provider_label == selection.provider_label
+    });
+    let Some(route) = matching else {
+        bail!("advisor model route is unavailable or is not permitted; refresh /advisor models");
+    };
+    let mut canonical = RouteSelection::from_model_route(&route);
+    // Catalog detail can contain endpoint configuration; it is presentation
+    // metadata and is never needed to persist or execute an exact route.
+    canonical.detail.clear();
+    validate_persisted_selection(&canonical)?;
+    Ok(canonical)
+}
+
+pub(super) fn validate_persisted_selection(selection: &RouteSelection) -> Result<()> {
+    let runtime = selection.runtime_key.stable_id();
+    let fields = [
+        selection.model.as_str(),
+        selection.api_method.as_str(),
+        selection.provider_label.as_str(),
+        runtime.as_str(),
+    ];
+    if fields.iter().any(|value| {
+        value.len() > 256
+            || value.chars().any(char::is_control)
+            || redact_secrets(value) != *value
+    }) || !selection.detail.is_empty()
+    {
+        bail!("advisor model route metadata is invalid");
+    }
+    Ok(())
+}
+
+pub(super) fn efforts(provider: &dyn Provider) -> Vec<String> {
+    provider
+        .available_efforts()
+        .into_iter()
+        .filter(|effort| !matches!(*effort, "swarm" | "swarm-deep"))
+        .map(str::to_string)
+        .collect()
+}
+
+pub(super) fn apply_override(
+    provider: &dyn Provider,
+    config: &AdvisorConfig,
+    selection: Option<&model_selection::AdvisorModelOverride>,
+) -> Result<()> {
+    match selection {
+        Some(model_selection::AdvisorModelOverride::Selected {
+            selection,
+            reasoning_effort,
+        }) => {
+            let canonical = canonical_selection(provider, config, selection)?;
+            provider.set_route_selection(&canonical)?;
+            if let Some(effort) = reasoning_effort {
+                if !efforts(provider).contains(effort) {
+                    bail!("reasoning effort is not supported by the selected advisor model");
+                }
+                provider.set_reasoning_effort(effort)?;
+            }
+            Ok(())
+        }
+        Some(model_selection::AdvisorModelOverride::Primary) => {
+            let mut inherited = config.clone();
+            inherited.model = None;
+            inherited.reviewer_model = None;
+            inherited.verification_model = None;
+            apply(provider, &inherited)
+        }
+        None => apply(provider, config),
+    }?;
+    if provider.reasoning_effort().as_deref().is_some_and(|effort| matches!(effort, "swarm" | "swarm-deep")) {
+        bail!("advisor requires a single-model reasoning effort; choose an effort in /advisor");
+    }
+    Ok(())
 }
 
 /// Resolve against the provider's authenticated route catalog, then use the

@@ -1006,8 +1006,8 @@ pub(in crate::tui::app) fn handle_server_event(
             let _ = app.acknowledge_pending_soft_interrupt(id);
             false
         }
-        ServerEvent::AdvisorResult { result, .. } => {
-            app.push_display_message(DisplayMessage::system(result.message));
+        ServerEvent::AdvisorResult { id, result } => {
+            app.handle_advisor_result(id, result);
             true
         }
         ServerEvent::Interrupted => {
@@ -1624,6 +1624,7 @@ pub(in crate::tui::app) fn handle_server_event(
             let session_changed = prev_session_id.as_deref() != Some(session_id.as_str());
 
             if session_changed {
+                app.cancel_advisor_picker();
                 app.rate_limit_pending_message = None;
                 app.rate_limit_reset = None;
                 app.connection_type = None;

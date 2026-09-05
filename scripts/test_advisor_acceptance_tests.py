@@ -8,8 +8,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import test_advisor_acceptance as acceptance
 
@@ -88,6 +89,62 @@ class AcceptanceReportTests(unittest.TestCase):
                 acceptance.main(["--live", "--binary", str(binary), "--report", str(report)])
             self.assertFalse(report.exists())
             self.assertEqual(stdout.getvalue(), "")
+
+
+class AdvisorSelectionAcceptanceTests(unittest.TestCase):
+    def fixture(self):
+        return SimpleNamespace(
+            reviews=[{"model": acceptance.FIXTURE_ADVISOR_MODEL,
+                      "reasoning": {"effort": acceptance.FIXTURE_ADVISOR_EFFORT}}],
+            primary_settings=[{"model": "gpt-5", "reasoning_effort": acceptance.FIXTURE_PRIMARY_EFFORT}],
+        )
+
+    def test_provider_evidence_rejects_advisor_model_fallback_and_missing_effort(self):
+        for request in (
+            {"model": "gpt-5", "reasoning": {"effort": "high"}},
+            {"model": acceptance.FIXTURE_ADVISOR_MODEL},
+            {"model": acceptance.FIXTURE_ADVISOR_MODEL, "reasoning": {"effort": "low"}},
+        ):
+            with self.subTest(request=request):
+                fixture = self.fixture()
+                fixture.reviews.append(request)
+                with self.assertRaises(AssertionError):
+                    acceptance.assert_fixture_provider_settings(fixture, "gpt-5", 0, 0)
+
+    def test_provider_evidence_rejects_primary_mutation_and_missing_requests(self):
+        for field, value in (
+            ("primary_settings", [{"model": acceptance.FIXTURE_ADVISOR_MODEL, "reasoning_effort": "low"}]),
+            ("primary_settings", [{"model": "gpt-5", "reasoning_effort": "high"}]),
+            ("primary_settings", []),
+            ("reviews", []),
+        ):
+            with self.subTest(field=field, value=value):
+                fixture = self.fixture()
+                setattr(fixture, field, value)
+                with self.assertRaises(AssertionError):
+                    acceptance.assert_fixture_provider_settings(fixture, "gpt-5", 0, 0)
+
+    def test_provider_evidence_is_scoped_to_the_current_mode(self):
+        fixture = self.fixture()
+        fixture.reviews.insert(0, {"model": "earlier-mode"})
+        fixture.primary_settings.insert(0, {"model": "earlier-mode", "reasoning_effort": "high"})
+        acceptance.assert_fixture_provider_settings(fixture, "gpt-5", 1, 1)
+
+    def test_restart_evidence_rejects_success_text_with_lost_selection(self):
+        selected = {"model": acceptance.FIXTURE_ADVISOR_MODEL,
+                    "runtime_key": {"kind": "test-catalog-runtime"},
+                    "api_method": "openai-api-key", "provider_label": "OpenAI"}
+        expected = {"enabled": True, "selection": selected,
+                    "reasoning_effort": "high", "follows_primary": False}
+        for field, stale in (("selection", None), ("reasoning_effort", "low"),
+                             ("enabled", False), ("follows_primary", True)):
+            with self.subTest(field=field):
+                client = Mock()
+                client.advisor_result.return_value = {
+                    "message": "Advisor enabled", "model_settings": {**expected, field: stale},
+                }
+                with self.assertRaises(AssertionError):
+                    acceptance.assert_advisor_selection(client, selected, "high")
 
 
 if __name__ == "__main__":

@@ -40,19 +40,51 @@ pub enum TranscriptMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "action", content = "note_id")]
+#[serde(rename_all = "snake_case", tag = "action")]
 pub enum AdvisorRequest {
     Status,
     Inspect,
-    Dismiss(String),
-    Acknowledge(String),
+    Dismiss { note_id: String },
+    Acknowledge { note_id: String },
     Enable,
     Disable,
+    SelectModel {
+        selection: jcode_provider_core::RouteSelection,
+        #[serde(default)]
+        reasoning_effort: Option<String>,
+    },
+    UsePrimary,
+    ModelOptions {
+        #[serde(default)]
+        selection: Option<jcode_provider_core::RouteSelection>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdvisorControlResult {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_settings: Option<AdvisorModelSettings>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_options: Option<AdvisorModelOptions>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AdvisorControlResult {
-    pub message: String,
+pub struct AdvisorModelSettings {
+    pub enabled: bool,
+    pub selection: Option<jcode_provider_core::RouteSelection>,
+    pub reasoning_effort: Option<String>,
+    pub follows_primary: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AdvisorModelOptions {
+    pub selection: Option<jcode_provider_core::RouteSelection>,
+    pub reasoning_effort: Option<String>,
+    pub available_routes: Vec<jcode_provider_core::ModelRoute>,
+    pub available_efforts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

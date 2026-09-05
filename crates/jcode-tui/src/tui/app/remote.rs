@@ -411,6 +411,7 @@ async fn apply_terminal_event(
             app.update_copy_badge_key_event(key);
             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                 handle_remote_key_event(app, key, remote).await?;
+                app.forward_pending_advisor_request(remote).await;
                 if let Some(selection) = app.pending_route_selection.take() {
                     app.pending_model_switch = None;
                     match remote.set_route_selection(selection).await {

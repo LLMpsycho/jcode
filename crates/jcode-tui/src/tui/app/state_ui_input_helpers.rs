@@ -129,7 +129,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/improve", "Autonomously improve the repository"),
     RegisteredCommand::public("/refactor", "Run a safe refactor loop"),
     RegisteredCommand::public("/compact", "Compact context"),
-    RegisteredCommand::remote("/advisor", "Inspect or control the session advisor"),
+    RegisteredCommand::remote("/advisor", "Choose advisor model and effort; status, inspect, on/off"),
     RegisteredCommand::public("/fix", "Recover when the model cannot continue"),
     RegisteredCommand::public("/dictate", "Run configured external dictation command"),
     RegisteredCommand::public("/dictation", "Alias for /dictate"),

@@ -1,3 +1,4 @@
+mod advisor_picker_schema;
 pub mod account_picker;
 pub(crate) mod app;
 
@@ -1291,6 +1292,7 @@ pub enum AgentModelTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickerAction {
     Model,
+    Advisor(Option<crate::protocol::AdvisorRequest>),
     Account(AccountPickerAction),
     Login(crate::provider_catalog::LoginProviderDescriptor),
     Logout(crate::provider_catalog::LoginProviderDescriptor),
@@ -1349,6 +1351,7 @@ impl InlineInteractiveState {
 
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
+        PickerAction::Advisor(request) => advisor_picker_schema::request_bytes(request.as_ref()),
         PickerAction::Model
         | PickerAction::AgentTarget(_)
         | PickerAction::AgentModelChoice { .. }
@@ -1421,7 +1424,9 @@ fn estimate_picker_entry_bytes(entry: &PickerEntry) -> usize {
 
 impl InlineInteractiveState {
     pub fn schema(&self) -> InlineInteractiveSchema {
-        if self.is_agent_target_picker() {
+        if self.is_advisor_picker() {
+            advisor_picker_schema::schema()
+        } else if self.is_agent_target_picker() {
             InlineInteractiveSchema {
                 layout: InlineInteractiveLayout::ThreeColumn,
                 primary_label: "TARGET",
