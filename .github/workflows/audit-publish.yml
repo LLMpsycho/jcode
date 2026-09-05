@@ -1,0 +1,75 @@
+name: Publish verified audit source
+
+on:
+  push:
+    branches: [fix/post-merge-orchestration-audit]
+    paths: ['.github/workflows/audit-publish.yml']
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    if: github.repository == 'LLMpsycho/jcode' && github.ref == 'refs/heads/fix/post-merge-orchestration-audit'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: audit-validation
+          run-id: 33979300344
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/verified-audit
+      - name: Verify and stage only the exact tested source
+        shell: bash
+        run: |
+          git merge-base --is-ancestor 97107d565165c6ad5ef5ea2d7899a03c44dd1c16 HEAD
+          git diff --exit-code 97107d565165c6ad5ef5ea2d7899a03c44dd1c16 HEAD -- crates src scripts sdk
+          python3 - <<'PY'
+          import hashlib, os, tarfile
+          from pathlib import Path
+          archive = Path(os.environ['RUNNER_TEMP']) / 'verified-audit/audit-candidate.tar.gz'
+          assert hashlib.sha256(archive.read_bytes()).hexdigest() == 'b418b55a0c0665e0cd15681886e67e16682c19017c0d219f16f3f962274a49da'
+          count = 0
+          with tarfile.open(archive, 'r:gz') as tar:
+              for member in tar.getmembers():
+                  path = Path(member.name)
+                  assert member.isfile() and not path.is_absolute() and '..' not in path.parts
+                  if not (member.name.startswith('crates/jcode-tui/') or member.name == 'scripts/test_workflow_yaml.py'):
+                      assert member.name.startswith('.github/workflows/')
+                      continue
+                  stream = tar.extractfile(member)
+                  assert stream is not None
+                  data = stream.read()
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  path.write_bytes(data)
+                  path.chmod(member.mode & 0o777)
+                  count += 1
+          assert count == 24, count
+          print('Published source matches the artifact that passed all regression suites.')
+          PY
+          git add crates/jcode-tui scripts/test_workflow_yaml.py
+          git diff --cached --check
+          git diff --exit-code
+          test -z "$(git diff --cached --name-only -- .github)"
+          python3 scripts/check_module_files.py
+          python3 scripts/check_dependency_boundaries.py
+      - name: Push source only to the owned staging branch
+        shell: bash
+        env:
+          PUSH_TOKEN: ${{ github.token }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/fix/post-merge-orchestration-audit
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git config user.name 'Besi S'
+          git config user.email '211350563+LLMpsycho@users.noreply.github.com'
+          git commit -m 'fix: complete remote review orchestration with tested launch ownership'
+          auth="$(printf 'x-access-token:%s' "$PUSH_TOKEN" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin HEAD:refs/heads/fix/post-merge-orchestration-audit
+          git rev-parse HEAD
+          git rev-parse HEAD^{tree}
