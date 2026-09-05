@@ -81,8 +81,9 @@ jobs:
           rm crates/jcode-tui/src/tui/app/tests/post_merge_review.rs
           git apply --check "$RUNNER_TEMP/audit.patch"
           git apply "$RUNNER_TEMP/audit.patch"
+          python3 .github/audit-followup.py
           cargo fmt --all
-          git rm .github/audit-patch.b64 .github/workflows/audit-apply.yml
+          git rm .github/audit-patch.b64 .github/audit-followup.py .github/workflows/audit-apply.yml
           git add .github/workflows crates/jcode-tui scripts/test_workflow_yaml.py
           git diff --cached --check
           git diff --cached --stat
@@ -93,7 +94,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          for test in post_merge_review review_role queue_autojudge_remote prepare_review_spawned_session advisor; do
+          for test in post_merge_review review_role queue_autojudge_remote prepare_review_spawned_session advisor remote_; do
             scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/patched-$test.log"
           done
           python3 scripts/check_module_files.py
