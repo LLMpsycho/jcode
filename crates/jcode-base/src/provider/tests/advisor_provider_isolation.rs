@@ -195,15 +195,24 @@ fn advisor_subscription_route_stays_managed_after_auth_refresh_and_fork() {
 
         let provider = jcode::JcodeProvider::new();
         provider.set_model("gpt-5.5").unwrap();
-        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        assert_eq!(
+            executions.lock().unwrap().last().unwrap().model(),
+            "gpt-5.5"
+        );
         provider.set_reasoning_effort("high").unwrap();
         provider.on_auth_changed();
-        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        assert_eq!(
+            executions.lock().unwrap().last().unwrap().model(),
+            "gpt-5.5"
+        );
         assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
         let advisor = provider.fork();
         assert_eq!(advisor.model(), "gpt-5.5");
         assert_eq!(advisor.reasoning_effort().as_deref(), Some("high"));
-        assert_eq!(executions.lock().unwrap().last().unwrap().model(), "gpt-5.5");
+        assert_eq!(
+            executions.lock().unwrap().last().unwrap().model(),
+            "gpt-5.5"
+        );
         advisor.set_model("gpt-5.6-sol").unwrap();
         assert_eq!(
             executions.lock().unwrap().last().unwrap().model(),
