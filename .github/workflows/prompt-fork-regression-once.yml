@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: prompt-fork-regression-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   fix-and-verify:
     if: github.event.pull_request.head.repo.full_name == 'LLMpsycho/jcode' && github.event.pull_request.head.ref == 'fix/remote-review-orchestration'
@@ -31,7 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Add real persisted-child regressions against unchanged fork behavior
+      - name: Reproduce route loss and non-durable empty forks
         shell: bash
         run: |
           python3 - <<'PY'
@@ -52,11 +56,11 @@ jobs:
               route: Option<crate::config::ConfigModelRoute>,
               api: Option<&str>,
               effort: Option<&str>,
+              visible_history: bool,
           ) {
               with_temp_jcode_home(|| {
                   let mut app = create_test_app();
                   app.is_remote = false;
-                  app.session.title = Some("fork parent".into());
                   app.session.model = Some("chosen-model".into());
                   app.session.provider_key = Some("openai-oauth".into());
                   app.session.route_api_method = api.map(str::to_owned);
@@ -65,6 +69,11 @@ jobs:
                   app.session.provider_session_id = Some("parent-provider-conversation".into());
                   app.session.autoreview_enabled = Some(true);
                   app.session.autojudge_enabled = Some(false);
+                  if visible_history {
+                      app.session.add_message(crate::message::Role::User, vec![crate::message::ContentBlock::Text {
+                          text: "Inspect this project".into(), cache_control: None,
+                      }]);
+                  }
                   let parent_id = app.session.id.clone();
                   let (child_id, _) = crate::tui::app::commands_review::clone_session_for_prompt(&app)
                       .expect("fork local prompt session");
@@ -98,17 +107,23 @@ jobs:
                   }),
                   Some("openai-oauth"),
                   Some("high"),
+                  true,
               );
           }
           
           #[test]
           fn post_merge_review_prompt_fork_preserves_main_route_without_inventing_role() {
-              assert_prompt_fork_route(None, Some("openai-oauth"), Some("medium"));
+              assert_prompt_fork_route(None, Some("openai-oauth"), Some("medium"), true);
           }
           
           #[test]
           fn post_merge_review_prompt_fork_preserves_legacy_unset_selection() {
-              assert_prompt_fork_route(None, None, None);
+              assert_prompt_fork_route(None, None, None, true);
+          }
+          
+          #[test]
+          fn post_merge_review_prompt_fork_persists_before_first_visible_message() {
+              assert_prompt_fork_route(None, None, None, false);
           }
           ''')
           PY
@@ -119,8 +134,8 @@ jobs:
           set -e
           cat "$RUNNER_TEMP/prompt-fork-before.log"
           test "$result" -ne 0
-          grep -q 'test result: FAILED. 1 passed; 2 failed;' "$RUNNER_TEMP/prompt-fork-before.log"
-      - name: Preserve exact route, role selection and reasoning effort
+          grep -q 'test result: FAILED. 1 passed; 3 failed;' "$RUNNER_TEMP/prompt-fork-before.log"
+      - name: Preserve child identity and durability across local, remote and transfer paths
         shell: bash
         run: |
           python3 - <<'PY'
@@ -133,19 +148,162 @@ jobs:
           assert fork.count(old) == 1
           new = old + '    child.route_api_method = app.session.route_api_method.clone();\n    child.reasoning_effort = app.session.reasoning_effort.clone();\n    child.role_model_selection = app.session.role_model_selection.clone();\n'
           path.write_text(before + fork.replace(old, new))
+          path = Path('crates/jcode-base/src/session/persistence.rs')
+          text = path.read_text()
+          old = '            && self.title.is_none()\n        {'
+          assert text.count(old) == 1
+          text = text.replace(old, '            && self.title.is_none()\n            && self.parent_id.is_none()\n        {')
+          old = '        // id find no file and silently treat the session as missing.\n'
+          assert text.count(old) == 1
+          text = text.replace(old, old + '        // An explicit child also needs a durable identity before its first\n        // visible message: fork/transfer callers hand its id to another client.\n        // Untouched root panels remain ephemeral; children are not bookmarked.\n')
+          path.write_text(text)
+          path = Path('crates/jcode-app-core/src/server/client_actions.rs')
+          text = path.read_text()
+          start = text.index('fn clone_split_session(')
+          end = text.index('fn transfer_active_messages(', start)
+          before, fork, after = text[:start], text[start:end], text[end:]
+          old = '    child.model = parent.model.clone();\n'
+          assert fork.count(old) == 1
+          fork = fork.replace(old, old + '    child.provider_key = parent.provider_key.clone();\n    child.route_api_method = parent.route_api_method.clone();\n    child.reasoning_effort = parent.reasoning_effort.clone();\n    child.role_model_selection = parent.role_model_selection.clone();\n    child.subagent_model = parent.subagent_model.clone();\n    child.autoreview_enabled = parent.autoreview_enabled;\n    child.autojudge_enabled = parent.autojudge_enabled;\n')
+          old = '    child.route_api_method = parent.route_api_method.clone();\n'
+          assert after.count(old) == 1
+          after = after.replace(old, old + '    child.reasoning_effort = parent.reasoning_effort.clone();\n    child.role_model_selection = parent.role_model_selection.clone();\n')
+          text = before + fork + after
+          old = '#[cfg(test)]\n#[path = "client_actions_tests.rs"]\nmod tests;'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, old + '\n\n#[cfg(test)]\n#[path = "client_actions_fork_tests.rs"]\nmod fork_tests;'))
+          path.with_name('client_actions_fork_tests.rs').write_text('''use super::{clone_split_session, create_transfer_child_session};
+          use crate::message::{ContentBlock, Role};
+          use crate::session::Session;
+          
+          struct HomeGuard(Option<std::ffi::OsString>);
+          
+          impl Drop for HomeGuard {
+              fn drop(&mut self) {
+                  match &self.0 {
+                      Some(previous) => crate::env::set_var("JCODE_HOME", previous),
+                      None => crate::env::remove_var("JCODE_HOME"),
+                  }
+              }
+          }
+          
+          fn verify_child_routing(transfer: bool) {
+              let _lock = crate::storage::lock_test_env();
+              let temporary = tempfile::tempdir().expect("temporary home");
+              let _home = HomeGuard(std::env::var_os("JCODE_HOME"));
+              crate::env::set_var("JCODE_HOME", temporary.path());
+              for explicit in [false, true] {
+                  for visible_history in [false, true] {
+                      let mut parent = Session::create(None, Some("fork parent".into()));
+                      parent.model = Some("chosen-model".into());
+                      parent.provider_key = Some("openai-oauth".into());
+                      parent.route_api_method = Some("openai-oauth".into());
+                      parent.reasoning_effort = Some("high".into());
+                      parent.role_model_selection = explicit.then(|| crate::config::ConfigModelRoute {
+                          model: "chosen-model".into(),
+                          api_method: "openai-oauth".into(),
+                          provider_label: "selected-account".into(),
+                      });
+                      parent.subagent_model = Some("worker-model".into());
+                      parent.autoreview_enabled = Some(true);
+                      parent.autojudge_enabled = Some(false);
+                      parent.provider_session_id = Some("parent-provider-conversation".into());
+                      if visible_history {
+                          parent.add_message(Role::User, vec![ContentBlock::Text {
+                              text: "Inspect this project".into(), cache_control: None,
+                          }]);
+                      }
+                      parent.save().expect("save parent");
+                      let (id, _) = if transfer {
+                          create_transfer_child_session(&parent.id, &parent, None)
+                      } else {
+                          clone_split_session(&parent.id)
+                      }.expect("create child");
+                      let mut child = Session::load(&id).expect("child is durable before launch");
+                      assert_eq!(child.parent_id.as_deref(), Some(parent.id.as_str()));
+                      assert_ne!(child.id, parent.id);
+                      assert_eq!(child.model, parent.model);
+                      assert_eq!(child.provider_key, parent.provider_key);
+                      assert_eq!(child.route_api_method, parent.route_api_method);
+                      assert_eq!(child.reasoning_effort, parent.reasoning_effort);
+                      assert_eq!(child.role_model_selection, parent.role_model_selection);
+                      assert_eq!(child.subagent_model, parent.subagent_model);
+                      assert_eq!(child.autoreview_enabled, parent.autoreview_enabled);
+                      assert_eq!(child.autojudge_enabled, parent.autojudge_enabled);
+                      assert!(child.provider_session_id.is_none());
+                      child.reasoning_effort = Some("low".into());
+                      child.role_model_selection = None;
+                      child.save().expect("save independent child");
+                      let original = Session::load(&parent.id).expect("reload parent");
+                      assert_eq!(original.reasoning_effort, parent.reasoning_effort);
+                      assert_eq!(original.role_model_selection, parent.role_model_selection);
+                      assert_eq!(original.provider_session_id, parent.provider_session_id);
+                  }
+              }
+          }
+          
+          #[test]
+          fn post_merge_fork_remote_split_persists_empty_child_and_preserves_route() {
+              verify_child_routing(false);
+          }
+          
+          #[test]
+          fn post_merge_fork_transfer_persists_empty_child_and_preserves_route() {
+              verify_child_routing(true);
+          }
+          ''')
+          root = Path('crates/jcode-base/src/session_tests')
+          path = root / 'mod.rs'
+          text = path.read_text()
+          assert 'mod child_persistence;' not in text
+          path.write_text(text + '\nmod child_persistence;\n')
+          (root / 'child_persistence.rs').write_text('''use super::*;
+          
+          #[test]
+          fn post_merge_fork_child_is_durable_while_untouched_root_stays_ephemeral() -> Result<()> {
+              let _lock = lock_env();
+              let temporary = tempfile::tempdir()?;
+              let _home = EnvVarGuard::set("JCODE_HOME", temporary.path());
+              let mut root = Session::create(None, None);
+              root.ensure_initial_session_context_message();
+              root.save()?;
+              assert!(!session_path(&root.id)?.exists());
+              let mut child = Session::create(Some(root.id.clone()), None);
+              child.ensure_initial_session_context_message();
+              child.save()?;
+              let stored = Session::load(&child.id)?;
+              assert_eq!(stored.parent_id, child.parent_id);
+              assert_eq!(stored.messages.len(), child.messages.len());
+              assert!(stored.title.is_none());
+              assert!(!stored.saved, "fork persistence must not bookmark the child");
+              assert!(stored.provider_session_id.is_none());
+              child.add_message(Role::User, vec![ContentBlock::Text {
+                  text: "First child request".into(), cache_control: None,
+              }]);
+              child.save()?;
+              assert_eq!(Session::load(&child.id)?.messages.len(), child.messages.len());
+              Ok(())
+          }
+          ''')
           PY
           cargo fmt --all
           git diff --check
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib post_merge_review -- --test-threads=1 | tee "$RUNNER_TEMP/prompt-fork-after.log"
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib session:: -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/prompt-fork-base.log"
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib post_merge_fork -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/prompt-fork-server.log"
+          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib clone_split_session -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib post_merge_review -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/prompt-fork-after.log"
           scripts/dev_cargo.sh test --locked -p jcode-tui --lib review_role -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib remote_ -- --test-threads=1
+          scripts/dev_cargo.sh test --locked -p jcode-tui --lib advisor -- --test-threads=1
           python3 scripts/check_module_files.py
           python3 scripts/check_dependency_boundaries.py
+          tar -czf "$RUNNER_TEMP/prompt-fork-changes.tar.gz" crates/jcode-base/src/session/persistence.rs crates/jcode-base/src/session_tests/mod.rs crates/jcode-base/src/session_tests/child_persistence.rs crates/jcode-app-core/src/server/client_actions.rs crates/jcode-app-core/src/server/client_actions_fork_tests.rs crates/jcode-tui/src/tui/app/commands_review.rs crates/jcode-tui/src/tui/app/tests.rs crates/jcode-tui/src/tui/app/tests/post_merge_fork.rs
       - name: Retain red-green evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: prompt-fork-regression-evidence
-          path: ${{ runner.temp }}/prompt-fork-*.log
+          path: ${{ runner.temp }}/prompt-fork-*
           retention-days: 7
       - name: Publish only the verified source changes to the owned PR branch
         shell: bash
@@ -153,7 +311,7 @@ jobs:
           test "$(git ls-remote origin refs/heads/fix/remote-review-orchestration | cut -f1)" = "$EXPECTED_HEAD"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add crates/jcode-tui/src/tui/app/commands_review.rs crates/jcode-tui/src/tui/app/tests.rs crates/jcode-tui/src/tui/app/tests/post_merge_fork.rs
+          git add crates/jcode-base/src/session/persistence.rs crates/jcode-base/src/session_tests/mod.rs crates/jcode-base/src/session_tests/child_persistence.rs crates/jcode-app-core/src/server/client_actions.rs crates/jcode-app-core/src/server/client_actions_fork_tests.rs crates/jcode-tui/src/tui/app/commands_review.rs crates/jcode-tui/src/tui/app/tests.rs crates/jcode-tui/src/tui/app/tests/post_merge_fork.rs
           git diff --cached --check
-          git commit -m 'fix: preserve exact model route and effort in local prompt forks'
+          git commit -m 'fix: preserve durable child sessions and exact fork/transfer model settings'
           git push origin HEAD:refs/heads/fix/remote-review-orchestration
