@@ -155,6 +155,7 @@ impl AdvisorManager {
         let canonical = routing::canonical_selection(provider, config, selection)?;
         let fork = provider.fork();
         fork.set_route_selection(&canonical)?;
+        routing::require_toolless(fork.as_ref())?;
         let available_efforts = routing::efforts(fork.as_ref());
         let saved_effort = match self.model_override(session) {
             Some(AdvisorModelOverride::Selected {

@@ -227,6 +227,10 @@ impl Provider for JcodeProvider {
         self.inner.handles_tools_internally()
     }
 
+    fn supports_toolless_requests(&self) -> bool {
+        self.inner.supports_toolless_requests()
+    }
+
     async fn invalidate_credentials(&self) {
         self.inner.invalidate_credentials().await;
     }

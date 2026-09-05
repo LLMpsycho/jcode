@@ -87,6 +87,13 @@ pub(super) fn efforts(provider: &dyn Provider) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn require_toolless(provider: &dyn Provider) -> Result<()> {
+    if !provider.supports_toolless_requests() {
+        bail!("this provider cannot disable its built-in tools; choose another model in /advisor");
+    }
+    Ok(())
+}
+
 pub(super) fn apply_override(
     provider: &dyn Provider,
     config: &AdvisorConfig,
@@ -116,6 +123,7 @@ pub(super) fn apply_override(
         }
         None => apply(provider, config),
     }?;
+    require_toolless(provider)?;
     if provider
         .reasoning_effort()
         .as_deref()

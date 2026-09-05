@@ -345,3 +345,88 @@ fn advisor_unnamed_compatible_route_without_runtime_preserves_openai() {
         assert_eq!(provider.model(), initial_model);
     });
 }
+
+struct AdvisorInternalRuntime {
+    supports_toolless: bool,
+}
+
+#[async_trait::async_trait]
+impl Provider for AdvisorInternalRuntime {
+    async fn complete(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+        _system: &str,
+        _resume_session_id: Option<&str>,
+    ) -> anyhow::Result<EventStream> {
+        anyhow::bail!("capability test must not contact an internal agent")
+    }
+
+    fn name(&self) -> &str {
+        "internal-agent"
+    }
+
+    fn model(&self) -> String {
+        "internal-model".to_string()
+    }
+
+    fn handles_tools_internally(&self) -> bool {
+        true
+    }
+
+    fn supports_toolless_requests(&self) -> bool {
+        self.supports_toolless
+    }
+
+    fn fork(&self) -> Arc<dyn Provider> {
+        Arc::new(Self {
+            supports_toolless: self.supports_toolless,
+        })
+    }
+}
+
+#[test]
+fn advisor_toolless_capability_delegates_to_active_internal_profile() {
+    with_clean_provider_test_env(|| {
+        let provider = test_multi_provider_with_cursor();
+        *provider.cursor.write().unwrap() = None;
+        provider.set_active_provider(ActiveProvider::OpenRouter);
+        assert!(
+            !provider.supports_toolless_requests(),
+            "missing runtime is unsafe"
+        );
+
+        let registry = ProviderRegistry::new(&provider);
+        for supported in [false, true] {
+            registry.install_compatible_profile(
+                "internal-agent".to_string(),
+                Arc::new(AdvisorInternalRuntime {
+                    supports_toolless: supported,
+                }),
+            );
+            registry.set_active_compatible_profile("internal-agent".to_string());
+            assert_eq!(provider.supports_toolless_requests(), supported);
+        }
+    });
+}
+
+#[test]
+fn advisor_toolless_capability_delegates_to_claude_cli_override() {
+    with_clean_provider_test_env(|| {
+        let provider = test_multi_provider_with_cursor();
+        *provider.cursor.write().unwrap() = None;
+        *provider.claude.write().unwrap() = Some(Arc::new(AdvisorInternalRuntime {
+            supports_toolless: true,
+        }));
+        provider.set_active_provider(ActiveProvider::Claude);
+        assert!(provider.handles_tools_internally());
+        assert!(provider.supports_toolless_requests());
+
+        // The dispatch path prefers the installed Anthropic runtime even when
+        // legacy CLI mode is configured; the capability must use the same one.
+        *provider.anthropic.write().unwrap() = Some(Arc::new(AdvisorInternalRuntime {
+            supports_toolless: false,
+        }));
+        assert!(!provider.supports_toolless_requests());
+    });
+}

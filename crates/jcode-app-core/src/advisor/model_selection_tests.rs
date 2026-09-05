@@ -12,6 +12,7 @@ struct CatalogProvider {
     calls: Arc<Mutex<Vec<(RouteSelection, String)>>>,
     gate: Option<Arc<tokio::sync::Notify>>,
     started: Arc<tokio::sync::Notify>,
+    internal_tools: bool,
 }
 
 impl CatalogProvider {
@@ -29,6 +30,7 @@ impl CatalogProvider {
             calls: Arc::new(Mutex::new(Vec::new())),
             gate: None,
             started: Arc::new(tokio::sync::Notify::new()),
+            internal_tools: false,
         }
     }
 
@@ -47,6 +49,9 @@ impl Provider for CatalogProvider {
     }
     fn model_routes(&self) -> Vec<ModelRoute> {
         self.routes.clone()
+    }
+    fn handles_tools_internally(&self) -> bool {
+        self.internal_tools
     }
     fn active_resolved_credential(&self) -> Option<ResolvedCredential> {
         Some(ResolvedCredential::Oauth)
@@ -80,6 +85,7 @@ impl Provider for CatalogProvider {
             calls: Arc::clone(&self.calls),
             gate: self.gate.clone(),
             started: Arc::clone(&self.started),
+            internal_tools: self.internal_tools,
         })
     }
     async fn complete(
@@ -90,6 +96,7 @@ impl Provider for CatalogProvider {
         _: Option<&str>,
     ) -> Result<EventStream> {
         assert!(tools.is_empty(), "advisor must remain toolless");
+        assert!(!self.internal_tools, "unsafe provider must not be called");
         self.calls.lock().expect("calls").push((
             self.selected.lock().expect("model").clone(),
             self.effort.lock().expect("effort").clone(),
@@ -455,4 +462,62 @@ fn jcode_subscription_selection_retains_structured_runtime_identity() {
         provider.selected.lock().expect("primary").runtime_key,
         RuntimeKey::OpenAIOAuth
     );
+}
+
+#[tokio::test]
+async fn advisor_rejects_providers_that_cannot_disable_internal_tools() {
+    let mut provider = CatalogProvider::new();
+    let manager = Arc::new(AdvisorManager::default());
+    let config = AdvisorConfig::default();
+    choose(&manager, "unsafe", &provider, Some("high")).expect("initial safe selection");
+    provider.internal_tools = true;
+
+    let preview = manager
+        .model_options("unsafe", &provider, &config, Some(&provider.reviewer()))
+        .expect_err("unsafe preview must fail");
+    assert!(
+        preview
+            .to_string()
+            .contains("cannot disable its built-in tools")
+    );
+    assert!(choose(&manager, "unsafe", &provider, Some("high")).is_err());
+    assert!(
+        manager
+            .use_primary_model(
+                "unsafe",
+                &provider,
+                &config,
+                manager.begin_model_selection("unsafe")
+            )
+            .is_err()
+    );
+
+    // Re-check the live runtime before each review even if a previously saved
+    // route was safe when it was selected.
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    assert!(manager.schedule_turn(
+        "unsafe".into(),
+        provider.fork(),
+        Arc::clone(&queue),
+        AdvisorTurnInput::default(),
+        config
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while manager.snapshot("unsafe").expect("snapshot").status == AdvisorStatus::Reviewing {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("unsafe review rejected");
+    let snapshot = manager.snapshot("unsafe").expect("failed state");
+    assert_eq!(snapshot.status, AdvisorStatus::Failed);
+    assert!(
+        snapshot
+            .last_error
+            .expect("capability error")
+            .contains("cannot disable its built-in tools")
+    );
+    assert!(provider.calls.lock().expect("calls").is_empty());
+    assert!(manager.notes("unsafe").is_empty());
+    assert!(queue.lock().expect("queue").is_empty());
 }

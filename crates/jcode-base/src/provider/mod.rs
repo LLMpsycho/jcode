@@ -2417,6 +2417,26 @@ impl Provider for MultiProvider {
         }
     }
 
+    fn supports_toolless_requests(&self) -> bool {
+        let runtime = match self.active_provider() {
+            ActiveProvider::Claude => self
+                .anthropic_provider()
+                .or_else(|| self.claude_provider()),
+            ActiveProvider::OpenAI => self.openai_provider(),
+            ActiveProvider::Copilot => self.copilot_provider(),
+            ActiveProvider::Antigravity => self.antigravity_provider(),
+            ActiveProvider::Gemini => self.gemini_provider(),
+            ActiveProvider::Cursor => self.cursor_provider(),
+            ActiveProvider::Bedrock => {
+                return self
+                    .bedrock_provider()
+                    .is_some_and(|runtime| runtime.supports_toolless_requests());
+            }
+            ActiveProvider::OpenRouter => self.active_openrouter_execution_provider(),
+        };
+        runtime.is_some_and(|runtime| runtime.supports_toolless_requests())
+    }
+
     fn reasoning_effort(&self) -> Option<String> {
         match self.active_provider() {
             ActiveProvider::Claude if !self.use_claude_cli => self

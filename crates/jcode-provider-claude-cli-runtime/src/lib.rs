@@ -118,6 +118,20 @@ impl Default for ClaudeProvider {
     }
 }
 
+#[cfg(test)]
+mod advisor_capability_tests {
+    use super::*;
+
+    #[test]
+    fn advisor_claude_cli_allows_an_empty_tool_set() {
+        let provider = ClaudeProvider::new();
+        assert!(provider.handles_tools_internally());
+        assert!(provider.supports_toolless_requests());
+        assert!(provider.tool_names_for_cli(&[]).is_empty());
+        assert!(provider.fork().supports_toolless_requests());
+    }
+}
+
 #[derive(Clone)]
 struct ClaudeCliConfig {
     cli_path: String,
@@ -861,6 +875,11 @@ impl Provider for ClaudeProvider {
     }
 
     fn handles_tools_internally(&self) -> bool {
+        true
+    }
+
+    fn supports_toolless_requests(&self) -> bool {
+        // The launcher passes --tools "" when the caller supplies no tools.
         true
     }
 

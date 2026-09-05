@@ -326,6 +326,14 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether `complete(..., &[], ...)` prevents all tool execution, including
+    /// provider-hosted tools. Internal agent runtimes must opt in only when
+    /// they can enforce an empty tool set; a prompt prohibition is insufficient.
+    /// Wrappers must delegate this capability to their active runtime.
+    fn supports_toolless_requests(&self) -> bool {
+        !self.handles_tools_internally()
+    }
+
     /// Invalidate any cached credentials.
     async fn invalidate_credentials(&self) {}
 
