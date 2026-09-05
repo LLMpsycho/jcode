@@ -907,3 +907,6 @@ fn build_tools_keeps_required_when_the_object_declares_no_properties() {
     let parameters = &built[0].function_declarations[0].parameters;
     assert_eq!(parameters["required"], json!(["anything"]));
 }
+
+#[path = "role_pinned_tests.rs"]
+mod role_pinned_tests;

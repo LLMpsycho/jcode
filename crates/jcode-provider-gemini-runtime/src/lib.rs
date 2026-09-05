@@ -28,6 +28,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -42,6 +43,7 @@ struct PersistedCatalog {
 pub struct GeminiProvider {
     client: reqwest::Client,
     model: Arc<RwLock<String>>,
+    route_pinned: AtomicBool,
     state: Arc<Mutex<Option<GeminiRuntimeState>>>,
     fetched_models: Arc<RwLock<Vec<String>>>,
 }
@@ -102,6 +104,7 @@ impl GeminiProvider {
         let provider = Self {
             client: gemini_http_client(),
             model: Arc::new(RwLock::new(model)),
+            route_pinned: AtomicBool::new(false),
             state: Arc::new(Mutex::new(None)),
             fetched_models: Arc::new(RwLock::new(Vec::new())),
         };
@@ -658,6 +661,14 @@ impl Default for GeminiProvider {
 
 #[async_trait]
 impl Provider for GeminiProvider {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.route_pinned.store(pinned, Ordering::Relaxed);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.route_pinned.load(Ordering::Relaxed)
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -666,6 +677,9 @@ impl Provider for GeminiProvider {
         resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
         let model = self.model();
+        // The private role caller may release its pin after receiving this
+        // stream. Snapshot it before the spawned request starts.
+        let route_pinned = self.route_pinned();
         let messages = messages.to_vec();
         let tools = tools.to_vec();
         let system = system.to_string();
@@ -690,6 +704,7 @@ impl Provider for GeminiProvider {
                 let provider = GeminiProvider {
                     client: provider.client.clone(),
                     model: provider.model.clone(),
+                    route_pinned: AtomicBool::new(route_pinned),
                     state: state_cache.clone(),
                     fetched_models: provider.fetched_models.clone(),
                 };
@@ -732,7 +747,7 @@ impl Provider for GeminiProvider {
                 .await
             {
                 Ok(response) => response,
-                Err(err) if is_gemini_model_not_found_error(&err) => {
+                Err(err) if !route_pinned && is_gemini_model_not_found_error(&err) => {
                     let mut fallback_response = None;
                     let mut last_err = err;
                     for fallback_model in gemini_fallback_models(&model) {
@@ -1078,6 +1093,7 @@ impl Provider for GeminiProvider {
         Arc::new(Self {
             client: self.client.clone(),
             model: Arc::new(RwLock::new(self.model())),
+            route_pinned: AtomicBool::new(self.route_pinned()),
             state: self.state.clone(),
             fetched_models: self.fetched_models.clone(),
         })
@@ -1094,6 +1110,7 @@ impl Clone for GeminiProvider {
         Self {
             client: self.client.clone(),
             model: self.model.clone(),
+            route_pinned: AtomicBool::new(self.route_pinned()),
             state: self.state.clone(),
             fetched_models: self.fetched_models.clone(),
         }
