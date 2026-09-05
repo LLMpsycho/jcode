@@ -168,9 +168,9 @@ fn mermaid_feature_defaults_on_and_parses_false() {
 }
 
 #[test]
-fn advisor_defaults_disabled_and_parses_all_phase_four_modes() {
+fn advisor_defaults_enabled_and_parses_all_phase_four_modes() {
     let defaults = Config::default();
-    assert!(!defaults.advisor.enabled);
+    assert!(defaults.advisor.enabled);
     assert_eq!(defaults.advisor.mode, super::AdvisorMode::Interactive);
     assert_eq!(defaults.advisor.max_notes_per_turn, 1);
     assert_eq!(
