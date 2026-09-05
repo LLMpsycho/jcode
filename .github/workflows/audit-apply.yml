@@ -61,10 +61,10 @@ jobs:
           cp "$RUNNER_TEMP/baseline-tests.rs" crates/jcode-tui/src/tui/app/tests/post_merge_review.rs
           printf '\n#[path = "tests/post_merge_review.rs"]\nmod post_merge_review;\n' >> crates/jcode-tui/src/tui/app/tests.rs
           scripts/dev_cargo.sh test --locked -p jcode-tui --lib --no-run
-      - name: Prove four reported regressions fail on the original code
+      - name: Prove reported regressions and existing fixture mismatch on original code
         shell: bash
         run: |
-          for test in post_merge_review_controls_use_wire post_merge_review_collision_preserves post_merge_review_prefixes_do_not post_merge_review_done_schedules; do
+          for test in post_merge_review_controls_use_wire post_merge_review_collision_preserves post_merge_review_prefixes_do_not post_merge_review_done_schedules remote_ownership_gate_reads_the_remote_goal_assessment; do
             if scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$test" -- --test-threads=1 > "$RUNNER_TEMP/baseline-$test.log" 2>&1; then
               cat "$RUNNER_TEMP/baseline-$test.log"
               echo "Expected regression did not reproduce: $test"
@@ -83,7 +83,43 @@ jobs:
           git apply "$RUNNER_TEMP/audit.patch"
           python3 .github/audit-followup.py
           python3 .github/audit-finalize.py
-          sed -i 's/{App, Instant, ProcessingStatus}/{App, DisplayMessage, Instant, ProcessingStatus}/' crates/jcode-tui/src/tui/app/tui_reload_restore.rs
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('crates/jcode-tui/src/tui/app')
+          def replace(path, old, new):
+              text = path.read_text()
+              assert text.count(old) == 1, (path, old[:90], text.count(old))
+              path.write_text(text.replace(old, new))
+          replace(root / 'tui_reload_restore.rs', '{App, Instant, ProcessingStatus}', '{App, DisplayMessage, Instant, ProcessingStatus}')
+          replace(root / 'tests/post_merge_review.rs', 'let mut child = crate::session::Session::create(None, None);', 'let mut child = crate::session::Session::create(None, Some("autoreview".into()));')
+          path = root / 'tests/role_review_launch.rs'
+          text = path.read_text()
+          start = text.index('        let mut app = create_test_app();')
+          end = text.index('        for (label, role, model, api, effort)', start)
+          setup = text[start:end]
+          text = text[:start] + text[end:]
+          target = '        ] {\n            let route = ConfigModelRoute {'
+          assert text.count(target) == 1
+          text = text.replace(target, '        ] {\n' + '\n'.join('    ' + line for line in setup.rstrip().splitlines()) + '\n            let route = ConfigModelRoute {')
+          path.write_text(text)
+          path = root / 'tests/remote_events_reload_05.rs'
+          text = path.read_text()
+          start = text.index('fn remote_ownership_gate_reads_the_remote_goal_assessment()')
+          end = text.index('\n#[test]', start)
+          test = text[start:end]
+          old = '        assert!(!app.schedule_auto_poke_followup_if_needed());\n        assert!(app.queued_messages.is_empty());'
+          assert test.count(old) == 1
+          new = '''        // A validated workflow may request its final user-facing response,
+                  // but must not reopen the ownership or confidence gates.
+                  assert!(app.schedule_auto_poke_followup_if_needed());
+                  assert_eq!(app.queued_messages, vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]);
+                  assert_eq!(app.todo_completion_gate_attempts, 0);
+                  app.queued_messages.clear();
+                  app.pending_queued_dispatch = false;
+                  assert!(!app.schedule_auto_poke_followup_if_needed());
+                  assert!(app.queued_messages.is_empty());'''
+          path.write_text(text[:start] + test.replace(old, new) + text[end:])
+          PY
           cargo fmt --all
           git rm .github/audit-patch.b64 .github/audit-followup.py .github/audit-finalize.py .github/workflows/audit-apply.yml
           git add .github/workflows crates/jcode-tui scripts/test_workflow_yaml.py
