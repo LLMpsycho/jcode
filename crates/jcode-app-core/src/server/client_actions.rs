@@ -671,6 +671,13 @@ fn clone_split_session(parent_session_id: &str) -> anyhow::Result<(String, Strin
     child.compaction = parent.compaction.clone();
     child.working_dir = parent.working_dir.clone();
     child.model = parent.model.clone();
+    child.provider_key = parent.provider_key.clone();
+    child.route_api_method = parent.route_api_method.clone();
+    child.reasoning_effort = parent.reasoning_effort.clone();
+    child.role_model_selection = parent.role_model_selection.clone();
+    child.subagent_model = parent.subagent_model.clone();
+    child.autoreview_enabled = parent.autoreview_enabled;
+    child.autojudge_enabled = parent.autojudge_enabled;
     child.status = crate::session::SessionStatus::Closed;
     // The parent agent keeps ownership of any in-flight request; tell the
     // forked agent so it treats the next prompt as fresh work instead of
@@ -707,6 +714,8 @@ fn create_transfer_child_session(
     child.model = parent.model.clone();
     child.provider_key = parent.provider_key.clone();
     child.route_api_method = parent.route_api_method.clone();
+    child.reasoning_effort = parent.reasoning_effort.clone();
+    child.role_model_selection = parent.role_model_selection.clone();
     child.subagent_model = parent.subagent_model.clone();
     child.improve_mode = parent.improve_mode;
     child.autoreview_enabled = parent.autoreview_enabled;
@@ -886,6 +895,10 @@ pub(super) async fn handle_transfer(
 #[cfg(test)]
 #[path = "client_actions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "client_actions_fork_tests.rs"]
+mod fork_tests;
 
 /// Decide whether an idle live session still owes the model a continuation.
 ///

@@ -38,3 +38,5 @@ impl Drop for EnvVarGuard {
 mod cases;
 
 mod role_model;
+
+mod child_persistence;

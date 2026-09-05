@@ -1715,3 +1715,6 @@ mod role_review_launch;
 
 #[path = "tests/agent_role_picker.rs"]
 mod agent_role_picker;
+
+#[path = "tests/post_merge_fork.rs"]
+mod post_merge_fork;

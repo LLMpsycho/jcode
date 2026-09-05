@@ -674,7 +674,7 @@ fn clone_session_for_review(
     Ok((child.id.clone(), child.display_name().to_string()))
 }
 
-fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
+pub(super) fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
     let parent_session_id = active_session_id(app);
     let mut child = Session::create(Some(parent_session_id.clone()), None);
     child.replace_messages(app.session.messages.clone());
@@ -682,6 +682,9 @@ fn clone_session_for_prompt(app: &App) -> anyhow::Result<(String, String)> {
     child.working_dir = app.session.working_dir.clone();
     child.model = app.session.model.clone();
     child.provider_key = app.session.provider_key.clone();
+    child.route_api_method = app.session.route_api_method.clone();
+    child.reasoning_effort = app.session.reasoning_effort.clone();
+    child.role_model_selection = app.session.role_model_selection.clone();
     child.subagent_model = app.session.subagent_model.clone();
     child.autoreview_enabled = app.session.autoreview_enabled;
     child.autojudge_enabled = app.session.autojudge_enabled;

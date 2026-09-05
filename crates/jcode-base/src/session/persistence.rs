@@ -385,6 +385,9 @@ impl Session {
         // explicit state just like `custom_title`, so it must persist even
         // before the first visible message (#1144). Otherwise later lookups by
         // id find no file and silently treat the session as missing.
+        // An explicit child also needs a durable identity before its first
+        // visible message: fork/transfer callers hand its id to another client.
+        // Untouched root panels remain ephemeral; children are not bookmarked.
         if !self.persist_state.snapshot_exists
             && !self
                 .messages
@@ -393,6 +396,7 @@ impl Session {
             && !self.saved
             && self.custom_title.is_none()
             && self.title.is_none()
+            && self.parent_id.is_none()
         {
             return Ok(());
         }
