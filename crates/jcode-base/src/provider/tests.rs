@@ -949,12 +949,15 @@ impl Provider for StubExternalRuntime {
         vec!["low", "medium", "high"]
     }
     fn fork(&self) -> Arc<dyn Provider> {
-        Arc::new(StubExternalRuntime::new(
-            self.name,
-            self.provider_label,
-            self.api_method,
-            self.models,
-        ))
+        Arc::new(Self {
+            name: self.name,
+            provider_label: self.provider_label,
+            api_method: self.api_method,
+            models: self.models,
+            model: std::sync::RwLock::new(self.model()),
+            credential_mode: std::sync::RwLock::new(self.credential_mode()),
+            reasoning_effort: std::sync::RwLock::new(self.reasoning_effort()),
+        })
     }
 }
 
