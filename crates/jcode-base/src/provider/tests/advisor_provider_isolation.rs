@@ -490,10 +490,20 @@ fn advisor_toolless_capability_delegates_to_active_claude_slot() {
 struct AdvisorQuotaRuntime {
     calls: Arc<std::sync::Mutex<Vec<Option<String>>>>,
     quota_error: bool,
+    route_pinned: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait::async_trait]
 impl Provider for AdvisorQuotaRuntime {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.route_pinned
+            .store(pinned, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.route_pinned.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     async fn complete(
         &self,
         messages: &[Message],
@@ -510,9 +520,26 @@ impl Provider for AdvisorQuotaRuntime {
             .unwrap()
             .push(crate::auth::codex::active_account_label());
         if self.quota_error {
+            assert!(
+                self.route_pinned(),
+                "exact route pin reaches the actual runtime"
+            );
             anyhow::bail!("429 rate limit exceeded");
         }
         Ok(Box::pin(futures::stream::empty()))
+    }
+
+    async fn complete_split(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        system_static: &str,
+        system_dynamic: &str,
+        resume_session_id: Option<&str>,
+    ) -> anyhow::Result<EventStream> {
+        assert_eq!(system_dynamic, "role-specific dynamic context");
+        self.complete(messages, tools, system_static, resume_session_id)
+            .await
     }
 
     fn name(&self) -> &str {
@@ -527,6 +554,7 @@ impl Provider for AdvisorQuotaRuntime {
         Arc::new(Self {
             calls: self.calls.clone(),
             quota_error: self.quota_error,
+            route_pinned: std::sync::atomic::AtomicBool::new(self.route_pinned()),
         })
     }
 }
@@ -559,6 +587,7 @@ fn advisor_selected_route_quota_error_never_rotates_shared_oauth_accounts() {
                 *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
                     calls: calls.clone(),
                     quota_error: true,
+                    route_pinned: std::sync::atomic::AtomicBool::new(false),
                 }));
 
                 let error = provider
@@ -590,6 +619,7 @@ fn advisor_selected_route_preserves_successful_request_and_resume_contract() {
             *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
                 calls: calls.clone(),
                 quota_error: false,
+                route_pinned: std::sync::atomic::AtomicBool::new(false),
             }));
             let stream = provider
                 .complete_on_selected_route(
@@ -604,5 +634,161 @@ fn advisor_selected_route_preserves_successful_request_and_resume_contract() {
             assert_eq!(calls.lock().unwrap().len(), 1);
             assert_eq!(provider.active_provider(), ActiveProvider::OpenAI);
         });
+    });
+}
+
+fn assert_pinned_role_quota_preserves_account_and_context(split: bool) {
+    with_clean_provider_test_env(|| {
+        with_env_var("JCODE_SAME_PROVIDER_ACCOUNT_FAILOVER", "true", || {
+            let runtime = enter_test_runtime();
+            runtime.block_on(async {
+                let provider = test_multi_provider_with_openai();
+                let primary_account = crate::auth::codex::primary_account_label();
+                crate::auth::codex::upsert_account_from_tokens(
+                    "secondary-role-account",
+                    "test-secondary-role-access-token",
+                    "test-secondary-role-refresh-token",
+                    None,
+                    Some(chrono::Utc::now().timestamp_millis() + 86_400_000),
+                )
+                .unwrap();
+                crate::auth::codex::set_active_account_override(Some(primary_account.clone()));
+                assert!(same_provider_account_failover_enabled());
+                assert!(
+                    !MultiProvider::same_provider_account_candidates(ActiveProvider::OpenAI)
+                        .is_empty()
+                );
+                let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let captured = calls.clone();
+                external::register_external_provider(external::OPENAI_RUNTIME, move || {
+                    Arc::new(AdvisorQuotaRuntime {
+                        calls: captured.clone(),
+                        quota_error: true,
+                        route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    })
+                });
+                let role = provider.fork();
+                role.set_route_pinned(true);
+                assert!(role.route_pinned());
+                assert!(!provider.route_pinned());
+                let messages = [Message::user("evidence")];
+                let result = if split {
+                    role.complete_split(
+                        &messages,
+                        &[],
+                        "selected review",
+                        "role-specific dynamic context",
+                        Some("review-resume"),
+                    )
+                    .await
+                } else {
+                    role.complete(&messages, &[], "selected review", Some("review-resume"))
+                        .await
+                };
+                let error = result.err().expect("selected role quota failure");
+                assert_eq!(error.to_string(), "429 rate limit exceeded");
+                assert_eq!(*calls.lock().unwrap(), vec![Some(primary_account.clone())]);
+                assert_eq!(
+                    crate::auth::codex::active_account_label(),
+                    Some(primary_account)
+                );
+                assert!(role.drain_startup_notices().is_empty());
+                assert_eq!(provider.active_provider(), ActiveProvider::OpenAI);
+                assert!(!provider.route_pinned());
+            });
+        });
+    });
+}
+
+#[test]
+fn agent_role_pinned_completion_does_not_rotate_oauth_accounts() {
+    assert_pinned_role_quota_preserves_account_and_context(false);
+}
+
+#[test]
+fn agent_role_pinned_split_completion_keeps_dynamic_context_and_account() {
+    assert_pinned_role_quota_preserves_account_and_context(true);
+}
+
+#[test]
+fn agent_role_pinning_is_private_and_preserved_by_nested_forks() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _runtime_guard = runtime.enter();
+        let primary = test_multi_provider_with_openai();
+        let selected_model = primary.model();
+        let role = primary.fork();
+        role.set_route_pinned(true);
+        let nested = role.fork();
+        let sibling = primary.fork();
+        assert!(role.route_pinned());
+        assert!(nested.route_pinned());
+        assert!(!primary.route_pinned());
+        assert!(!sibling.route_pinned());
+        role.set_route_pinned(false);
+        assert!(nested.route_pinned());
+        assert!(!role.route_pinned());
+        assert_eq!(primary.model(), selected_model);
+        assert_eq!(primary.active_provider(), ActiveProvider::OpenAI);
+    });
+}
+
+#[test]
+fn agent_role_pinned_missing_runtime_never_uses_another_provider() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        runtime.block_on(async {
+            let provider = test_multi_provider_with_openai();
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
+                calls: calls.clone(),
+                quota_error: false,
+                route_pinned: std::sync::atomic::AtomicBool::new(false),
+            }));
+            provider.set_active_provider(ActiveProvider::Claude);
+            provider.set_route_pinned(true);
+            let messages = [Message::user("evidence")];
+            let error = provider
+                .complete(&messages, &[], "selected review", Some("review-resume"))
+                .await
+                .err()
+                .expect("missing selected runtime must fail");
+            assert!(error.to_string().contains("Claude credentials not available"));
+            assert!(calls.lock().unwrap().is_empty());
+            assert_eq!(provider.active_provider(), ActiveProvider::Claude);
+
+            // Ordinary sessions retain their existing automatic availability fallback.
+            provider.set_route_pinned(false);
+            let stream = provider
+                .complete(&messages, &[], "selected review", Some("review-resume"))
+                .await
+                .expect("ordinary completion can use another configured provider");
+            drop(stream);
+            assert_eq!(calls.lock().unwrap().len(), 1);
+            assert_eq!(provider.active_provider(), ActiveProvider::OpenAI);
+        });
+    });
+}
+
+#[test]
+fn agent_role_pinning_survives_managed_subscription_forks() {
+    with_clean_provider_test_env(|| {
+        let runtime = enter_test_runtime();
+        let _runtime_guard = runtime.enter();
+        crate::provider_catalog::save_env_value_to_env_file(
+            crate::subscription_catalog::JCODE_API_KEY_ENV,
+            crate::subscription_catalog::JCODE_ENV_FILE,
+            Some("test-managed-role-token"),
+        )
+        .unwrap();
+        let primary = jcode::JcodeProvider::new();
+        let role = primary.fork();
+        role.set_route_pinned(true);
+        let nested = role.fork();
+        assert!(role.route_pinned());
+        assert!(nested.route_pinned());
+        assert!(!primary.route_pinned());
+        role.set_route_pinned(false);
+        assert!(nested.route_pinned());
     });
 }

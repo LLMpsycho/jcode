@@ -339,6 +339,7 @@ impl MultiProvider {
             startup_notices: RwLock::new(Vec::new()),
             initial_provider,
             routes_memo: Mutex::new(None),
+            route_pinned: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 

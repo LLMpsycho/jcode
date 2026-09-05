@@ -12,6 +12,14 @@ fn catalog_error_is_auth_rejection(err: &anyhow::Error) -> bool {
 
 #[async_trait]
 impl Provider for OpenAIProvider {
+    fn set_route_pinned(&self, pinned: bool) {
+        self.route_pinned.store(pinned, AtomicOrdering::Relaxed);
+    }
+
+    fn route_pinned(&self) -> bool {
+        self.route_pinned.load(AtomicOrdering::Relaxed)
+    }
+
     fn reload_credentials(&self) {
         self.reload_credentials_now();
     }
@@ -1211,6 +1219,7 @@ impl Provider for OpenAIProvider {
             persistent_ws: Arc::new(Mutex::new(None)),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::clone(&self.browser_only),
+            route_pinned: AtomicBool::new(self.route_pinned()),
         })
     }
 
