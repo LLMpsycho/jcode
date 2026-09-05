@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
+#[path = "swarm_role.rs"]
+pub(super) mod swarm_role;
+
 type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 type ClientConnections = Arc<RwLock<HashMap<String, ClientConnectionInfo>>>;
@@ -211,6 +214,8 @@ pub(super) struct CoordinatorSpawnIdentity {
     pub model: Option<String>,
     pub provider_key: Option<String>,
     pub route_api_method: Option<String>,
+    pub subagent_model: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub is_canary: bool,
 }
 
@@ -243,6 +248,8 @@ async fn resolve_coordinator_spawn_identity(
             model: Some(agent_guard.provider_model()),
             provider_key: agent_guard.session_provider_key(),
             route_api_method: agent_guard.session_route_api_method(),
+            subagent_model: agent_guard.subagent_model(),
+            reasoning_effort: agent_guard.provider_handle().reasoning_effort(),
             is_canary: agent_guard.is_canary(),
         };
     }
@@ -255,6 +262,8 @@ async fn resolve_coordinator_spawn_identity(
                 model: session.model.clone(),
                 provider_key: session.provider_key.clone(),
                 route_api_method: session.route_api_method.clone(),
+                subagent_model: session.subagent_model.clone(),
+                reasoning_effort: session.reasoning_effort.clone(),
                 is_canary: session.is_canary,
             };
             crate::logging::info(&format!(
@@ -593,14 +602,22 @@ pub(super) async fn spawn_swarm_agent(
     let agents_config = &crate::config::config().agents;
     let configured_swarm_model = agents_config.swarm_model.clone();
     let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
-    let selection = resolve_swarm_spawn_selection(configured_swarm_model.clone(), &coordinator);
+    let role = swarm_role::resolve(agents_config, &coordinator, requested_effort.as_deref());
+    let selection = role.selection;
     let spawn_model = selection.model.clone();
     let spawn_provider_key = selection.provider_key.clone();
     let spawn_route_api_method = selection.route_api_method.clone();
-    let spawn_effort = resolve_swarm_spawn_effort(
-        requested_effort.as_deref(),
-        agents_config.swarm_effort.as_deref(),
-    );
+    let spawn_effort = role.effort;
+    // Validate before launching a visible worker: an invalid configured route
+    // or effort must not become a child running the coordinator's model.
+    if role.route.is_some() {
+        crate::provider::fork_for_agent_role(
+            provider_template.as_ref(),
+            agents_config.swarm_route.as_ref(),
+            None,
+            spawn_effort.as_deref(),
+        )?;
+    }
     crate::logging::info(&format!(
         "Swarm spawn model resolution: requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
         requested_effort,
@@ -633,6 +650,11 @@ pub(super) async fn spawn_swarm_agent(
             coordinator_is_canary,
             startup_message.as_deref(),
             |session_id, cwd, selfdev_requested, provider_key| {
+                if role.route.is_some() {
+                    let mut session = Session::load(session_id)?;
+                    session.role_model_selection = agents_config.swarm_route.clone();
+                    session.save()?;
+                }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
                 let context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
@@ -674,6 +696,7 @@ pub(super) async fn spawn_swarm_agent(
                 spawn_model.clone(),
                 spawn_provider_key.clone(),
                 spawn_route_api_method.clone(),
+                role.route.clone(),
                 spawn_effort.clone(),
                 Some(Arc::clone(mcp_pool)),
                 Some(req_session_id.to_string()),

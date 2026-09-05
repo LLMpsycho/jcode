@@ -8,6 +8,7 @@ mod messages;
 mod prompting;
 mod provider;
 mod response_recovery;
+mod role_model;
 mod status;
 mod streaming;
 mod tools;

@@ -1554,15 +1554,13 @@ pub(super) async fn handle_resume_session(
         }
     }
 
-    {
-        let mut agent_guard = agent.lock().await;
-        agent_guard.mark_closed();
-    }
-
     let (result, is_canary) = {
         let mut agent_guard = agent.lock().await;
         let result =
             agent_guard.restore_session_with_working_dir(&session_id, working_dir_override);
+        if result.is_ok() {
+            super::session_provider::register(agent, &agent_guard.provider_handle());
+        }
         if *client_selfdev {
             agent_guard.set_canary("self-dev");
         }

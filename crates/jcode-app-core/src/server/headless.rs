@@ -50,6 +50,7 @@ pub(super) async fn create_headless_session(
     model_override: Option<String>,
     provider_key_override: Option<String>,
     route_api_method_override: Option<String>,
+    route_override: Option<crate::provider::RouteSelection>,
     effort_override: Option<String>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
     report_back_to_session_id: Option<String>,
@@ -70,6 +71,9 @@ pub(super) async fn create_headless_session(
     };
 
     let provider = provider_template.fork();
+    if let Some(route) = route_override.as_ref() {
+        provider.set_route_selection(route)?;
+    }
     let registry = Registry::new_with_runtime_services(
         provider.clone(),
         file_snapshots.clone(),
@@ -118,7 +122,9 @@ pub(super) async fn create_headless_session(
     }
     let client_session_id = new_agent.session_id().to_string();
 
-    if let Some(model) = model_override {
+    if let Some(route) = route_override.as_ref() {
+        new_agent.set_route_selection(route)?;
+    } else if let Some(model) = model_override {
         // Build a model-switch request that preserves the coordinator's auth
         // route (e.g. claude-api vs claude-oauth, or an openai-compatible
         // profile) so the spawned headless agent reconstructs the exact
@@ -157,12 +163,11 @@ pub(super) async fn create_headless_session(
         .as_deref()
         .map(str::trim)
         .filter(|effort| !effort.is_empty())
-        && let Err(e) = new_agent.set_reasoning_effort(effort)
     {
-        crate::logging::warn(&format!(
-            "Failed to set headless session reasoning effort override '{}': {}",
-            effort, e
-        ));
+        new_agent.set_reasoning_effort(effort)?;
+    }
+    if let Some(route) = route_override.as_ref() {
+        new_agent.set_role_model_selection(route)?;
     }
 
     new_agent.set_debug(true);

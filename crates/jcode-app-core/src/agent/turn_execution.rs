@@ -714,6 +714,14 @@ impl Agent {
         let restore_start = Instant::now();
         let load_start = Instant::now();
         let mut session = Session::load(session_id)?;
+        // Failed role restoration must leave both the current session and its
+        // provider untouched. Validate on a private fork before any mutation.
+        let role_provider = session.role_model_selection.as_ref().map(|route| {
+            crate::provider::fork_for_agent_role(
+                self.provider.as_ref(), Some(route), None, session.reasoning_effort.as_deref(),
+            )
+        }).transpose()?;
+        self.mark_closed();
         if let Some(working_dir) = working_dir {
             session.working_dir = Some(working_dir.to_string());
             session.refresh_initial_session_context_message();
@@ -750,7 +758,10 @@ impl Agent {
         let reset_ms = reset_start.elapsed().as_millis();
 
         let model_start = Instant::now();
-        if let Some(model) = self.session.model.clone() {
+        if let Some(provider) = role_provider {
+            self.provider = provider;
+            self.provider_runtime_state = ProviderRuntimeState::observed(self.provider.model());
+        } else if let Some(model) = self.session.model.clone() {
             let model_request =
                 crate::provider::MultiProvider::model_switch_request_for_session_route(
                     &model,
@@ -770,7 +781,13 @@ impl Agent {
         } else {
             self.session.model = Some(self.provider_model());
         }
-        self.restore_reasoning_effort_from_session();
+        if self.session.role_model_selection.is_none() {
+            self.restore_reasoning_effort_from_session();
+        } else {
+            crate::session_effort::record_session_effort(
+                &self.session.id, self.session.reasoning_effort.as_deref(),
+            );
+        }
         let model_ms = model_start.elapsed().as_millis();
 
         let mark_active_start = Instant::now();
