@@ -1145,7 +1145,7 @@ impl Provider for CopilotApiProvider {
             init_done: self.init_done.clone(),
             premium_mode: self.premium_mode.clone(),
             user_turn_count: self.user_turn_count.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
+            reasoning_effort: Arc::new(RwLock::new(self.current_reasoning_effort())),
             created_at: self.created_at,
         })
     }

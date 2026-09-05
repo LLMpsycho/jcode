@@ -2823,21 +2823,26 @@ impl Provider for MultiProvider {
         } else {
             None
         };
+        // Helper sessions may select another model or effort while sharing the
+        // runtime's auth and catalog caches with the primary session.
         let copilot_api = self
             .copilot_api
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .as_ref()
+            .map(|provider| provider.fork());
         let antigravity_provider = self
             .antigravity
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .as_ref()
+            .map(|provider| provider.fork());
         let gemini_provider = self
             .gemini
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .as_ref()
+            .map(|provider| provider.fork());
         let cursor_provider = if self
             .cursor
             .read()
@@ -2887,7 +2892,15 @@ impl Provider for MultiProvider {
         provider.spawn_anthropic_catalog_refresh_if_needed();
         provider.spawn_openai_catalog_refresh_if_needed();
         let switch_request = self.fork_model_switch_request(active, &current_model);
-        let _ = provider.set_model(&switch_request);
+        if provider.set_model(&switch_request).is_ok()
+            && let Some(effort) = self.reasoning_effort()
+            && provider.available_efforts().contains(&effort.as_str())
+            && let Err(error) = provider.set_reasoning_effort(&effort)
+        {
+            crate::logging::warn(&format!(
+                "Failed to preserve reasoning effort for forked provider: {error}"
+            ));
+        }
         Arc::new(provider)
     }
 

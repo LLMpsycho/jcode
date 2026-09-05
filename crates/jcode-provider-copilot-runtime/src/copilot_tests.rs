@@ -760,3 +760,24 @@ fn fork_preserves_reasoning_effort() {
     let forked = Provider::fork(&provider);
     assert_eq!(forked.reasoning_effort().as_deref(), Some("xhigh"));
 }
+
+#[test]
+fn advisor_fork_isolates_model_and_reasoning_effort() {
+    let provider = sonnet5_provider();
+    provider.set_reasoning_effort("high").unwrap();
+    let advisor = provider.fork();
+
+    advisor.set_reasoning_effort("low").unwrap();
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("high"));
+    assert_eq!(advisor.reasoning_effort().as_deref(), Some("low"));
+
+    provider.set_reasoning_effort("max").unwrap();
+    assert_eq!(advisor.reasoning_effort().as_deref(), Some("low"));
+
+    advisor.set_model("gpt-5.1-codex").unwrap();
+    assert_eq!(provider.model(), "claude-sonnet-5");
+    assert_eq!(provider.reasoning_effort().as_deref(), Some("max"));
+
+    provider.set_model("claude-opus-4.6").unwrap();
+    assert_eq!(advisor.model(), "gpt-5.1-codex");
+}
