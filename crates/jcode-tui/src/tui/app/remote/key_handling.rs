@@ -2075,16 +2075,7 @@ async fn handle_remote_key_internal(
                     return Ok(());
                 }
 
-                if let Some(request) = app_mod::advisor_picker::command(trimmed) {
-                    match request {
-                        Ok(request) => {
-                            app.queue_advisor_request(request);
-                            app.forward_pending_advisor_request(remote).await;
-                        }
-                        Err(usage) => {
-                            app.push_display_message(DisplayMessage::error(usage.to_string()))
-                        }
-                    }
+                if app.dispatch_remote_advisor_command(trimmed, remote).await {
                     return Ok(());
                 }
 
