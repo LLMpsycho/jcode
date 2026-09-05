@@ -84,7 +84,7 @@ fn assert_advisor_fork_preserves_effort(active: ActiveProvider, prefix: &str) {
         let model = match active {
             ActiveProvider::OpenAI => ALL_OPENAI_MODELS[0],
             ActiveProvider::Claude => {
-                if prefix == "anthropic-api" {
+                if prefix == "claude-api" {
                     crate::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test-advisor");
                 }
                 *provider.openai.write().unwrap() = None;
@@ -96,6 +96,16 @@ fn assert_advisor_fork_preserves_effort(active: ActiveProvider, prefix: &str) {
         provider
             .set_model(&format!("{prefix}:{model}"))
             .expect("select the primary authenticated model route");
+        assert_eq!(provider.active_provider(), active);
+        let expected_credential = if prefix.ends_with("-oauth") {
+            jcode_provider_core::ResolvedCredential::Oauth
+        } else {
+            jcode_provider_core::ResolvedCredential::ApiKey
+        };
+        assert_eq!(
+            provider.active_resolved_credential(),
+            Some(expected_credential)
+        );
         provider.set_reasoning_effort("high").unwrap();
         let credential = provider.active_resolved_credential();
 
@@ -128,5 +138,5 @@ fn advisor_fork_preserves_claude_oauth_effort() {
 
 #[test]
 fn advisor_fork_preserves_anthropic_api_effort() {
-    assert_advisor_fork_preserves_effort(ActiveProvider::Claude, "anthropic-api");
+    assert_advisor_fork_preserves_effort(ActiveProvider::Claude, "claude-api");
 }
