@@ -149,6 +149,19 @@ async fn oauth_advisor_selection_needs_no_api_key_and_preserves_primary() {
         .expect("catalog");
     assert!(options.selection.is_none());
     assert_eq!(options.available_routes.len(), 3);
+    assert_eq!(options.available_selections.len(), 3);
+    for (route, selection) in options
+        .available_routes
+        .iter()
+        .zip(&options.available_selections)
+    {
+        assert_eq!(selection.model, route.model);
+        assert_eq!(selection.runtime_key, RuntimeKey::OpenAIOAuth);
+        assert!(selection.detail.is_empty());
+        manager
+            .model_options("oauth", &provider, &config, Some(selection))
+            .expect("canonical catalog selection can be previewed unchanged");
+    }
     assert!(
         options
             .available_routes
@@ -462,6 +475,44 @@ fn jcode_subscription_selection_retains_structured_runtime_identity() {
         provider.selected.lock().expect("primary").runtime_key,
         RuntimeKey::OpenAIOAuth
     );
+}
+
+#[test]
+fn advisor_catalog_skips_unrepresentable_runtime_keys_without_losing_valid_routes() {
+    let mut provider = CatalogProvider::new();
+    let legacy = route("legacy-reviewer", "grok-acp", true);
+    let selection = RouteSelection::from_model_route(&legacy);
+    assert!(matches!(&selection.runtime_key, RuntimeKey::Other(_)));
+    assert!(serde_json::to_string(&selection).is_err());
+    provider.routes.push(legacy);
+    *provider.selected.lock().expect("primary route") = selection.clone();
+    let manager = AdvisorManager::default();
+    let config = AdvisorConfig::default();
+    let options = manager
+        .model_options("legacy", &provider, &config, None)
+        .expect("valid catalog remains available");
+    assert_eq!(options.available_routes.len(), 3);
+    assert_eq!(options.available_selections.len(), 3);
+    assert!(
+        options
+            .available_routes
+            .iter()
+            .all(|route| route.api_method != "grok-acp")
+    );
+    let settings = manager.model_settings("legacy", &provider, &config);
+    assert!(settings.selection.is_none());
+    serde_json::to_string(&crate::protocol::AdvisorControlResult {
+        model_options: Some(options),
+        model_settings: Some(settings),
+        ..crate::protocol::AdvisorControlResult::default()
+    })
+    .expect("whole response is serializable");
+    assert!(
+        manager
+            .model_options("legacy", &provider, &config, Some(&selection))
+            .is_err()
+    );
+    assert!(provider.calls.lock().expect("calls").is_empty());
 }
 
 #[tokio::test]

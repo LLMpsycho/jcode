@@ -53,7 +53,11 @@ pub(super) fn canonical_selection(
     let Some(route) = matching else {
         bail!("advisor model route is unavailable or is not permitted; refresh /advisor models");
     };
-    let mut canonical = RouteSelection::from_model_route(&route);
+    catalog_selection(&route)
+}
+
+pub(super) fn catalog_selection(route: &ModelRoute) -> Result<RouteSelection> {
+    let mut canonical = RouteSelection::from_model_route(route);
     // Catalog detail can contain endpoint configuration; it is presentation
     // metadata and is never needed to persist or execute an exact route.
     canonical.detail.clear();
@@ -72,6 +76,7 @@ pub(super) fn validate_persisted_selection(selection: &RouteSelection) -> Result
     if fields.iter().any(|value| {
         value.len() > 256 || value.chars().any(char::is_control) || redact_secrets(value) != *value
     }) || !selection.detail.is_empty()
+        || serde_json::to_value(&selection.runtime_key).is_err()
     {
         bail!("advisor model route metadata is invalid");
     }
