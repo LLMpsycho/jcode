@@ -1,9 +1,9 @@
 use super::*;
 use crate::message::ToolDefinition;
 use crate::provider::{EventStream, ModelRoute, RuntimeKey};
-use jcode_provider_core::ResolvedCredential;
 use async_trait::async_trait;
 use futures::stream;
+use jcode_provider_core::ResolvedCredential;
 
 struct CatalogProvider {
     routes: Vec<ModelRoute>,
