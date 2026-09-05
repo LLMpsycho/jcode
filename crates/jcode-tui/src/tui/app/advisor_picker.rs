@@ -12,7 +12,12 @@ pub(super) struct AdvisorPickerState {
     pending: Option<AdvisorRequest>,
     request_id: Option<u64>,
     session_id: Option<String>,
-    in_flight: std::collections::BTreeMap<u64, Option<String>>,
+    in_flight: std::collections::BTreeMap<u64, AdvisorInFlight>,
+}
+
+struct AdvisorInFlight {
+    session_id: Option<String>,
+    opens_picker: bool,
 }
 
 pub(super) fn command(input: &str) -> Option<Result<AdvisorRequest, &'static str>> {
@@ -81,13 +86,30 @@ fn entry(
 
 impl App {
     pub(super) fn cancel_advisor_picker(&mut self) {
-        self.advisor_picker = AdvisorPickerState::default();
+        self.advisor_picker.pending = None;
+        self.advisor_picker.request_id = None;
+        self.advisor_picker.session_id = None;
+        // Retain request correlation until the reply arrives, even when a
+        // session switch cancels the picker. A late generic Error must never
+        // be mistaken for a failure of the new session's main turn.
         if self
             .inline_interactive_state
             .as_ref()
             .is_some_and(|picker| picker.is_advisor_picker())
         {
             self.inline_interactive_state = None;
+        }
+    }
+
+    pub(super) fn disconnect_advisor_picker(&mut self) {
+        let had_requests = self.advisor_picker.pending.is_some()
+            || !self.advisor_picker.in_flight.is_empty();
+        self.cancel_advisor_picker();
+        self.advisor_picker.in_flight.clear();
+        if had_requests {
+            self.push_display_message(DisplayMessage::system(
+                "Advisor connection interrupted. After reconnecting, use /advisor status to check saved settings or /advisor to reopen the picker.",
+            ));
         }
     }
 
@@ -114,9 +136,14 @@ impl App {
     pub(super) fn queue_advisor_request(&mut self, request: AdvisorRequest) {
         self.advisor_picker.request_id = None;
         self.advisor_picker.session_id = self.remote_session_id.clone();
-        if matches!(request, AdvisorRequest::ModelOptions { .. }) {
+        if let AdvisorRequest::ModelOptions { selection } = &request {
             self.show_advisor_entries(vec![entry(
-                "Loading advisor models…".into(),
+                if selection.is_some() {
+                    "Loading reasoning efforts…"
+                } else {
+                    "Loading advisor models…"
+                }
+                .into(),
                 "Signed-in providers".into(),
                 String::new(),
                 "Esc to cancel".into(),
@@ -140,9 +167,13 @@ impl App {
         match remote.advisor(request).await {
             Ok(id) => {
                 self.advisor_picker.request_id = opens_picker.then_some(id);
-                self.advisor_picker
-                    .in_flight
-                    .insert(id, self.remote_session_id.clone());
+                self.advisor_picker.in_flight.insert(
+                    id,
+                    AdvisorInFlight {
+                        session_id: self.remote_session_id.clone(),
+                        opens_picker,
+                    },
+                );
                 while self.advisor_picker.in_flight.len() > 64 {
                     self.advisor_picker.in_flight.pop_first();
                 }
@@ -159,7 +190,10 @@ impl App {
     pub(super) fn handle_advisor_result(&mut self, id: u64, result: AdvisorControlResult) {
         // A deferred control can finish after this client attaches to another
         // session. Its success or failure must not be attributed to that session.
-        if self.advisor_picker.in_flight.remove(&id).as_ref() != Some(&self.remote_session_id) {
+        let Some(request) = self.advisor_picker.in_flight.remove(&id) else {
+            return;
+        };
+        if request.session_id != self.remote_session_id {
             return;
         }
         let expected = self.advisor_picker.request_id == Some(id);
@@ -170,6 +204,9 @@ impl App {
         let same_session = self.advisor_picker.session_id == self.remote_session_id;
         if expected {
             self.advisor_picker.request_id = None;
+        }
+        if request.opens_picker && !(expected && picker_open && same_session) {
+            return;
         }
         if let Some(error) = result.error {
             if expected && picker_open && same_session {
@@ -191,6 +228,20 @@ impl App {
         } else if !result.message.is_empty() {
             self.push_display_message(DisplayMessage::system(result.message));
         }
+    }
+
+    pub(super) fn handle_advisor_request_error(&mut self, id: u64, message: &str) -> bool {
+        if !self.advisor_picker.in_flight.contains_key(&id) {
+            return false;
+        }
+        self.handle_advisor_result(
+            id,
+            AdvisorControlResult {
+                error: Some(format!("Advisor request failed: {message}")),
+                ..Default::default()
+            },
+        );
+        true
     }
 
     fn show_advisor_options(
@@ -235,36 +286,52 @@ impl App {
                 Some(AdvisorRequest::UsePrimary),
                 follows_primary,
             )];
-            let mut routes = options.available_routes;
-            routes.sort_by(|a, b| {
-                (&a.model, &a.provider, &a.api_method).cmp(&(&b.model, &b.provider, &b.api_method))
-            });
-            entries.extend(
-                routes
-                    .into_iter()
+            // New servers provide canonical runtime identities, including
+            // named compatible profiles. Deriving identities from display
+            // labels is only a compatibility fallback for older daemons.
+            let mut selections = options.available_selections;
+            if selections.is_empty() {
+                selections = options
+                    .available_routes
+                    .iter()
                     .filter(|route| route.available)
-                    .map(|route| {
-                        let mut selection = RouteSelection::from_model_route(&route);
-                        selection.detail.clear();
-                        let selected = !follows_primary
-                            && current.is_some_and(|current| {
-                                current.model == selection.model
-                                    && current.runtime_key == selection.runtime_key
-                                    && current.api_method == selection.api_method
-                                    && current.provider_label == selection.provider_label
-                            });
-                        entry(
-                            route.model,
-                            route.provider,
-                            route.api_method,
-                            "Choose reasoning effort next".into(),
-                            Some(AdvisorRequest::ModelOptions {
-                                selection: Some(selection),
-                            }),
-                            selected,
-                        )
+                    .map(RouteSelection::from_model_route)
+                    .collect();
+            }
+            selections.sort_by(|a, b| {
+                (&a.model, &a.provider_label, &a.api_method)
+                    .cmp(&(&b.model, &b.provider_label, &b.api_method))
+            });
+            if selections.is_empty() {
+                entries.push(entry(
+                    "No available advisor models".into(),
+                    "Check /login and advisor permissions".into(),
+                    String::new(),
+                    "Sign in or allow a model, then reopen /advisor".into(),
+                    None,
+                    false,
+                ));
+            }
+            entries.extend(selections.into_iter().map(|mut selection| {
+                selection.detail.clear();
+                let selected = !follows_primary
+                    && current.is_some_and(|current| {
+                        current.model == selection.model
+                            && current.runtime_key == selection.runtime_key
+                            && current.api_method == selection.api_method
+                            && current.provider_label == selection.provider_label
+                    });
+                entry(
+                    selection.model.clone(),
+                    selection.provider_label.clone(),
+                    selection.api_method.clone(),
+                    "Choose reasoning effort next".into(),
+                    Some(AdvisorRequest::ModelOptions {
+                        selection: Some(selection),
                     }),
-            );
+                    selected,
+                )
+            }));
             entries
         };
         self.show_advisor_entries(entries);

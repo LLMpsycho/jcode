@@ -937,6 +937,9 @@ pub(super) fn handle_disconnect(
     // queued prompt for reconnect, but release the transient model-setup gate so
     // it cannot remain blocked forever waiting for an event that was lost.
     app.finish_auth_catalog_refresh();
+    // Advisor writes may already be saved on the daemon. Never replay them
+    // after reconnect, and do not leave a picker waiting for a lost reply.
+    app.disconnect_advisor_picker();
     state.last_disconnect_reason = Some(detail.clone());
 
     let scheduled_retry =
