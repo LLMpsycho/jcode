@@ -43,6 +43,12 @@ pub enum ApiEvent {
     /// Reply to `Ping`.
     Pong,
 
+    /// Reply to an advisor control; never a primary turn completion.
+    AdvisorResult {
+        session_id: String,
+        result: crate::AdvisorControlResult,
+    },
+
     // --- Streaming events (carry session_id, not tied to a request id) ---
     /// Assistant text delta.
     TextDelta { session_id: String, text: String },

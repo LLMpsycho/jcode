@@ -112,6 +112,42 @@ console.log("tokens:", turn.usage);
 client.close();
 ```
 
+## Advisor model and effort
+
+`advisor()` exposes the session's advisor controls through the same authenticated
+model routes as `/advisor` in jcode. Subscription/OAuth routes use existing
+sign-ins; selecting an advisor model does not change the primary model. Check
+`client.supports("advisor")` before using this additive protocol v1 capability.
+
+```ts
+const options = await client.advisor(session.session_id, { action: "model_options" });
+if (options.error) throw new Error(options.error);
+
+// Present these exact selections in your model picker. This example takes the first.
+const selection = options.model_options?.available_selections?.[0];
+if (!selection) throw new Error("No selectable advisor routes; check logins and daemon version");
+
+const preview = await client.advisor(session.session_id, { action: "model_options", selection });
+if (preview.error) throw new Error(preview.error);
+const effort = preview.model_options?.available_efforts.find((value) => value === "high");
+const result = await client.advisor(session.session_id, {
+  action: "select_model",
+  selection,
+  reasoning_effort: effort ?? null, // leave effort unspecified if high is unavailable
+});
+if (result.error) throw new Error(result.error);
+
+// Restore following the session's primary model and effort.
+const inherited = await client.advisor(session.session_id, { action: "use_primary" });
+if (inherited.error) throw new Error(inherited.error);
+```
+
+Preserve the returned `runtime_key` when selecting a route; its wire identity is
+not a permission key or provider display name. Other actions are `status`,
+`inspect`, `enable`, `disable`, and `acknowledge`/`dismiss` with a `note_id`.
+Advisor refusals return `result.error` together with the resulting settings;
+harness and transport failures reject the promise with the normal client errors.
+
 ## Structured output
 
 `runStructured()` asks the model for JSON, validates the response with Ajv, and

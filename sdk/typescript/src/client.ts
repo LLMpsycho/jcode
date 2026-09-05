@@ -20,6 +20,8 @@ import {
 } from "./structured.js";
 import {
   API_VERSION_MAJOR,
+  type AdvisorControlResult,
+  type AdvisorRequest,
   type AnyApiEvent,
   type ApiEvent,
   type ApiRequest,
@@ -710,6 +712,20 @@ export class JcodeClient extends EventEmitter {
    */
   async setReasoningEffort(sessionId: string, effort: string): Promise<void> {
     await this.requestOk({ req: "set_reasoning_effort", session_id: sessionId, effort });
+  }
+
+  /**
+   * Inspect or configure the session advisor independently of its primary model.
+   *
+   * Uses the daemon's existing authenticated routes. Advisor refusals are returned
+   * in `result.error` alongside the current settings; harness/transport errors reject.
+   */
+  async advisor(sessionId: string, request: AdvisorRequest): Promise<AdvisorControlResult> {
+    const frame = await this.expectReply(
+      { req: "advisor", session_id: sessionId, request },
+      "advisor_result",
+    );
+    return frame.result;
   }
 
   /**

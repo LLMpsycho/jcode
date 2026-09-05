@@ -238,6 +238,7 @@ async fn handle_api_client(stream: Stream, legacy_socket: PathBuf) -> Result<()>
             capabilities: [
                 "sessions",
                 "streaming",
+                "advisor",
                 "persisted_session_discovery",
                 "runtime_info",
                 "api_key_provisioning",

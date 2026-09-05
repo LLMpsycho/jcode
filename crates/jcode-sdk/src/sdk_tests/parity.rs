@@ -57,6 +57,7 @@ const CAPABILITIES: &[Capability] = &[
     cap("file_status", "fileStatus"),
     cap("set_model", "setModel"),
     cap("set_reasoning_effort", "setReasoningEffort"),
+    cap("advisor", "advisor"),
     cap("compact", "compact"),
     cap("rename_session", "renameSession"),
     cap("cancel_soft_interrupts", "cancelSoftInterrupts"),

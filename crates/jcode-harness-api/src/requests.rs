@@ -168,6 +168,12 @@ pub enum ApiRequest {
     /// support it answer with an error rather than silently ignoring it.
     SetReasoningEffort { session_id: String, effort: String },
 
+    /// Inspect, handle notes, or select an advisor model for this session.
+    Advisor {
+        session_id: String,
+        request: crate::AdvisorRequest,
+    },
+
     /// Summarize the transcript so far, freeing context.
     ///
     /// Without this a long-lived client eventually hits the context limit and
