@@ -749,10 +749,9 @@ fn advisor_commands_reach_server_from_enter_and_generic_submission_while_busy() 
         rt.block_on(async {
             for generic_submission in [false, true] {
                 for busy in [false, true] {
-                    for (command, action) in [
-                        ("/advisor", "model_options"),
-                        ("/advisor status", "status"),
-                    ] {
+                    for (command, action) in
+                        [("/advisor", "model_options"), ("/advisor status", "status")]
+                    {
                         let mut app = create_test_app();
                         app.is_remote = true;
                         app.is_processing = busy;

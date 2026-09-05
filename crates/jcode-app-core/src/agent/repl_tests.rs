@@ -70,7 +70,11 @@ async fn advisor_repl_commands_show_tui_guidance_without_skill_or_provider_dispa
         .collect();
     assert_eq!(guidance.len(), 5);
     assert!(guidance.iter().all(|line| line.contains("run `jcode`")));
-    assert!(guidance.iter().all(|line| line.contains("reasoning effort")));
+    assert!(
+        guidance
+            .iter()
+            .all(|line| line.contains("reasoning effort"))
+    );
     assert!(!output.iter().any(|line| line.contains("Unknown skill")));
     assert!(agent.active_skill.is_none());
     assert!(agent.session.messages.is_empty());
@@ -95,7 +99,11 @@ async fn advisor_repl_dispatch_preserves_other_skills_and_unknown_names() {
     )
     .await;
 
-    assert!(output.iter().any(|line| line == "Activating skill: advisory"));
+    assert!(
+        output
+            .iter()
+            .any(|line| line == "Activating skill: advisory")
+    );
     assert!(
         output
             .iter()
