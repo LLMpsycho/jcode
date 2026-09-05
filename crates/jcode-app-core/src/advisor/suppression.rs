@@ -125,5 +125,11 @@ impl ConcernLedger {
 }
 
 fn durable_text(value: &str, limit: usize) -> String {
-    truncate_utf8(redact_secrets(value).chars().filter(|character| !character.is_control()).collect(), limit)
+    truncate_utf8(
+        redact_secrets(value)
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect(),
+        limit,
+    )
 }
