@@ -1,0 +1,34 @@
+name: Post-merge audit
+
+on:
+  push:
+    branches: [fix/post-merge-orchestration-audit]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-audit-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Export exact tracked source for offline audit
+        run: |
+          git rev-parse HEAD > "$RUNNER_TEMP/audit-source-commit.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/audit-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audit-source
+          path: |
+            ${{ runner.temp }}/audit-source.tar.gz
+            ${{ runner.temp }}/audit-source-commit.txt
+          if-no-files-found: error
+          retention-days: 1
