@@ -644,7 +644,7 @@ fn assert_pinned_role_quota_preserves_account_and_context(split: bool) {
             runtime.block_on(async {
                 let provider = test_multi_provider_with_openai();
                 let primary_account = crate::auth::codex::primary_account_label();
-                crate::auth::codex::upsert_account_from_tokens(
+                let secondary_account = crate::auth::codex::upsert_account_from_tokens(
                     "secondary-role-account",
                     "test-secondary-role-access-token",
                     "test-secondary-role-refresh-token",
@@ -655,8 +655,12 @@ fn assert_pinned_role_quota_preserves_account_and_context(split: bool) {
                 crate::auth::codex::set_active_account_override(Some(primary_account.clone()));
                 assert!(same_provider_account_failover_enabled());
                 assert!(
-                    !MultiProvider::same_provider_account_candidates(ActiveProvider::OpenAI)
-                        .is_empty()
+                    crate::auth::codex::list_accounts()
+                        .unwrap()
+                        .iter()
+                        .any(|account| {
+                            account.label == secondary_account && account.label != primary_account
+                        })
                 );
                 let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
                 let captured = calls.clone();

@@ -87,7 +87,11 @@ fn role_model_route_change_and_clear_checkpoint_before_stub_resume() -> anyhow::
     let home = tempfile::tempdir()?;
     let _home = EnvVarGuard::set("JCODE_HOME", home.path());
     let id = "session_role_model_checkpoint";
-    let mut session = Session::create_with_id(id.to_string(), None, None);
+    let mut session = Session::create_with_id(
+        id.to_string(),
+        None,
+        Some("Role model checkpoint".to_string()),
+    );
     session.role_model_selection = Some(selected_route("openai-oauth", "OpenAI"));
     session.reasoning_effort = Some("high".to_string());
     session.save()?;
