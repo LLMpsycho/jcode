@@ -134,7 +134,7 @@ const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/compact", "Compact context"),
     RegisteredCommand::remote(
         "/advisor",
-        "Choose advisor model and effort; status, inspect, on/off",
+        "Choose advisor model and effort; model/status/inspect/on/off [name]",
     ),
     RegisteredCommand::public("/fix", "Recover when the model cannot continue"),
     RegisteredCommand::public("/dictate", "Run configured external dictation command"),

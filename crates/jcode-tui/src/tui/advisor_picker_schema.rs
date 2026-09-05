@@ -29,6 +29,11 @@ impl InlineInteractiveState {
 
 pub(super) fn request_bytes(request: Option<&AdvisorRequest>) -> usize {
     let (selection, effort) = match request {
+        Some(AdvisorRequest::ForAdvisor { name, request }) => {
+            return name.capacity()
+                + std::mem::size_of::<AdvisorRequest>()
+                + request_bytes(Some(request));
+        }
         Some(AdvisorRequest::SelectModel {
             selection,
             reasoning_effort,

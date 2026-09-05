@@ -54,6 +54,7 @@ export interface AdvisorRouteSelection {
 }
 
 export type AdvisorRequest =
+  | { action: "for_advisor"; name: string; request: AdvisorRequest }
   | { action: "status" | "inspect" | "enable" | "disable" | "use_primary" }
   | { action: "acknowledge" | "dismiss"; note_id: string }
   | { action: "model_options"; selection?: AdvisorRouteSelection | null }

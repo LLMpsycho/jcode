@@ -424,3 +424,81 @@ fn advisor_catalog_handles_do_not_keep_sessions_or_provider_credentials_alive() 
     assert!(weak_agent.upgrade().is_none());
     assert!(weak_provider.upgrade().is_none());
 }
+
+fn named_config() -> AdvisorConfig {
+    AdvisorConfig {
+        enabled: true,
+        roster: vec!["security", "verification"]
+            .into_iter()
+            .map(|name| crate::config::AdvisorRosterEntry {
+                name: name.into(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn named_controls_are_isolated_and_aggregate_status_includes_idle_entries() {
+    let manager = AdvisorManager::default();
+    let config = named_config();
+    let (key, selected, request) = target_request(
+        &config,
+        "owner",
+        AdvisorRequest::ForAdvisor {
+            name: "security".into(),
+            request: Box::new(AdvisorRequest::Disable),
+        },
+    )
+    .unwrap();
+    let disabled = control_request(&manager, &key, &selected, request);
+    assert!(disabled.error.is_none());
+    assert!(!manager.is_enabled(&roster::runtime_session_key("owner", "security"), true));
+    assert!(manager.is_enabled(&roster::runtime_session_key("owner", "verification"), true));
+    let status = roster_control_request(&manager, "owner", &config, AdvisorRequest::Status);
+    assert!(status.message.contains("security: Advisor: off"));
+    assert!(status.message.contains("verification: Advisor: on"));
+    assert!(status.message.contains("reviews 0/100"));
+    assert!(status.message.contains("context 0 message(s)"));
+    let disabled = roster_control_request(&manager, "owner", &config, AdvisorRequest::Disable);
+    assert!(disabled.error.is_none());
+    assert!(!manager.is_enabled(&roster::runtime_session_key("owner", "verification"), true));
+}
+
+#[test]
+fn named_picker_target_requires_configured_name_and_defaults_to_first_entry() {
+    let config = named_config();
+    let (key, _, _) = target_request(
+        &config,
+        "owner",
+        AdvisorRequest::ModelOptions { selection: None },
+    )
+    .unwrap();
+    assert_eq!(key, roster::runtime_session_key("owner", "security"));
+    assert!(
+        target_request(
+            &config,
+            "owner",
+            AdvisorRequest::ForAdvisor {
+                name: "missing".into(),
+                request: Box::new(AdvisorRequest::Enable)
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        target_request(
+            &config,
+            "owner",
+            AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(AdvisorRequest::ForAdvisor {
+                    name: "verification".into(),
+                    request: Box::new(AdvisorRequest::Enable)
+                })
+            }
+        )
+        .is_err()
+    );
+}

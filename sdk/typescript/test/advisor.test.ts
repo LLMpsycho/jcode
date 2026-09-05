@@ -53,7 +53,7 @@ const subscription: AdvisorRouteSelection = {
 };
 
 test("advisor forwards every command, exact OAuth route, and effort", async (t) => {
-  const commands: AdvisorRequest[] = [
+  const defaultCommands: AdvisorRequest[] = [
     { action: "status" },
     { action: "inspect" },
     { action: "enable" },
@@ -68,6 +68,10 @@ test("advisor forwards every command, exact OAuth route, and effort", async (t) 
     { action: "select_model", selection: subscription, reasoning_effort: null },
     { action: "select_model", selection: subscription },
   ];
+  const commands: AdvisorRequest[] = defaultCommands.flatMap((request) => [
+    request,
+    { action: "for_advisor", name: "security", request },
+  ]);
   const mock = mockTransport((request, send) => {
     assert.equal(request.req, "advisor");
     send({ ev: "advisor_result", reply_to: request.id, session_id: "s1", result: { message: "ok" } });

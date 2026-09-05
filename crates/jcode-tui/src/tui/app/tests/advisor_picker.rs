@@ -1,4 +1,5 @@
 use super::*;
+use crate::tui::PickerAction;
 
 fn advisor_test_route(method: &str, available: bool) -> crate::provider::ModelRoute {
     crate::provider::ModelRoute {
@@ -77,7 +78,30 @@ fn advisor_command_opens_picker_and_preserves_controls() {
         }
     );
     assert!(command("/advisor ack").unwrap().is_err());
-    assert!(command("/advisor status trailing").unwrap().is_err());
+    assert!(
+        command("/advisor status security trailing")
+            .unwrap()
+            .is_err()
+    );
+    for (action, control) in [
+        ("model", AdvisorRequest::ModelOptions { selection: None }),
+        ("models", AdvisorRequest::ModelOptions { selection: None }),
+        ("inherit", AdvisorRequest::UsePrimary),
+        ("status", AdvisorRequest::Status),
+        ("inspect", AdvisorRequest::Inspect),
+        ("on", AdvisorRequest::Enable),
+        ("off", AdvisorRequest::Disable),
+    ] {
+        assert_eq!(
+            command(&format!("/advisor {action} security"))
+                .unwrap()
+                .unwrap(),
+            AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(control),
+            }
+        );
+    }
     assert!(command("/advisory").is_none());
 }
 
@@ -147,6 +171,118 @@ fn advisor_picker_selects_oauth_route_and_effort_without_switching_main() {
 }
 
 #[test]
+fn named_advisor_picker_preserves_target_through_model_effort_and_inherit() {
+    with_temp_jcode_home(|| {
+        let mut app = create_test_app();
+        app.is_remote = true;
+        app.remote_provider_model = Some("main-model".into());
+        app.remote_reasoning_effort = Some("low".into());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let mut remote = crate::tui::backend::RemoteConnection::dummy();
+            let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+            let mut reader = tokio::io::BufReader::new(peer);
+            app.input = "/advisor model security".into();
+            app.cursor_pos = app.input.len();
+            app.sync_model_picker_preview_from_input();
+            app.handle_remote_key(KeyCode::Enter, KeyModifiers::NONE, &mut remote)
+                .await
+                .unwrap();
+            let (id, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["action"], "for_advisor");
+            assert_eq!(request["name"], "security");
+            assert_eq!(request["request"]["action"], "model_options");
+            app.handle_advisor_result(id, advisor_test_result(None));
+            let picker = app.inline_interactive_state.as_mut().unwrap();
+            assert!(picker.entries[1].options[0].detail.contains("security"));
+            assert!(matches!(
+                &picker.entries[0].action,
+                PickerAction::Advisor(Some(crate::protocol::AdvisorRequest::ForAdvisor { name, request }))
+                if name == "security" && **request == crate::protocol::AdvisorRequest::UsePrimary
+            ));
+            picker.selected = 1;
+            app.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::NONE)
+                .unwrap();
+            let (id, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["name"], "security");
+            assert_eq!(request["request"]["action"], "model_options");
+            let route = serde_json::from_value(request["request"]["selection"].clone()).unwrap();
+            app.handle_advisor_result(id, advisor_test_result(Some(route)));
+            app.inline_interactive_state.as_mut().unwrap().selected = 2;
+            app.handle_inline_interactive_key(KeyCode::Enter, KeyModifiers::NONE)
+                .unwrap();
+            let (_, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["name"], "security");
+            assert_eq!(request["request"]["action"], "select_model");
+            assert_eq!(request["request"]["reasoning_effort"], "high");
+            assert_eq!(
+                request["request"]["selection"]["runtime_key"],
+                serde_json::to_value(crate::provider::RuntimeKey::OpenAIOAuth).unwrap()
+            );
+            assert_eq!(app.remote_provider_model.as_deref(), Some("main-model"));
+            assert_eq!(app.remote_reasoning_effort.as_deref(), Some("low"));
+            assert!(app.pending_model_switch.is_none());
+            assert!(app.pending_route_selection.is_none());
+        });
+    });
+}
+
+#[test]
+fn named_advisor_preview_separates_target_from_filter_and_ignores_stale_targets() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let mut remote = crate::tui::backend::RemoteConnection::dummy();
+        let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
+        let mut reader = tokio::io::BufReader::new(peer);
+        for input in ["/advisor model s", "/advisor model security"] {
+            app.input = input.into();
+            app.cursor_pos = app.input.len();
+            assert!(!app.sync_advisor_picker_preview_from_input());
+            assert!(app.inline_interactive_state.is_none());
+        }
+        let mut previous_id = None;
+        for target in ["security", "performance"] {
+            app.input = format!("/advisor model {target} gpt");
+            app.cursor_pos = app.input.len();
+            assert!(app.sync_advisor_picker_preview_from_input());
+            let picker = app.inline_interactive_state.as_ref().unwrap();
+            assert!(picker.preview);
+            assert_eq!(picker.filter, "gpt");
+            let (id, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+            assert_eq!(request["name"], target);
+            assert!(request["request"]["selection"].is_null());
+            if let Some(stale_id) = previous_id {
+                app.handle_advisor_result(stale_id, advisor_test_result(None));
+                assert!(
+                    app.inline_interactive_state.as_ref().unwrap().entries[0]
+                        .name
+                        .contains("Loading")
+                );
+            }
+            previous_id = Some(id);
+        }
+        app.handle_advisor_result(previous_id.unwrap(), advisor_test_result(None));
+        let picker = app.inline_interactive_state.as_ref().unwrap();
+        assert_eq!(picker.filtered.len(), 1);
+        assert!(matches!(
+            &picker.entries[picker.filtered[0]].action,
+            PickerAction::Advisor(Some(crate::protocol::AdvisorRequest::ForAdvisor { name, .. }))
+            if name == "performance"
+        ));
+        app.handle_inline_interactive_key(KeyCode::Esc, KeyModifiers::NONE)
+            .unwrap();
+        app.input = "/advisor".into();
+        app.cursor_pos = app.input.len();
+        assert!(app.sync_advisor_picker_preview_from_input());
+        let (_, request) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
+        assert_eq!(request["action"], "model_options");
+        assert!(request.get("name").is_none());
+    });
+}
+
+#[test]
 fn advisor_picker_cancel_and_session_change_ignore_late_results() {
     let mut app = create_test_app();
     app.is_remote = true;
@@ -156,8 +292,11 @@ fn advisor_picker_cancel_and_session_change_ignore_late_results() {
         let (peer, _writer) = remote.take_dummy_peer().unwrap().into_split();
         let mut reader = tokio::io::BufReader::new(peer);
         for switch_session in [false, true] {
-            app.queue_advisor_request(crate::protocol::AdvisorRequest::ModelOptions {
-                selection: None,
+            app.queue_advisor_request(crate::protocol::AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(crate::protocol::AdvisorRequest::ModelOptions {
+                    selection: None,
+                }),
             });
             let (id, _) = advisor_read_request(&mut app, &mut remote, &mut reader).await;
             if switch_session {
@@ -824,8 +963,8 @@ fn advisor_generic_submission_invalid_control_shows_usage_without_sending_a_turn
                 &mut app,
                 &mut remote,
                 crate::tui::app::input::PreparedInput {
-                    raw_input: "/advisor status trailing".into(),
-                    expanded: "/advisor status trailing".into(),
+                    raw_input: "/advisor status security trailing".into(),
+                    expanded: "/advisor status security trailing".into(),
                     images: vec![],
                 },
             )

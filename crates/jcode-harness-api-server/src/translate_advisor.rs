@@ -20,7 +20,18 @@ impl BridgeState {
         let Ok(request) = serde_json::from_value::<AdvisorRequest>(frame["request"].clone()) else {
             return Self::error_reply(api_id, ErrorCode::InvalidRequest, "invalid advisor control");
         };
-        let selection = match &request {
+        let control = match &request {
+            AdvisorRequest::ForAdvisor { request, .. } => request.as_ref(),
+            request => request,
+        };
+        if matches!(control, AdvisorRequest::ForAdvisor { .. }) {
+            return Self::error_reply(
+                api_id,
+                ErrorCode::InvalidRequest,
+                "advisor target wrappers may not be nested",
+            );
+        }
+        let selection = match control {
             AdvisorRequest::SelectModel { selection, .. } => Some(selection),
             AdvisorRequest::ModelOptions { selection } => selection.as_ref(),
             _ => None,

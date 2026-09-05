@@ -56,7 +56,15 @@ fn advisor_forwards_all_controls_with_canonical_route_and_effort() {
             writer,
         );
     });
-    for request in commands {
+    for request in commands.into_iter().flat_map(|request| {
+        [
+            request.clone(),
+            AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(request),
+            },
+        ]
+    }) {
         assert_eq!(client.advisor("s1", request.clone()).unwrap(), expected);
         assert_eq!(
             received.recv_timeout(Duration::from_secs(2)).unwrap(),
