@@ -61,16 +61,19 @@ jobs:
       - name: Agent role settings, exact routes and memory isolation
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
-          scripts/dev_cargo.sh test --locked -p jcode-base --lib config::agent_models
-          scripts/dev_cargo.sh test --locked -p jcode-base --lib provider::agent_roles
-          scripts/dev_cargo.sh test --locked -p jcode-base --lib sidecar::role_selection
-          scripts/dev_cargo.sh test --locked -p jcode-base --lib session::tests::role_model
+          role_status=0
+          for role_filter in config::agent_models provider::agent_roles sidecar::role_selection session::tests::role_model; do
+            scripts/dev_cargo.sh test --locked -p jcode-base --lib "$role_filter" || role_status=$?
+          done
+          exit "$role_status"
       - name: Swarm and ambient role routing
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
-          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib comm_session
-          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib agent::role_model
-          scripts/dev_cargo.sh test --locked -p jcode-app-core --lib ambient::runner::role_selection_tests
+          role_status=0
+          for role_filter in comm_session agent::role_model ambient::runner::role_selection_tests; do
+            scripts/dev_cargo.sh test --locked -p jcode-app-core --lib "$role_filter" || role_status=$?
+          done
+          exit "$role_status"
       - name: Advisor picker and wire compatibility
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
@@ -79,11 +82,11 @@ jobs:
       - name: Agent role pickers, review selection and command discovery
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agent_model -- --test-threads=1
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agent_role_picker -- --test-threads=1
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib agents_ -- --test-threads=1
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib review_role -- --test-threads=1
-          scripts/dev_cargo.sh test --locked -p jcode-tui --lib prepare_review_spawned_session -- --test-threads=1
+          role_status=0
+          for role_filter in agent_model agent_role_picker agents_ review_role prepare_review_spawned_session; do
+            scripts/dev_cargo.sh test --locked -p jcode-tui --lib "$role_filter" -- --test-threads=1 || role_status=$?
+          done
+          exit "$role_status"
       - name: Advisor provider fork isolation
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: scripts/dev_cargo.sh test --locked -p jcode-provider-copilot-runtime --lib advisor_fork -- --test-threads=1
