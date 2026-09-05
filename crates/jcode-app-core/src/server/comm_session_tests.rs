@@ -201,6 +201,7 @@ async fn register_visible_spawned_member_marks_startup_as_running() {
 
     register_visible_spawned_member(
         "child-1",
+        Some("debug agent"),
         "swarm-1",
         Some("/tmp/worktree"),
         true,
@@ -215,6 +216,7 @@ async fn register_visible_spawned_member_marks_startup_as_running() {
 
     let members = swarm_members.read().await;
     let member = members.get("child-1").expect("spawned member should exist");
+    assert_eq!(member.friendly_name.as_deref(), Some("debug agent"));
     assert_eq!(member.status, "running");
     assert_eq!(member.detail.as_deref(), Some("startup queued"));
     assert_eq!(member.swarm_id.as_deref(), Some("swarm-1"));
@@ -1091,3 +1093,6 @@ fn swarm_spawn_effort_prefers_explicit_then_config_pin_then_inherit() {
     assert_eq!(resolve_swarm_spawn_effort(None, None), None);
     assert_eq!(resolve_swarm_spawn_effort(Some(""), Some("")), None);
 }
+
+#[path = "agent_profile_tests.rs"]
+mod agent_profile;

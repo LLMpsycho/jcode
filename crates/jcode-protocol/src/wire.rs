@@ -638,6 +638,9 @@ pub enum Request {
         /// otherwise derived from the first line of `initial_message`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Named agent profile resolved in the worker's working directory.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
 
     /// List models/routes available for spawning swarm agents

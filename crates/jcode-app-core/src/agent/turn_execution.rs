@@ -258,6 +258,59 @@ impl Agent {
         );
     }
 
+    /// Recompute from the baseline, never from another session's narrowed policy.
+    pub(super) fn refresh_profile_tool_policy(&mut self) {
+        self.allowed_tools = self.base_allowed_tools.clone();
+        if let Some(tools) = self
+            .session
+            .agent_profile
+            .as_ref()
+            .and_then(|p| p.allowed_tools.as_ref())
+        {
+            let profile_tools: std::collections::HashSet<String> = tools.iter().cloned().collect();
+            self.allowed_tools = Some(match self.allowed_tools.take() {
+                None => profile_tools,
+                Some(base) => base
+                    .iter()
+                    .chain(profile_tools.iter())
+                    .filter(|name| {
+                        // A fixed MCP surface authorizes dispatch, not merely discovery.
+                        // Do not turn two per-tool grants into an unrestricted surface.
+                        if matches!(name.as_str(), "mcp_call" | "mcp_search") {
+                            (base.contains(*name) || base.contains("mcp"))
+                                && (profile_tools.contains(*name) || profile_tools.contains("mcp"))
+                        } else {
+                            crate::tool::tool_name_is_allowed(&base, name)
+                                && crate::tool::tool_name_is_allowed(&profile_tools, name)
+                        }
+                    })
+                    .cloned()
+                    .collect(),
+            });
+        }
+        self.locked_tools = None;
+        crate::tool::set_session_tool_policy(
+            &self.session.id,
+            self.allowed_tools.clone(),
+            self.disabled_tools.clone(),
+        );
+    }
+
+    /// Apply worker identity before its first turn and persist the resolved policy.
+    pub(crate) fn set_swarm_identity(
+        &mut self,
+        profile: Option<crate::session::SessionAgentProfile>,
+        name: Option<String>,
+    ) -> Result<()> {
+        self.session.agent_profile = profile;
+        if let Some(name) = name {
+            self.session.short_name = Some(name.clone());
+            self.session.title = Some(name);
+        }
+        self.refresh_profile_tool_policy();
+        self.session.save()
+    }
+
     /// Clear conversation history
     pub fn clear(&mut self) {
         crate::advisor::advisor_manager().remove(&self.session.id);
@@ -279,7 +332,9 @@ impl Agent {
         new_session.working_dir = preserve_working_dir;
         new_session.ensure_initial_session_context_message();
 
+        crate::tool::clear_session_tool_policy(&self.session.id);
         self.session = new_session;
+        self.refresh_profile_tool_policy();
         self.refresh_agents_md_snapshot();
         self.reconcile_explicit_provider_pin_route();
         self.reset_runtime_state_for_session_change();
@@ -752,11 +807,7 @@ impl Agent {
         crate::advisor::advisor_manager().resume(&self.session.id);
         self.refresh_agents_md_snapshot();
         crate::tool::clear_session_tool_policy(&previous_session_id);
-        crate::tool::set_session_tool_policy(
-            &self.session.id,
-            self.allowed_tools.clone(),
-            self.disabled_tools.clone(),
-        );
+        self.refresh_profile_tool_policy();
         let assign_ms = assign_start.elapsed().as_millis();
 
         let reset_start = Instant::now();

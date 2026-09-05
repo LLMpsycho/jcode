@@ -1534,7 +1534,8 @@ async fn spawn_assignment_session(ctx: &ToolContext, params: &CommunicateInput) 
         request_nonce: Some(fresh_spawn_request_nonce(ctx)),
         spawn_mode: params.spawn_mode.clone(),
         effort: params.effort.clone(),
-        label: None,
+        label: params.label.clone(),
+        profile: params.profile.clone(),
     };
 
     match send_request(spawn_request).await {
@@ -1898,6 +1899,9 @@ struct CommunicateInput {
     /// Required and nonblank for the explicit `spawn` action.
     #[serde(default)]
     label: Option<String>,
+    /// Native named profile. Supported only for fresh spawn/task assignment.
+    #[serde(default)]
+    profile: Option<String>,
 }
 
 impl CommunicateInput {
@@ -2056,6 +2060,10 @@ impl Tool for CommunicateTool {
                 "role": {
                     "type": "string",
                     "enum": ["agent", "coordinator"]
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Named agent profile for spawn or assign_task. Applies its instructions and tool limits without changing the operator model pin. assign_task with profile spawns a fresh worker and cannot use target_session."
                 },
                 "label": {
                     "type": "string",
@@ -2254,6 +2262,17 @@ impl Tool for CommunicateTool {
         // Normalize common action synonyms that models invent (e.g. `inbox`, `send`,
         // `msg`) so a near-miss verb maps to the real action instead of erroring out.
         params.action = canonical_swarm_action(&params.action).to_string();
+
+        if params.profile.is_some() {
+            anyhow::ensure!(
+                matches!(params.action.as_str(), "spawn" | "assign_task"),
+                "'profile' is supported only for spawn and assign_task; use spawn(profile) then assign_task(target_session)"
+            );
+            anyhow::ensure!(
+                params.target_session.is_none(),
+                "'profile' cannot repurpose an existing target_session; spawn with profile, then assign using its session id"
+            );
+        }
 
         match params.action.as_str() {
             "share" | "share_append" => {
@@ -2776,6 +2795,7 @@ impl Tool for CommunicateTool {
                     spawn_mode: params.spawn_mode.clone(),
                     effort: params.effort.clone(),
                     label: Some(label),
+                    profile: params.profile.clone(),
                 };
 
                 match send_request(request).await {
@@ -3007,7 +3027,7 @@ impl Tool for CommunicateTool {
                 let spawn_if_needed = params.spawn_if_needed.unwrap_or(false);
                 let prefer_spawn = params.prefer_spawn.unwrap_or(false);
 
-                if prefer_spawn && params.target_session.is_none() {
+                if (prefer_spawn || params.profile.is_some()) && params.target_session.is_none() {
                     let spawned_session = spawn_assignment_session(&ctx, &params).await?;
                     return assign_task_to_session(
                         &ctx,
