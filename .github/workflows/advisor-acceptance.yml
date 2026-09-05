@@ -90,6 +90,13 @@ jobs:
       - name: Advisor provider fork isolation
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: scripts/dev_cargo.sh test --locked -p jcode-provider-copilot-runtime --lib advisor_fork -- --test-threads=1
+      - name: Advisor private authentication and explicit tool isolation
+        if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
+        run: |
+          scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib private_session::tests
+          scripts/dev_cargo.sh test --locked -p jcode-provider-anthropic-runtime --lib private
+          scripts/dev_cargo.sh test --locked -p jcode-base --lib provider::tests::private_session
+          scripts/dev_cargo.sh test --locked -p jcode-provider-openai-runtime --lib explicit_tools
       - name: Provider tool-free capability contracts
         if: ${{ !cancelled() && steps.formatting.outcome != 'skipped' }}
         run: |
@@ -123,7 +130,7 @@ jobs:
           name: advisor-selfdev-binary
           path: target/selfdev/jcode
           retention-days: 1
-      - name: Isolated socket restart, reload, immunity and mode acceptance
+      - name: Isolated advisor investigation, correction, cancellation, restart and mode acceptance
         run: python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode --report "$RUNNER_TEMP/advisor-fixture-report.json"
       - uses: actions/upload-artifact@v4
         with:

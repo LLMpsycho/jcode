@@ -90,6 +90,49 @@ class Fixture(http.server.ThreadingHTTPServer):
         self.primary_tools = []
         self.primary_settings = []
         self.errors = []
+        self.concern_epoch = 0
+
+    def reply(self, body, advisor):
+        if advisor:
+            tools = {tool.get("name") for tool in body.get("tools", [])}
+            assert all(tool.get("type") == "function" for tool in body.get("tools", [])), "advisor received provider-hosted tools"
+            assert "advise" in tools and "read" in tools, "advisor lacks independent agent tools"
+            assert not tools.intersection({"bash", "write", "edit"}), "advisor received mutating tools"
+            encoded = json.dumps(body)
+            assert SYNTHETIC_SECRET not in encoded, "unredacted advisor evidence"
+            snapshots = []
+            for text in strings(body):
+                try:
+                    snapshot, _ = json.JSONDecoder().raw_decode(text.lstrip())
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(snapshot, dict) and "objective" in snapshot:
+                    snapshots.append(snapshot)
+            assert snapshots, "advisor has no structured visible-work snapshot"
+            for snapshot in snapshots:
+                assert len(json.dumps(snapshot, ensure_ascii=False).encode()) <= 32768, "unbounded advisor evidence snapshot"
+                assert all(key in snapshot for key in (
+                    "diff_summary", "diagnostics", "verification_status", "outstanding_todos", "acceptance_criteria"
+                )), "advisor evidence fields are missing"
+            self.reviews.append(body)
+            return function_call("advise", {
+                "concern_id": f"fixture-unverified-{self.concern_epoch}",
+                "severity": "blocker",
+                "summary": f"Unverified acceptance {self.concern_epoch} OPENAI_API_KEY={SYNTHETIC_SECRET}",
+                "evidence": [PRIMARY],
+                "recommended_action": "Run the required verification before claiming acceptance.",
+            }, f"advise_{len(self.reviews)}")
+        self.primary_tools.append(len(body.get("tools", [])))
+        self.primary_settings.append({
+            "model": body.get("model"),
+            "reasoning_effort": body.get("reasoning", {}).get("effort"),
+        })
+        return PRIMARY
+
+
+def function_call(name, arguments, call_id):
+    return {"id": f"fc_{call_id}", "type": "function_call", "call_id": call_id,
+            "name": name, "arguments": json.dumps(arguments)}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -112,49 +155,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             assert 0 < length < 2 * 1024 * 1024, "unbounded provider request"
             body = json.loads(self.rfile.read(length))
             advisor = any("You are Jcode's independent advisor." in text for text in strings(body))
-            if advisor:
-                assert not body.get("tools"), "advisor received tools"
-                encoded = json.dumps(body)
-                assert SYNTHETIC_SECRET not in encoded, "unredacted advisor evidence"
-                inputs = []
-                for text in strings(body):
-                    try:
-                        value = json.loads(text)
-                    except (ValueError, TypeError):
-                        continue
-                    if isinstance(value, dict) and "objective" in value:
-                        inputs.append(value)
-                assert inputs, "missing structured turn evidence"
-                evidence = inputs[-1]
-                assert len(json.dumps(evidence, ensure_ascii=False).encode()) <= 32768
-                assert all(key in evidence for key in (
-                    "diff_summary", "diagnostics", "verification_status", "outstanding_todos", "acceptance_criteria"
-                )), "missing evidence fields"
-                assert PRIMARY in evidence["latest_primary_turn"]
-                self.server.reviews.append(body)
-                result = json.dumps({
-                    "severity": "blocker",
-                    "summary": f"Unverified acceptance {len(self.server.reviews)} OPENAI_API_KEY={SYNTHETIC_SECRET}",
-                    "evidence": [PRIMARY],
-                    "recommended_action": "Run the required verification before claiming acceptance.",
-                    "blocking": True,
-                })
+            result = self.server.reply(body, advisor)
+            if isinstance(result, str):
+                output = [{"id": "msg_fixture", "type": "message", "role": "assistant",
+                           "status": "completed", "content": [{"type": "output_text", "text": result}]}]
+                deltas = [{"type": "response.output_text.delta", "delta": result}]
             else:
-                self.server.primary_tools.append(len(body.get("tools", [])))
-                self.server.primary_settings.append({
-                    "model": body.get("model"),
-                    "reasoning_effort": body.get("reasoning", {}).get("effort"),
-                })
-                result = PRIMARY
+                output = [result]
+                deltas = [
+                    {"type": "response.output_item.added", "item": {**result, "arguments": ""}},
+                    {"type": "response.function_call_arguments.done", "item_id": result["id"],
+                     "arguments": result["arguments"]},
+                ]
             response = {
                 "id": "resp_fixture", "status": "completed", "model": body.get("model"),
-                "output": [{"id": "msg_fixture", "type": "message", "role": "assistant",
-                            "status": "completed", "content": [{"type": "output_text", "text": result}]}],
+                "output": output,
                 "usage": {"input_tokens": 12, "output_tokens": 12, "total_tokens": 24},
             }
             events = [
                 {"type": "response.created", "response": {"id": "resp_fixture", "status": "in_progress"}},
-                {"type": "response.output_text.delta", "delta": result},
+                *deltas,
                 {"type": "response.completed", "response": response},
             ]
             data = "".join(f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events).encode()
@@ -163,6 +183,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            # Cancellation intentionally closes an in-flight provider stream.
+            pass
         except Exception as error:
             # All requests here contain synthetic fixture data. Retain assertion
             # messages only, never request bodies or authorization headers.
@@ -177,6 +200,7 @@ class Client:
         self.socket.settimeout(30)
         self.socket.connect(str(path))
         self.buffer = b""
+        self.events = []
         self.next_id = 1
         request = {"working_dir": str(workspace), "selfdev": False, "allow_session_takeover": True}
         if session_id:
@@ -204,6 +228,7 @@ class Client:
                 assert len(self.buffer) <= 2 * 1024 * 1024, "unbounded socket response"
             line, self.buffer = self.buffer.split(b"\n", 1)
             event = json.loads(line)
+            self.events.append(event)
             if event.get("type") == "error":
                 # Provider failures may contain private data in live mode.
                 if self.fixture:
@@ -230,8 +255,8 @@ class Client:
         result = self.until(lambda item: item.get("type") == "reasoning_effort_changed" and item.get("id") == rid)
         assert not result.get("error") and result.get("effort") == effort, "primary effort was not applied"
 
-    def turn(self):
-        rid = self.send("message", content=PROMPT)
+    def turn(self, prompt=PROMPT):
+        rid = self.send("message", content=prompt)
         self.until(lambda item: item.get("type") == "done" and item.get("id") == rid, timeout=150)
 
     def note(self, excluding=()):
@@ -295,8 +320,9 @@ def assert_fixture_provider_settings(fixture, primary_model, review_offset, prim
 
 
 class Daemon:
-    def __init__(self, binary, root, mode, fixture, model):
+    def __init__(self, binary, root, mode, fixture, model, tools="read"):
         self.binary = binary
+        self.tools = tools
         self.root = root
         self.home = root / "home"
         self.workspace = root / "work"
@@ -323,7 +349,7 @@ class Daemon:
             f'[provider]\ndefault_provider = "openai-api"\ndefault_model = {json.dumps(model)}\n'
             '[sponsors]\nenabled = false\n'
             f'[advisor]\nenabled = true\nmode = "{mode}"\n'
-            'max_reviews_per_session = 6\nhandled_note_immunity_turns = 2\nredact = true\n'
+            'max_reviews_per_session = 100\nhandled_note_immunity_turns = 2\nredact = true\n'
         )
         self.model = model
         self.fixture = bool(fixture)
@@ -332,7 +358,7 @@ class Daemon:
         self.process = subprocess.Popen([
             str(self.binary), "--no-update", "--no-selfdev", "--provider", "openai-api",
             "--model", self.model, "--socket", str(self.path), "-C", str(self.workspace),
-            "--tools", "read", "serve",
+            "--tools", self.tools, "serve",
         ], env=self.env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True)
         return self.connect(session_id)
 
@@ -386,10 +412,12 @@ def exercise(binary, mode, fixture, model):
                 review_count = len(fixture.reviews)
                 for _ in range(2):
                     client.turn()
-                    assert len(fixture.reviews) == review_count, "handled concern storm after restart"
+                    assert len(fixture.reviews) > review_count, "immunity stopped observation of new work"
+                    assert set(re.findall(r"adv-[a-f0-9-]+", client.control("inspect"))) == {note}, "handled concern storm after restart"
+                fixture.concern_epoch += 1
                 client.turn()
                 second, _ = client.note(excluding=(note,))
-                assert len(fixture.reviews) == review_count + 1
+                assert len(fixture.reviews) > review_count
                 assert "Dismissed" in client.control("dismiss", second)
                 rid = client.send("reload", force=True)
                 client.until(lambda item: item.get("type") == "reloading" or (
@@ -461,6 +489,9 @@ def main(argv=None):
         threading.Thread(target=fixture.serve_forever, daemon=True).start()
     try:
         results = [exercise(binary, mode, fixture, args.model) for mode in MODES]
+        if fixture:
+            from test_advisor_agent_acceptance import exercise_agent_scenarios
+            results.extend(exercise_agent_scenarios(binary, args.model))
         with binary.open("rb") as executable:
             binary_sha256 = hashlib.file_digest(executable, "sha256").hexdigest()
         emit_report({"provider": "live-openai" if args.live else "local-http-fixture",
