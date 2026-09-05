@@ -178,7 +178,7 @@ pub(super) async fn create_headless_session(
         }
     }
 
-    let agent = Arc::new(Mutex::new(new_agent));
+    let agent = super::session_provider::shared_agent(new_agent);
     {
         let mut sessions_guard = sessions.write().await;
         sessions_guard.insert(client_session_id.clone(), Arc::clone(&agent));

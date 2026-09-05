@@ -43,6 +43,7 @@ mod reload_recovery;
 mod reload_state;
 mod reload_trace;
 mod runtime;
+mod session_provider;
 mod socket;
 mod swarm;
 mod swarm_channels;
@@ -1001,9 +1002,9 @@ impl Server {
                 )
                 .await;
 
-            let agent = Arc::new(Mutex::new(Agent::new_with_session(
+            let agent = session_provider::shared_agent(Agent::new_with_session(
                 provider, registry, session, None,
-            )));
+            ));
 
             {
                 let mut sessions = self.sessions.write().await;

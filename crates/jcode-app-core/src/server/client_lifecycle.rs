@@ -591,7 +591,7 @@ pub(super) async fn handle_client(
     )
     .await;
 
-    let mut agent = Arc::new(Mutex::new(new_agent));
+    let mut agent = super::session_provider::shared_agent(new_agent);
     {
         let mut sessions_guard = sessions.write().await;
         sessions_guard.insert(client_session_id.clone(), Arc::clone(&agent));

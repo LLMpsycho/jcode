@@ -193,6 +193,7 @@ pub(super) async fn handle_clear_session(
 
     let mut agent_guard = agent.lock().await;
     *agent_guard = new_agent;
+    super::session_provider::register(agent, &agent_guard.provider_handle());
     drop(agent_guard);
 
     {
