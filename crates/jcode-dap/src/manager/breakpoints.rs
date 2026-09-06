@@ -785,24 +785,27 @@ fn parse_reason(reason: String, limit: usize) -> DebugBreakpointReason {
     match reason.as_str() {
         "pending" => DebugBreakpointReason::Pending,
         "failed" => DebugBreakpointReason::Failed,
-        _ => DebugBreakpointReason::Other(
-            truncate(Some(reason), limit).0.unwrap_or_else(String::new),
-        ),
+        _ => DebugBreakpointReason::Other(truncate_text(reason, limit).0),
     }
 }
 fn truncate(message: Option<String>, limit: usize) -> (Option<String>, usize) {
-    let Some(mut message) = message else {
+    let Some(message) = message else {
         return (None, 0);
     };
+    let (message, truncated) = truncate_text(message, limit);
+    (Some(message), truncated)
+}
+
+fn truncate_text(mut message: String, limit: usize) -> (String, usize) {
     if message.len() <= limit {
-        return (Some(message), 0);
+        return (message, 0);
     }
     let mut start = message.len() - limit;
     while !message.is_char_boundary(start) {
         start += 1
     }
     message.drain(..start);
-    (Some(message), start)
+    (message, start)
 }
 fn source_snapshot(record: &SourceRecord) -> DebugSourceBreakpoints {
     DebugSourceBreakpoints {

@@ -18,14 +18,10 @@ pub fn diagnostic_delta(
     after: &DiagnosticSnapshot,
 ) -> Vec<Diagnostic> {
     let before = before
-        .map(|snapshot| {
-            snapshot
-                .items
-                .iter()
-                .map(|diagnostic| (diagnostic_identity(diagnostic), severity_rank(diagnostic)))
-                .collect::<HashMap<_, _>>()
-        })
-        .unwrap_or_else(HashMap::new);
+        .into_iter()
+        .flat_map(|snapshot| snapshot.items.iter())
+        .map(|diagnostic| (diagnostic_identity(diagnostic), severity_rank(diagnostic)))
+        .collect::<HashMap<_, _>>();
     let mut delta = after
         .items
         .iter()

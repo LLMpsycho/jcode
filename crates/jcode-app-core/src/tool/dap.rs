@@ -64,8 +64,10 @@ impl DapService {
         if !issues.is_empty() {
             bail!("invalid DAP configuration: {}", issues.join("; "));
         }
-        let mut manager_config = jcode_dap::DebugSessionManagerConfig::default();
-        manager_config.output_max_bytes = config.max_output_bytes;
+        let manager_config = jcode_dap::DebugSessionManagerConfig {
+            output_max_bytes: config.max_output_bytes,
+            ..Default::default()
+        };
         let manager = Arc::new(DebugSessionManager::new(manager_config)?);
         Ok(Self {
             manager,
@@ -466,15 +468,17 @@ impl DapTool {
                     .reserve_capacity(owner, 1, true)?;
                 let r = match a {
                     "continue" => {
-                        let mut q = DebugContinueRequest::default();
-                        q.thread_id = thread();
-                        q.expected_execution_revision = rev;
+                        let q = DebugContinueRequest {
+                            thread_id: thread(),
+                            expected_execution_revision: rev,
+                        };
                         m.continue_execution(owner, id, q).await?
                     }
                     "pause" => {
-                        let mut q = DebugPauseRequest::default();
-                        q.thread_id = thread();
-                        q.expected_execution_revision = rev;
+                        let q = DebugPauseRequest {
+                            thread_id: thread(),
+                            expected_execution_revision: rev,
+                        };
                         m.pause(owner, id, q).await?
                     }
                     _ => {
@@ -496,10 +500,11 @@ impl DapTool {
                             )
                             .await?
                         } else {
-                            let mut q = DebugStepRequest::default();
-                            q.thread_id = thread();
-                            q.expected_execution_revision = rev;
-                            q.granularity = granularity;
+                            let q = DebugStepRequest {
+                                thread_id: thread(),
+                                expected_execution_revision: rev,
+                                granularity,
+                            };
                             match a {
                                 "step_over" => m.step_over(owner, id, q).await?,
                                 "step_in" => m.step_in(owner, id, q).await?,
@@ -910,7 +915,7 @@ fn workspace_identity(root: &Path) -> Result<String> {
     Ok(root.canonicalize()?.to_string_lossy().into_owned())
 }
 fn bounded_pretty(value: &Value, configured_max: usize) -> String {
-    let limit = configured_max.min(MAX_OUTPUT_CHARS).max(1024);
+    let limit = configured_max.clamp(1024, MAX_OUTPUT_CHARS);
     let serialized = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".into());
     if serialized.len() <= limit {
         return serialized;
