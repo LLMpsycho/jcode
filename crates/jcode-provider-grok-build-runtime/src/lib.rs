@@ -154,7 +154,11 @@ impl Provider for GrokBuildProvider {
                     tx.clone(),
                     cancel_rx,
                 ) {
-                    let _ = tx.blocking_send(Err(error));
+                    if tx.blocking_send(Err(error)).is_err() {
+                        jcode_logging::debug(
+                            "Grok request failed after its stream consumer disconnected",
+                        );
+                    }
                 }
             })
             .context("Failed to start Grok Build ACP runtime thread")?;
@@ -291,7 +295,9 @@ impl Stream for GrokEventStream {
 impl Drop for GrokEventStream {
     fn drop(&mut self) {
         if let Some(cancel) = self.cancel.take() {
-            let _ = cancel.send(());
+            if cancel.send(()).is_err() {
+                jcode_logging::debug("Grok cancellation receiver already completed");
+            }
         }
         // Joining can block while the child handles cancellation. Detach here;
         // dropping the child in the ACP thread has kill_on_drop enabled.
@@ -529,7 +535,9 @@ async fn run_on_acp_thread_with_process<T: Send + 'static>(
                     with_connection(process, mpsc::channel(1).0, operation).await
                 })
             })();
-            let _ = result_tx.send(result);
+            if result_tx.send(result).is_err() {
+                jcode_logging::debug("Grok probe caller disconnected before its result");
+            }
         })
         .context("Failed to start Grok Build ACP probe thread")?;
     result_rx
@@ -587,9 +595,15 @@ where
         });
     let io_task = tokio::task::spawn_local(io);
     let result = operation(connection).await;
-    let _ = child.kill().await;
+    if child.kill().await.is_err() {
+        jcode_logging::warn("Grok backend cleanup could not confirm process termination");
+    }
     io_task.abort();
-    let _ = tokio::time::timeout(Duration::from_millis(100), &mut stderr_task).await;
+    match tokio::time::timeout(Duration::from_millis(100), &mut stderr_task).await {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => jcode_logging::warn("Grok stderr collector failed before completion"),
+        Err(_) => jcode_logging::debug("Grok stderr drain reached its bounded deadline"),
+    }
     stderr_task.abort();
     let stderr = stderr_capture
         .lock()
@@ -696,7 +710,9 @@ impl acp::Client for GrokAcpClient {
             _ => None,
         };
         if let Some(event) = event {
-            let _ = self.tx.send(Ok(event)).await;
+            if self.tx.send(Ok(event)).await.is_err() {
+                jcode_logging::debug("Grok event recipient disconnected");
+            }
         }
         Ok(())
     }

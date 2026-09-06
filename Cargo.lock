@@ -3816,6 +3816,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "futures",
+ "jcode-logging",
  "jcode-message-types",
  "jcode-provider-core",
  "serde_json",
