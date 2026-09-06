@@ -15,6 +15,18 @@ use super::*;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::sync::Arc;
 
+fn saved_config_location(env_file: &str) -> String {
+    match crate::storage::app_config_dir() {
+        Ok(directory) => directory.join(env_file).display().to_string(),
+        Err(error) => {
+            crate::logging::warn(&format!(
+                "Saved configuration location is unavailable: {error}"
+            ));
+            format!("{env_file} (configuration directory is currently unavailable)")
+        }
+    }
+}
+
 impl App {
     fn open_auth_browser(url: &str) -> bool {
         // Honors --no-browser/NO_BROWSER/JCODE_NO_BROWSER and never opens real
@@ -2450,10 +2462,7 @@ impl App {
                                  Stored at {}.\n\
                                  {}{}",
                                 saved_label,
-                                crate::storage::app_config_dir()
-                                    .expect("config directory resolved while saving API key")
-                                    .join(&env_file)
-                                    .display(),
+                                saved_config_location(&env_file),
                                 guidance,
                                 model_hint
                             ),
@@ -2652,10 +2661,7 @@ impl App {
                                 "Cursor API key saved.\n\n\
                                  Stored at {}.\n\
                                  jcode will use it with the native Cursor HTTPS transport.",
-                                crate::storage::app_config_dir()
-                                    .expect("config directory resolved while saving Cursor API key")
-                                    .join("cursor.env")
-                                    .display()
+                                saved_config_location("cursor.env")
                             ),
                         }));
                     }
@@ -3452,10 +3458,7 @@ impl App {
                  Stored at {}.\n\
                  {}\n\n\
                  Use /model after your Azure deployment exists. If the model list looks stale, run /refresh-model-list.",
-                crate::storage::app_config_dir()
-                    .expect("config directory resolved while saving Azure configuration")
-                    .join(crate::auth::azure::ENV_FILE)
-                    .display(),
+                saved_config_location(crate::auth::azure::ENV_FILE),
                 auth_note,
             ),
         }));
