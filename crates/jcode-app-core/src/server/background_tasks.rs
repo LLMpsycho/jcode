@@ -23,7 +23,7 @@ async fn emit_external_wake(
     if crate::config::config().server.wake_mode != crate::config::WakeMode::External {
         return false;
     }
-    let _ = fanout_session_event(
+    let recipients = fanout_session_event(
         swarm_members,
         session_id,
         ServerEvent::WakeRequested {
@@ -33,6 +33,9 @@ async fn emit_external_wake(
         },
     )
     .await;
+    if recipients == 0 {
+        crate::logging::warn("External background task wake had no attached recipient");
+    }
     true
 }
 

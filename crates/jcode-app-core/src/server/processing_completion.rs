@@ -16,9 +16,13 @@ pub(super) async fn publish(
     completions: &mpsc::UnboundedSender<ProcessingCompletion>,
 ) {
     let (ready, receiver) = oneshot::channel();
-    let _ = completions.send((id, result, report, ready));
+    if (completions.send((id, result, report, ready))).is_err() {
+        crate::logging::debug("Event recipient disconnected before delivery");
+    }
     if receiver.await.unwrap_or(true) {
-        let _ = events.send(terminal);
+        if (events.send(terminal)).is_err() {
+            crate::logging::debug("Event recipient disconnected before delivery");
+        }
     }
 }
 

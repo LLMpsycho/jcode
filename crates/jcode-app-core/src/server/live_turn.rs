@@ -83,7 +83,10 @@ pub(super) async fn idle_live_agent(
         return None;
     }
 
-    agent.try_lock_owned().ok()
+    match agent.try_lock_owned() {
+        Ok(agent) => Some(agent),
+        Err(_) => None, // A busy session must receive a queued wake, never a concurrent turn.
+    }
 }
 
 /// Spawn `message` as a full tracked turn in a live session.
