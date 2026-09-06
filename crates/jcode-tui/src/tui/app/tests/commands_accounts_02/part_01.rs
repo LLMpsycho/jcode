@@ -526,27 +526,35 @@ fn test_account_command_uses_fast_auth_snapshot_without_running_cursor_status() 
 fn test_account_switch_shorthand_switches_openai_account_by_label() {
     with_temp_jcode_home(|| {
         let now_ms = chrono::Utc::now().timestamp_millis();
-
-        crate::auth::codex::upsert_account(crate::auth::codex::OpenAiAccount {
-            label: "openai2".to_string(),
-            access_token: "acc".to_string(),
-            refresh_token: "ref".to_string(),
-            id_token: None,
-            account_id: Some("acct_openai2".to_string()),
-            expires_at: Some(now_ms + 60_000),
-            email: Some("user2@example.com".to_string()),
-        })
-        .unwrap();
+        let mut labels = Vec::new();
+        for index in 1..=2 {
+            labels.push(
+                crate::auth::codex::upsert_account(crate::auth::codex::OpenAiAccount {
+                    label: format!("requested-{index}"),
+                    access_token: format!("acc-{index}"),
+                    refresh_token: format!("ref-{index}"),
+                    id_token: None,
+                    account_id: Some(format!("acct-{index}")),
+                    expires_at: Some(now_ms + 60_000),
+                    email: Some(format!("user{index}@example.com")),
+                })
+                .expect("create account"),
+            );
+        }
+        assert_eq!(
+            crate::auth::codex::active_account_label().as_deref(),
+            Some(labels[0].as_str())
+        );
 
         let mut app = create_test_app();
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            app.input = "/account switch openai2".to_string();
+            app.input = format!("/account switch {}", labels[1]);
             app.submit_input();
 
             assert_eq!(
                 crate::auth::codex::active_account_label().as_deref(),
-                Some("openai-1")
+                Some(labels[1].as_str())
             );
         });
     });
