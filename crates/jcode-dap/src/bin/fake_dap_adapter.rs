@@ -133,10 +133,13 @@ fn main() -> std::io::Result<()> {
                 respond(&mut output, &mut seq, &request, None)?;
             }
             if cwd.join("emit-lifecycle").exists() {
-                let system_process_id = fs::read_to_string(cwd.join("system-process-id"))
-                    .ok()
-                    .and_then(|value| value.trim().parse::<u32>().ok())
-                    .unwrap_or(999_999);
+                let system_process_id = match fs::read_to_string(cwd.join("system-process-id")) {
+                    Ok(value) => value.trim().parse::<u32>().map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                    })?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => 999_999,
+                    Err(error) => return Err(error),
+                };
                 event(
                     &mut output,
                     &mut seq,
@@ -186,7 +189,7 @@ fn main() -> std::io::Result<()> {
             let breakpoints = request["arguments"]["breakpoints"]
                 .as_array()
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_else(Vec::new)
                 .into_iter()
                 .enumerate()
                 .map(|(index, breakpoint)| {

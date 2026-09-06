@@ -732,3 +732,46 @@ async fn owner_authorized_request_round_trips() {
         .unwrap();
     assert!(request_task.await.unwrap().is_ok());
 }
+
+#[tokio::test]
+async fn reservation_drop_retains_cleanup_failure_for_owner_inspection() {
+    let manager = manager();
+    let (client, mut adapter) = FakeAdapter::pair(4096);
+    let mut reservation = manager.reserve(spec("cleanup-failure")).unwrap();
+    let id = reservation.id();
+    reservation.attach_client(client).unwrap();
+    let entry = manager.core.entry(id).unwrap();
+    lock(&entry.data)
+        .transport
+        .as_mut()
+        .unwrap()
+        .termination_policy = Some(DebugTerminationPolicy::AdapterLaunched);
+
+    drop(reservation);
+    let Message::Request(disconnect) = adapter.recv().await.unwrap() else {
+        panic!("expected disconnect request");
+    };
+    assert_eq!(disconnect.command, "disconnect");
+    adapter
+        .respond_error(&disconnect, "fixture cleanup rejected")
+        .await
+        .unwrap();
+
+    let snapshot = wait_for(
+        &manager,
+        "cleanup-failure",
+        id,
+        DebugSessionState::is_terminal,
+    )
+    .await;
+    let DebugSessionState::Ended(end) = snapshot.state else {
+        panic!("expected ended session");
+    };
+    assert!(
+        end.cleanup_error
+            .unwrap()
+            .contains("fixture cleanup rejected")
+    );
+    assert!(manager.reserve(spec("cleanup-failure")).is_ok());
+    assert!(manager.snapshot("different-owner", id).is_err());
+}

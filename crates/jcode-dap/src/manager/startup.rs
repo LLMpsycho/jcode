@@ -28,14 +28,20 @@ impl DebugSessionReservation {
     }
 
     pub(super) fn adapter_stderr(&self) -> Option<String> {
-        let entry = self.core.entry(self.id).ok()?;
+        let Ok(entry) = self.core.entry(self.id) else {
+            // The reservation may already have been removed by cleanup.
+            return None;
+        };
         let data = lock(&entry.data);
         let bytes = data.transport.as_ref()?.adapter.as_ref()?.recent_stderr();
         (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
 
     pub(crate) fn target_pid(&self) -> Option<u32> {
-        let entry = self.core.entry(self.id).ok()?;
+        let Ok(entry) = self.core.entry(self.id) else {
+            // The reservation may already have been removed by cleanup.
+            return None;
+        };
         lock(&entry.data).transport.as_ref()?.target.as_ref()?.pid()
     }
 
@@ -80,15 +86,14 @@ impl DebugSessionReservation {
     }
 }
 
-pub(super) fn deny_unsupported(operation: DebugStartOperation) -> Result<()> {
+pub(super) fn deny_unsupported(_operation: DebugStartOperation) -> Result<()> {
     #[cfg(windows)]
     return Err(DapError::ProcessContainmentUnavailable {
-        operation,
+        operation: _operation,
         platform: "windows",
     });
     #[cfg(not(windows))]
     {
-        let _ = operation;
         Ok(())
     }
 }

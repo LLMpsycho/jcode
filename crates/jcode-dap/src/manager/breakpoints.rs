@@ -459,10 +459,12 @@ async fn transact(
             });
         }
         discard_source_and_finish(&entry, &source, &operations);
-        let after_revision = after
-            .ok()
-            .map(|resolved| resolved.revision)
-            .unwrap_or_else(|| source.revision.clone());
+        // A source that disappeared has no replacement revision; keep the
+        // observed pre-operation revision in this explicit change error.
+        let after_revision = match after {
+            Ok(resolved) => resolved.revision,
+            Err(_) => source.revision.clone(),
+        };
         return Err(DapError::DebugSourceChangedDuringOperation {
             path: source.relative,
             before: source.revision,
@@ -783,7 +785,9 @@ fn parse_reason(reason: String, limit: usize) -> DebugBreakpointReason {
     match reason.as_str() {
         "pending" => DebugBreakpointReason::Pending,
         "failed" => DebugBreakpointReason::Failed,
-        _ => DebugBreakpointReason::Other(truncate(Some(reason), limit).0.unwrap_or_default()),
+        _ => DebugBreakpointReason::Other(
+            truncate(Some(reason), limit).0.unwrap_or_else(String::new),
+        ),
     }
 }
 fn truncate(message: Option<String>, limit: usize) -> (Option<String>, usize) {

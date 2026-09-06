@@ -688,9 +688,18 @@ impl ManagerCore {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let core = Arc::clone(self);
             handle.spawn(async move {
-                let _ = core
-                    .finalize_owned(entry, DebugSessionEndReason::LaunchCancelled, false, true)
-                    .await;
+                match core
+                    .finalize_owned(entry, DebugSessionEndReason::LaunchCancelled, true, true)
+                    .await
+                {
+                    Ok(()) => {
+                        core.remove_entry(id);
+                    }
+                    Err(_) => {
+                        // Failed cleanup remains in the bounded terminal history,
+                        // including cleanup_error, so the owner can inspect it.
+                    }
+                }
             });
             return;
         }
