@@ -51,12 +51,20 @@ fn advisor_forwards_all_controls_with_canonical_route_and_effort() {
             frame,
             ApiEvent::AdvisorResult {
                 session_id: "s1".into(),
-                result: result.clone(),
+                result: Box::new(result.clone()),
             },
             writer,
         );
     });
-    for request in commands {
+    for request in commands.into_iter().flat_map(|request| {
+        [
+            request.clone(),
+            AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(request),
+            },
+        ]
+    }) {
         assert_eq!(client.advisor("s1", request.clone()).unwrap(), expected);
         assert_eq!(
             received.recv_timeout(Duration::from_secs(2)).unwrap(),
@@ -100,10 +108,10 @@ fn advisor_correlated_reply_does_not_unblock_the_primary_turn() {
                 frame,
                 ApiEvent::AdvisorResult {
                     session_id: "s1".into(),
-                    result: AdvisorControlResult {
+                    result: Box::new(AdvisorControlResult {
                         message: "Advisor: on".into(),
                         ..Default::default()
-                    },
+                    }),
                 },
                 writer,
             );
@@ -159,11 +167,11 @@ fn advisor_preserves_control_failures_and_rejects_transport_reply_errors() {
                 ..
             } => ApiEvent::AdvisorResult {
                 session_id: "s1".into(),
-                result: AdvisorControlResult {
+                result: Box::new(AdvisorControlResult {
                     message: "Could not save advisor state".into(),
                     error: Some("checkpoint write failed".into()),
                     ..Default::default()
-                },
+                }),
             },
             ApiRequest::Advisor {
                 request: AdvisorRequest::Status,

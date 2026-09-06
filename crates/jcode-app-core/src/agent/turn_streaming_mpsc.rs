@@ -109,6 +109,12 @@ impl Agent {
                 logging::info("Cancel observed at turn-loop head - not starting another request");
                 break;
             }
+            self.observe_advisor_step(false).await;
+            self.display_advisor_asides(Some(&event_tx), false);
+            let injected = self.inject_soft_interrupts();
+            for event in Self::build_soft_interrupt_events(injected, "advisor_step", None) {
+                let _ = event_tx.send(event);
+            }
             let repaired = self.repair_missing_tool_outputs();
             if repaired > 0 {
                 logging::warn(&format!(
@@ -1151,74 +1157,26 @@ impl Agent {
                 continue;
             }
 
-            // If no tool calls, check for soft interrupt or exit
-            // NOTE: We only inject here (Point B) when there are no tools.
-            // Injecting before tool_results would break the API requirement that
-            // tool_use must be immediately followed by tool_result.
             if tool_calls.is_empty() {
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && self.maybe_reconsider_fable_guardrail(
-                        stop_reason.as_deref(),
+                if self
+                    .finish_streaming_response(
+                        turn_completion::TerminalResponse {
+                            stop_reason: stop_reason.as_deref(),
+                            saw_message_end,
+                            text: &text_content,
+                            reasoning: &reasoning_content,
+                            prompt_has_recent_tool_result,
+                        },
                         &mut fable_guardrail_reconsiderations,
-                    )?
-                {
-                    continue;
-                }
-                // Retry transient empty responses (dropped/empty upstream
-                // streams) before surfacing anything, matching the
-                // non-streaming loop's recovery behavior (issue #672).
-                if saw_message_end
-                    && !self.is_graceful_shutdown()
-                    && self.maybe_continue_empty_post_tool_response(
-                        text_content.trim().is_empty(),
-                        prompt_has_recent_tool_result,
-                        stop_reason.as_deref(),
                         &mut empty_post_tool_continuations,
-                    )?
+                        &mut incomplete_continuations,
+                        &event_tx,
+                    )
+                    .await?
                 {
                     continue;
                 }
-                match self.handle_streaming_no_tool_calls(
-                    stop_reason.as_deref(),
-                    &mut incomplete_continuations,
-                )? {
-                    NoToolCallOutcome::Break => {
-                        // Surface silent guardrail/refusal stops: the provider
-                        // ended the turn with no visible output (e.g. Anthropic
-                        // stop_reason "refusal", or a reasoning-only response).
-                        // Only when the provider actually finished the message
-                        // (saw_message_end) and the user did not cancel, so
-                        // interrupted turns never show a spurious notice.
-                        if saw_message_end
-                            && !self.is_graceful_shutdown()
-                            && let Some(notice) = Self::provider_guardrail_notice(
-                                stop_reason.as_deref(),
-                                text_content.trim().is_empty(),
-                                !reasoning_content.trim().is_empty(),
-                            )
-                        {
-                            logging::warn(&format!(
-                                "{}: turn ended with no visible output (stop_reason={:?}, reasoning_chars={})",
-                                Self::empty_turn_log_event(stop_reason.as_deref()),
-                                stop_reason,
-                                reasoning_content.len()
-                            ));
-                            let _ = event_tx.send(ServerEvent::ProviderGuardrail {
-                                stop_reason: stop_reason.clone(),
-                                message: notice,
-                            });
-                        }
-                        break;
-                    }
-                    NoToolCallOutcome::ContinueWithoutEvent => continue,
-                    NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
-                        for event in Self::build_soft_interrupt_events(injected, point, None) {
-                            let _ = event_tx.send(event);
-                        }
-                        continue;
-                    }
-                }
+                break;
             }
 
             // If graceful shutdown was signaled during streaming and we have tool calls,
@@ -1243,6 +1201,7 @@ impl Agent {
                 break;
             }
 
+            self.observe_advisor_step(false).await;
             logging::info(&format!(
                 "Turn has {} tool calls to execute",
                 tool_calls.len()
@@ -1251,6 +1210,9 @@ impl Agent {
             if self.provider.handles_tools_internally() {
                 tool_calls.retain(|tc| JCODE_NATIVE_TOOLS.contains(&tc.name.as_str()));
                 if tool_calls.is_empty() {
+                    if self.finish_advisor_step(Some(&event_tx), false).await {
+                        continue;
+                    }
                     // === INJECTION POINT D: After provider-handled tools, before next API call ===
                     let injected = self.inject_soft_interrupts();
                     if !injected.is_empty() {
@@ -1626,6 +1588,7 @@ impl Agent {
                 self.session.save()?;
             }
 
+            self.observe_advisor_step(false).await;
             // === INJECTION POINT D: All tools done, before next API call ===
             // This is the safest point for non-urgent injection since all tool_results
             // have been added and the conversation is in a valid state.

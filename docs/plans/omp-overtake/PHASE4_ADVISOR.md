@@ -1,16 +1,25 @@
 # Phase 4 advisor implementation record
 
-Status on 2026-09-04: the remaining implementation is delivered on the Phase 4
-completion branch, extending the foundation and live controls from PRs #6/#7.
-Deterministic unit and isolated selfdev/socket acceptance have passed. The
-live-model acceptance gate remains open: this execution environment has no
-provider credential. A local HTTP fixture is not claimed as live-model evidence.
-Final-head CI results and any outstanding gates are recorded in PR #10.
+Status: the ongoing investigative-advisor correction is implemented on
+`feat/advisor-agent-parity`, based on `master`
+`24643c91314fa81f976b60c01894f5b8e7a00860`. Final-head validation and merge
+readiness are tracked in [PR #18](https://github.com/LLMpsycho/jcode/pull/18);
+passing results from earlier PRs do not establish acceptance for this branch.
+The approved behavioral contract is
+[PHASE4_ADVISOR_AGENT_PLAN.md](./PHASE4_ADVISOR_AGENT_PLAN.md).
 
-Follow-up on 2026-09-05: PRs #10 and #12 are merged. The advisor now has a session model
-and effort picker backed by the authenticated model catalog used by `/model`.
-The optional OpenAI API acceptance probe below is one test harness; it is not
-a requirement for using the advisor with an existing Jcode subscription login.
+This extends the foundation and live controls from PRs #6/#7, completion and
+model-selection work in PRs #10/#12/#13/#14, and subsequent command fixes.
+The previous completed-turn, non-investigative reviewer did not implement the
+ongoing peer-advisor behavior. The current runtime observes safe boundaries,
+retains a separate conversation, investigates source, and can cause a bounded
+primary correction before completion. It was implemented independently from
+OMP; no OMP source or prompts were copied. Phases 5–7 remain outside scope.
+
+A deterministic HTTP fixture exercises actual jcode tools, providers, daemon
+and socket dispatch. It is not live-model evidence. The optional OpenAI API
+probe described below remains a separate gate and does not require users to
+have an API key to use their existing subscription login with the advisor.
 
 ## Choosing the advisor model
 
@@ -104,227 +113,304 @@ server reload. Use the newly opened TUI for `/advisor`; `--no-update` avoids the
 upstream automatic update check for that launch. If a custom install directory
 is configured, use that installer's printed launcher path instead.
 
-This follow-up starts at merged PR #13 (`b9f9c103`) on `master`; the fork has no
-`main`. Focused coverage includes role config atomicity and environment
-precedence, exact route/effort execution, independent worker paths, sidecar and
-ambient policy, child restart restoration, TUI selection/refresh/cancellation,
-and busy advisor catalogs. The existing isolated selfdev/socket mode and restart
-acceptance remains a required gate. CI results are recorded in the follow-up PR.
+## Named advisors
 
-One larger gap remains outside this selection change: remote automatic
-end-of-turn review/judge scheduling flags are not consumed. Manual `/review`,
-`/judge`, `/autoreview now`, and `/autojudge now` honor the selected roles; this
-PR does not add a new orchestration scheduler or begin Phases 5–7.
+An empty roster keeps the single `default` advisor. Configure up to eight named
+advisors globally in Jcode's `config.toml` under `[[advisor.roster]]`. Each entry
+has independent model/route/effort, specialization, live history, notes, budget
+consumption, status and session controls. Example:
 
-## Post-merge advisor audit
+```toml
+[advisor]
+enabled = true
+instructions = "Check the user's requirements and verify material findings."
 
-The follow-up starts from merged `master` at
-`7c25bb8e25ae1459f75a8358bf1764a61a722051`; this fork has no `main` branch.
-Validation for this follow-up is recorded in PR #13.
-The audit closes these additional integration gaps:
+[[advisor.roster]]
+name = "correctness"
+instructions = "Inspect runtime behavior and edge cases."
 
-| Finding | Correction | Focused regression |
+[[advisor.roster]]
+name = "verification"
+instructions = "Check whether the evidence supports completion."
+```
+
+Use the authenticated picker to select each entry's exact model and effort:
+
+```text
+/advisor model correctness
+/advisor model verification
+/advisor status
+/advisor inspect verification
+/advisor off correctness
+/advisor ack <note-id> verification
+```
+
+`/advisor model|inherit|status|inspect|on|off [name]` targets one named advisor.
+`/advisor ack|dismiss <note-id> [name]` handles its note; without a name, the
+server locates that note within the owner's roster. Untargeted status and
+inspect cover the roster; untargeted on/off apply across it. Untargeted model
+selection uses `default`, or the first configured advisor when no `default`
+exists. Status includes review consumption, retained context message count,
+suppression count and any failure or budget-exhaustion explanation. It does
+not expose the advisor's private reasoning.
+
+A workspace may specialize the roster in `.jcode/advisor.toml`, relative to the
+session working directory. Its syntax uses `instructions` and `[[roster]]`
+without the global `advisor` prefix:
+
+```toml
+instructions = "Follow this project's acceptance criteria."
+
+[[roster]]
+name = "verification"
+instructions = "Inspect integration coverage for changed behavior."
+```
+
+Project entries replace matching global names and append new names; shared
+instructions concatenate. A nonempty roster replaces the implicit default.
+Names are 1–48 lowercase ASCII letters, digits, hyphens or underscores; duplicate
+names and invalid/oversized configuration fail visibly. Project files are
+bounded to 64 KiB and cached for one second, and combined specialization is
+bounded to 16 KiB per advisor. Project configuration cannot enable advisors
+session-wide, expand tools, relax budgets, or widen `allowed_runtime_keys`.
+Named entries inherit those constraints. An explicit session choice is durable
+metadata; it does not rewrite the global or project roster.
+
+## Runtime behavior and evidence
+
+An enabled primary turn establishes a visible task anchor, standing project
+instructions, recent visible session context and an investigative adapter. It
+publishes incremental updates at safe model/tool boundaries while the advisor
+runs independently. Completed-user-turn cadence is counted separately from
+these intermediate observations. A later `continue` retains earlier task
+requirements while identifying that later instructions may supersede them.
+
+Each advisor sends its retained conversation back to its private provider:
+updates, its own responses, and matched investigative tool results. Ordinary
+advisor prose remains private. Successful silence produces no note. The
+structured `advise` action carries severity, a stable concern identity,
+evidence and recommended action; the legacy structured-note adapter remains
+compatible. Final-review findings must cite supplied evidence or actual
+independent investigative results.
+
+Captured evidence includes visible user/assistant text, bounded tool requests
+and results, patch excerpts, diagnostic deltas, explicit verification process
+results, unfinished todos and acceptance criteria. Primary hidden reasoning,
+provider signatures, raw images and encrypted compaction items never cross the
+primary/advisor observation boundary. Synthetic advisor deliveries are excluded
+from subsequent visible deltas to avoid reviewing the advisor's own message.
+
+The Git source supplies a tracked working-tree **patch against HEAD**, with
+an 8 KiB read ceiling and 350 ms deadline. It may include earlier edits and
+omits untracked files, submodules and recognized credential stores; separate
+file-revision metadata identifies actual writes during the current primary
+turn. External diff, text conversion and fsmonitor execution are disabled.
+Configured clean/process filters make the source unavailable. System/global
+Git configuration and inherited command-line overrides are excluded. Missing
+Git/HEAD, unavailable sources and truncation are labelled, never reported as a
+clean verification result.
+
+Foreground `bash` verification retains actual process completion and exit code.
+An ordinary successful command, background job, or completed primary response
+is not proof of passing tests. Todo criteria and declared checks remain labelled
+requirements/claims. Diagnostics retain bounded range/severity/message data,
+not raw language-server responses, with high-severity findings retained.
+
+## Investigation, permissions and provider isolation
+
+The advisor can use `read` and `agentgrep` in its read-only grep/find modes,
+when those implementations are granted to the owning primary session. Every
+invocation rechecks the grant, operation capability and investigative policy.
+Unknown, effectful, batch/delegated, shell and MCP tools are unavailable. Names
+alone never authorize an implementation. Reads are workspace-confined after
+canonical path resolution; credential stores and symlink escapes are refused.
+Search excludes hidden and ignored files and cannot inherit a ripgrep
+preprocessor command. Read calls are limited to regular files up to 1 MiB and
+200 lines, with bounded redacted outputs.
+
+Investigation uses isolated tool context and does not alter the primary's read
+coverage or verification capture. It does not execute arbitrary policy hooks.
+If a pre-tool policy hook is configured, investigation is unavailable and the
+advisor receives an explicit limitation; the adapter neither bypasses that
+policy nor runs its shell commands.
+
+Only provider routes that can suppress autonomous built-in tools are eligible.
+The provider fork is explicitly restricted to the supplied tools before review;
+unexpected native tool actions or provider-side results fail the review. Grok
+ACP and the deprecated Claude CLI runtime remain excluded when their native or
+inherited MCP behavior cannot be disabled. The historical `tool-free` capability
+check establishes native-tool isolation; it does not mean this advisor receives
+an empty explicit tool list.
+
+Model/effort selection uses the same authenticated catalog as `/model`. A session
+selection takes precedence over the configured exact route/model. Otherwise
+interactive and selfdev-guardian use `reviewer_model`, and final-review uses
+`verification_model`; absent a configured role, the primary route is inherited
+on a private fork. Exact `allowed_runtime_keys` restrict evidence recipients:
+`[]` denies all, omission inherits available authenticated routes. Unknown,
+unavailable, denied or ambiguous routes fail visibly. An explicit model never
+silently falls back or changes the main model, effort, credential pin or provider
+session. Autonomous `swarm` effort choices are not advisor effort options.
+
+In interactive mode, advisor feedback does not gate the primary's corrective
+tools. Only explicit **selfdev-guardian** mode gates future effectful operations
+on unresolved blocking notes. Batch subcalls and unknown/effectful operations
+still pass the central capability check. Existing permissions and write guards
+apply independently. Corrupt durable advisor state remains a visible,
+fail-closed exception until explicit disable or repair.
+
+## Delivery, suppression and cancellation
+
+During active work, concerns enter the nonurgent safe-boundary queue outside
+the interruption cooldown; blockers are urgent and nits remain visible asides.
+They are independent advice for the primary to weigh and correct or explain. They do not forcibly cancel an already-started primary tool.
+At terminal completion, ordinary concerns/nits remain visible asides and do not
+start a restatement turn. An eligible late blocker can continue the same user
+invocation before the final socket completion event, with at most three
+corrective continuations. The terminal drain has a 60-second deadline; an
+incomplete drain or exhausted correction allowance produces a visible notice.
+
+A bounded concern ledger uses stable advisor-supplied identity, with normalized
+legacy fallback. Rewording an already-reported concern does not create another
+note at the same severity. Acknowledgment/dismissal suppresses that concern for
+the configured completed-user-turn window, default two; repeated handling does
+not extend it. **Observation continues during immunity**, and unrelated concerns
+remain eligible. A separate owner-wide `interrupt_immunity_turns` window,
+default three completed user turns after delivered interruption, makes further
+concerns non-interrupting while blockers remain eligible. Named advisors share
+this interruption cooldown. Higher-severity escalation and duplicate blockers
+are tested separately. Acknowledgment/dismissal cancels the current review generation and
+pending update so a late response cannot immediately resurrect handled advice.
+
+One update runs per advisor; pending arrivals coalesce into a bounded next
+update including intermediate evidence and final state. Explicit cancellation,
+disable, model replacement, history reset and session disposal fence stale
+publication. Dropping a cancelled primary request also cancels its advisor
+transport/tool future. A late response cannot resume a user-stopped run. Named
+advisor controls are isolated; owner stop/reset/disposal covers the whole roster.
+
+## Resource bounds and restart semantics
+
+| Resource | Bound / behavior |
+| --- | --- |
+| Evidence snapshot | 32 KiB serialized; up to 12 primary-tool summaries, bounded fields and explicit truncation |
+| Visible observation | 16 KiB recent context; individual visible blocks bounded to 4 KiB |
+| Per-update advisor work | Up to 6 model steps and 12 investigative calls; repeated identical investigation rejected after two attempts |
+| Deadlines | 60 seconds per review; 5 seconds per investigative call; 60 seconds terminal drain |
+| Live conversation | Up to 12 complete exchanges / 192 KiB, additionally fitted to provider context budget |
+| Retained anchor | Bounded original objective and initial visible task/project context retained when old exchanges are evicted |
+| Review starts | `max_reviews_per_session`, default 100 per advisor; lifetime counter survives restart/history changes |
+| Note publication | One accepted structured finding per update, subject to configured note budget and suppression |
+| Durable state | Up to 32 bounded note records, a bounded concern ledger, at most 256 KiB per checkpoint |
+
+History maintenance removes whole exchanges, preserving tool-call/result pairing
+and the task anchor. It is deterministic bounded retention, not an LLM summary
+or full-context promotion system. Truncated/omitted evidence is explicit.
+Disabled or zero-budget operation does not collect evidence or call providers.
+Budget exhaustion is visible in status; it is not silently replenished by rewind
+or restart.
+
+Checkpoints live at `state/advisor` under the configured Jcode home. Filenames
+hash session identities; named runtime identities are owner-scoped. Atomic,
+owner-only checkpoints retain enable and canonical model/effort overrides,
+review/turn counters, mode, bounded redacted notes/dispositions, concern
+suppression and interruption-cooldown state. They do not contain credentials, provider handles, raw
+investigative output, private reasoning or the full live conversation.
+
+Resume restores controls and budget, starts idle, and reconstructs live context
+from current visible primary state at the next explicit user turn. It does not
+replay historical interrupts. Rewind/undo/applied compaction invalidate pending
+reviews, notes and live history while preserving explicit model/enable controls
+and lifetime budget. Corrupt state is not overwritten by automatic review;
+failed writes are reported as nondurable controls. Persisted notes and
+investigative results are redacted even if request snapshot redaction is disabled.
+
+## Requirement traceability and current validation
+
+Paths without a crate prefix are under `crates/jcode-app-core/src/`.
+
+| Behavior | Implementation | Required regression / acceptance |
 | --- | --- | --- |
-| History resets and queued reviews could clear a checkpoint failure without explicit recovery. | Preserve failed durable state across rewind/compaction and refuse automatic pending reviews until recovery. | Corrupt-file preservation, repeated reset, explicit disable recovery, and queued-review failure tests in `advisor/persistence.rs` and `advisor/tests.rs`. |
-| Failed legacy controls looked like successful SDK replies. | Return a redacted typed `error` for failed persistence and missing note IDs. | Enable/disable/ack/dismiss failure and redaction tests in `server/advisor_control_tests.rs`. |
-| Explicit routes could reuse the currently active compatible endpoint, and subscription forks lost effort. | Select the exact authenticated runtime and preserve managed-subscription effort on the private fork. The managed wrapper also uses its canonical subscription route during construction, model switches and auth refresh, without requiring OpenRouter credentials. | Endpoint/pin/credential-failure, Gemini/compatible route, and effort regressions in `jcode-base` provider tests. |
-| A provider with autonomous built-in tools could receive an advisor review. | Require first-class provider support for tool-free requests before preview, selection or execution. | Internal-tool provider rejection with zero review calls; wrapper capability delegation tests. |
-| Advisor quota failover could switch a process-wide primary account. | Execute reviews on the selected runtime without account/provider failover. | Quota-failure route isolation and advisor execution tests. |
-| Stale picker errors, generic server errors and disconnects could leave loading state or disturb a main turn. | Correlate advisor replies independently, discard cancelled picker results, and clear transient state on disconnect without replaying controls. | TUI cancellation, supersession, generic error, active-turn and disconnect tests. |
-| Modern harness API and Rust/TypeScript SDKs lacked advisor controls. | Expose typed controls/results and canonical catalog selections through the existing session bridge. | Pure DTO compatibility, bridge session/request correlation, capability ledger, SDK parity and transport tests. |
+| Observe active primary work and retain requirements | `agent/advisor_live.rs`, primary loop/turn integration | `agent/advisor_live_tests.rs`: visible-only capture, truncation, `continue` task anchor |
+| Read evidence independently | `advisor/investigation.rs`, `tool/advisor.rs` | Real source read not present in the prompt; denied effects/unknown tools/revoked grants; path/credential/symlink/hook/preprocessor restrictions |
+| Retain real advisor conversation and healthy silence | `advisor/runtime.rs`, `advisor/history.rs` | `advisor/runtime_tests.rs`: later provider input contains earlier exchanges, paired tool results, no note from silence/private prose |
+| Coalesce, suppress and cancel | `advisor.rs`, `advisor/suppression.rs`, `advisor/delivery.rs` | Intermediate/final update retention, handled paraphrase versus unrelated blocker, escalation/deduplication, cancelled future and late delivery |
+| Bound terminal correction | `agent/advisor_live.rs` | Headless and streaming late blocker correction without another user prompt; cancel during drain and dropped primary future |
+| Redacted patch/diagnostic/verification/todo evidence | `advisor/evidence.rs`, tool producers and stable tool/task DTOs | Real Git patch, bounds, unavailable/filter sources, diagnostic priority, real exit codes, criteria preservation |
+| Durable restart controls | `advisor/persistence.rs`, model selection and lifecycle paths | Restart/redaction/bounds/corrupt state/write failure, no historical interrupt replay or restored raw history |
+| Named roster and targeted controls | `advisor/roster.rs`, `advisor/roster/project.rs`, config types, server/TUI/client controls | Independent routes/efforts/histories/notes, default migration, duplicate/invalid names, project precedence and permission preservation, restart/disable isolation |
+| Explicit provider tools and exact role route | `advisor/routing.rs`, provider contract/runtime implementations | Native-tool restriction and rejection, unchanged main route/effort/session, exact authenticated endpoint and account |
+| Complete feedback cycle over transport | `scripts/test_advisor_acceptance.py`, `scripts/test_advisor_agent_acceptance.py` | Real isolated daemon observes, independently reads source, advises, primary actually edits source, one final `done`; healthy silence and in-flight cancel |
 
-`model_options.available_selections` supplies canonical routes that SDK callers
-can forward unchanged when requesting efforts or selecting a model. The field is
-additive and defaults to empty for older daemons. It contains no credentials.
-The picker explains an empty catalog and distinguishes model loading from effort
-loading. A runtime that cannot disable built-in tools is rejected with guidance
-to choose another advisor model. This includes Grok ACP and the deprecated
-Claude CLI runtime: an empty built-in tool list does not establish isolation
-from inherited CLI/MCP configuration. Direct authenticated provider routes remain
-available when they satisfy the tool-free contract.
-
-The focused acceptance workflow now covers the public API and both SDKs as well
-as the existing isolated socket restart/reload/mode checks. The two inherited
-formatting failures and two unused test imports are corrected. The unrelated
-repository-wide CI definition still has duplicate `env` mappings, size budgets
-remain over their existing baselines, and the linked-issue check still conflicts
-with this fork's disabled Issues setting. These broader repository gates are not
-reported as passed. The live-model gate below remains separate from deterministic
-fixture acceptance.
-
-## Requirement traceability
-
-| Remaining requirement | Implementation | Verification |
-| --- | --- | --- |
-| Bounded diff summaries | `advisor/evidence.rs`: tracked working-tree numstat against HEAD, 8 KiB read ceiling, 350 ms deadline, no external diff/text conversion; per-turn revision metadata identifies actual tool writes separately. | `bounded_diff_reads_actual_changes_and_reports_unavailable_sources` exercises a real temporary Git repository and unavailable sources. |
-| Diagnostics and verification results | `advisor/evidence.rs`, `tool/mod.rs`, `tool/lsp.rs`, `tool/lsp/diagnostic_output.rs`, `tool/bash.rs`, `jcode-tool-types`: capture structured producer metadata after post-edit diagnostics; explicit foreground exit codes; diagnostic deduplication; no raw terminal output. | Evidence scoping/redaction/failed-check tests; highest-severity diagnostic retention test; isolated provider input assertions. |
-| Todos and acceptance criteria | `jcode-task-types::TodoPlan`, `tool/todo.rs`, `advisor/evidence.rs`, TUI plan rendering: explicit bounded `acceptance_criteria`, current unfinished todos, user objective, and declared plan/check state. | `tool/todo_advisor_tests.rs`: retain omitted criteria, clear explicit empty criteria, report changes, reject over-limit input, load legacy plans. |
-| Restart-safe minimal controls | `advisor/persistence.rs`, agent construction/restore/reset paths, server controls: atomic owner-only checkpoints, opaque note IDs, inspect/acknowledge/dismiss/enable/disable and lifetime budget restoration. | Persistence tests cover restart, redaction, bounds, corrupt files, and write failures; socket acceptance kills and restarts the daemon after successful controls. |
-| Handled-concern immunity | `advisor.rs`: default two completed turns without review after a note is first acknowledged/dismissed; window survives restart; repeated handling does not extend it. | `handled_note_immunity_survives_restart_and_prevents_paraphrase_storms`; socket acceptance observes no review calls for two turns, then exactly one review. |
-| Capability-based enforcement | `jcode-tool-core::ToolCapability`, builtin implementations, central registry check after the awaited pre-tool hook and immediately before execution. | Arbitrarily named unknown tool is denied, renamed reader remains usable, nested batch cannot create its target file, handled/disabled blockers release future calls. |
-| Permission-aware role routing | `advisor/routing.rs`, typed/default config: reviewer and verification role requests, canonical route selection and exact authenticated-runtime allowlist on a private provider fork. | Role selection, unchanged primary, denied/unavailable/unknown/ambiguous routes, positive exact credential-route permission tests. |
-| Evidence-grounded mode behavior | Strict structured JSON, tool-less mode-specific contracts, final-review evidence entries checked against supplied evidence; provider error events and incomplete streams fail without publishing a note. | Mode-capture tests, invented-evidence rejection, malformed/error/EOF tests, all three modes through the production OpenAI HTTP transport. Live-model command below remains unrun. |
-
-Paths without a crate prefix in this document are under
-`crates/jcode-app-core/src/`; stable DTOs remain in their leaf crates. No OMP
-implementation code was copied.
-
-## Evidence contract and limits
-
-Inputs contain the objective, latest completed primary response, at most 12
-current-turn tool summaries with declared intent, diff, new diagnostics,
-verification state, unfinished todos, and acceptance criteria. Capture resets at
-the start of streaming, captured, and ordinary turns. Historical tool summaries
-are not reused as evidence for a new turn. Serialized advisor input is limited to
-32 KiB; provider output, individual fields, and retained private context are also
-bounded. Disabled or zero-budget operation does not collect evidence or call the
-advisor provider.
-
-The Git summary explicitly identifies its scope: tracked working-tree changes
-against HEAD can include earlier work and omit untracked files. Missing Git,
-missing HEAD, absent diagnostics, timed-out sources, and unavailable todo state
-are reported as unavailable, never as a clean verification result. Configured
-Repository Git clean/process filters also make the diff source unavailable: a plain numstat
-can otherwise execute them despite disabling external diff/text conversion.
-System/global Git configuration and inherited command-line config overrides are
-excluded from both the filter check and diff command. File-revision metadata
-independently records writes during the reviewed turn.
-
-A foreground `bash` call may declare `verification: true`; the advisor receives
-its actual process completion and exit code. A successful ordinary command or
-primary turn is not proof that tests passed. An unfinished/background check is
-reported without completion evidence. Todo criteria and feedback-loop claims are
-labelled agent-declared requirements/checks, not independent outcomes.
-
-Recognized secrets are redacted before retention and transmission when configured
-with `redact = true`. Persisted notes are always redacted, including when request
-redaction is disabled. Inline key assignments and recognized OpenAI token formats
-are covered. Only bounded diagnostic range/severity/message metadata is exposed
-for direct diagnostic reads; raw language-server data is excluded. Highest
-severity findings survive text truncation.
-
-## Restart, history and control semantics
-
-- Checkpoints live under the configured Jcode home at `state/advisor`, independently
-  of the ephemeral runtime/socket directory. File names hash session identifiers.
-- Persisted state is limited to version, enable and model/effort overrides, turn/cost counters,
-  immunity counters, and at most 32 bounded note records. Individual records are
-  capped at 4 KiB after JSON escaping; files are capped at 256 KiB.
-- Resume restores controls, handled dispositions, unresolved blockers, and review
-  budget. It starts idle with empty private context and no pending request or
-  replayed interrupt. Closing a live session drops in-memory state, not its
-  restart checkpoint.
-- Rewind, rewind undo, and applied compaction invalidate notes, pending reviews,
-  private context, deduplication, and queued advisor notifications. They preserve
-  explicit enable/disable, model/effort selection, lifetime cost counters, and the handled-note window.
-- Acknowledging/dismissing cancels any current review generation and pending review
-  so late paraphrases cannot immediately resurrect a handled concern. Other
-  unresolved blockers continue to gate effects. Disabling fences publication and
-  releases future calls without cancelling a tool that already started.
-- Corrupt or unwritable checkpoints are visible through status/control results.
-  Corrupt state fails closed for effects until explicit disable or repair; it is
-  never automatically overwritten by a scheduled review. Failed control writes
-  are not reported as durable success.
-- Reviews are bounded by cadence, per-session starts, one active request, one latest
-  pending request, a timeout, and per-turn note limits. A full set of retained
-  unresolved blockers does not produce uninspectable extra notes.
-
-The `/advisor` picker and `/advisor inherit|status|inspect|ack <id>|dismiss <id>|on|off`
-TUI and public client/socket controls remain the product surface. No redundant
-standalone CLI control command is added.
-
-## Enforcement and routing
-
-Every registered tool declares a capability through the tool interface. Unknown
-implementations/actions are conservative; names have no authority. Read-only
-operations remain usable; effects require advisor clearance. Batch delegates to
-the same registry for every subcall. DAP evaluation is effectful. LSP mutation,
-reload and unknown actions are effectful, while explicit read/preview actions
-remain available.
-
-`model` is an explicit advisor override. Otherwise interactive and
-selfdev-guardian use `reviewer_model`, and final-review uses `verification_model`.
-Absent a role request, the existing primary route is inherited without mutation.
-`allowed_runtime_keys` limits evidence recipients to exact stable runtime keys;
-`[]` denies all, omission inherits authenticated route availability. For example,
-`openai-api:gpt-5` selects the API-key route and `openai-api-key` is its permission
-key. Unavailable, denied or ambiguous requests fail visibly without fallback.
-Only the provider fork receives a structured route selection; primary model,
-credential pin, and cached system prefix are unchanged.
-
-## Validation and outstanding gate
-
-The acceptance harness always starts a separately built binary with an isolated
-home, workspace, runtime directory, socket, process group, and telemetry disabled.
-It never installs/promotes a binary or contacts an existing user daemon. Default
-mode drives the real provider transport against a local Responses API fixture.
-It verifies bounded/redacted structured input, normal primary tools, tool-less
-advisor calls, inspected notes, acknowledge/dismiss, two-turn immunity, process
-restart, actual reload/disconnect/reconnect, persisted disable, rewind, and undo
-for all three modes. Applied compaction and stale in-flight completions have
-focused runtime tests. The server also waits for owner bookkeeping before
-forwarding terminal completion on the ordered stream, so immediate follow-up
-turns cannot race a stale busy flag. This is covered by readiness/stale-owner
-tests and the existing late-attachment stream-order regression.
+Final-head formatting, Rust/provider/TUI/SDK tests and isolated selfdev/socket
+acceptance are enforced and recorded by the **CI** workflow, including its
+**Advisor and session acceptance** job, in
+[PR #18](https://github.com/LLMpsycho/jcode/pull/18). That workflow must pass
+before merge readiness; its uploaded fixture report records exact binary and
+scenario provenance. Local Unix socket creation/connect is denied with `EPERM`,
+so local compilation and unit tests are not claimed as socket acceptance. The
+full TypeScript SDK suite has passed in CI; local validation
+includes a selfdev build and 108 advisor tests after a clean app-core rebuild. The acceptance harness starts
+its own built binary, home, workspace, runtime directory, socket
+and process group with telemetry disabled. It never installs/promotes a binary
+or contacts an existing daemon. Deterministic mode uses the real Responses API
+transport against a local fixture, including all three operating modes,
+model/effort isolation, restart/reload, controls, history reset, the investigative
+feedback cycle, silence and cancellation.
 
 ```bash
 JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test --locked -p jcode-app-core --lib advisor
 JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test --locked -p jcode-base --lib advisor
+JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test --locked -p jcode-tui --lib advisor
 JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh test --locked -p jcode-tool-core --lib
 JCODE_DEV_FEATURE_PROFILE=minimal scripts/dev_cargo.sh build --locked --profile selfdev --bin jcode
 python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode
 ```
 
-The initial successful deterministic run used commit
-`8a2128dd062c27f0c6941fa768b5944efeff06bb`: 32 app-core advisor tests, 3 base tests,
-7 tool-contract tests, and all three isolated socket modes passed. Its selfdev
-binary SHA-256 was
-`4e0994efde18f6395871f4c62a374fc44d0cd6908e61e60f7df5a4b16c45f901`.
-The run's formatting gate failed; the generated correction was applied in a
-subsequent commit. Follow-up stream/permission/diagnostic tests and final-head
-formatting are checked in the PR's focused workflow.
+## Historical validation and separate live-model gate
 
-**Still required before declaring the entire Phase 4 acceptance gate closed:**
-run the opt-in live-model probe using an already configured OpenAI API credential,
-record its model and results, and review each independent verdict. It exercises
-all three modes and restart controls without giving the advisor tools:
+The initial completion run at `8a2128dd062c27f0c6941fa768b5944efeff06bb` passed
+32 app-core advisor tests, 3 base tests, 7 tool-contract tests and all three
+isolated socket modes. Its binary SHA-256 was
+`4e0994efde18f6395871f4c62a374fc44d0cd6908e61e60f7df5a4b16c45f901`.
+Formatting correction followed in another commit; final-head results for that
+completed-turn design are recorded in PR #10. PR #13 records the subsequent
+persistence, provider routing and public SDK/control audit. Those results are
+historical provenance, not validation of this investigative runtime.
+
+PR #14 added role model/effort selection; the remote automatic review/judge
+scheduler previously deferred there was subsequently wired in PR #16. It is
+not an outstanding advisor-parity gap. Prior audit notes also recorded broader
+repository gates (duplicate CI `env` mappings, size-budget debt, and the
+linked-issue check conflicting with disabled Issues). The current PR integrates
+master's named agent profiles and default-enabled advisor, fixes OrcaRouter CLI
+selection and the stale TUI scenarios, and splits oversized production/test
+modules to meet the existing ratchets. Error and panic paths now report or
+propagate failures; no budget was raised and no test was disabled. The warning
+gate also rejects failed compilation, with hermetic regression coverage.
+Final-head CI results remain authoritative in PR #18. At the repository owner’s
+request, automatic PR checks are consolidated into one CI workflow. Unique advisor
+and session audit checks remain; full Linux TUI and SDK suites cover the duplicate
+filters. Native Windows validation includes both PowerShell syntax checks. The
+issue-link gate, obsolete branch-specific live workflow, and upstream-only star
+history workflow are removed. Specialist platform smoke workflows remain manual.
+
+A real-model run remains separate from deterministic acceptance. Using an
+already-configured OpenAI API credential, the optional harness command is:
 
 ```bash
-python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode --live --model gpt-5
+python3 scripts/test_advisor_acceptance.py --binary target/selfdev/jcode --live --model gpt-5 --report advisor-live-report.json
 ```
 
-The harness also accepts `--report <path>` to retain a bounded, owner-only JSON
-report with the requested model, binary SHA-256, timestamp, inspected independent
-verdict for each mode, and explicit restart/reload/immunity coverage flags. It
-redacts the caller's exact credential and recognized OpenAI tokens before writing
-or printing. No success report is created by an unsuccessful run. Five Python
-regressions cover report bounds, redaction, file permissions, missing-credential
-preflight, provenance and failure behavior.
+This legacy OpenAI-specific live probe exercises modes and restart controls;
+it does not run the fixture-only investigative/cancellation scenarios or prove
+quality parity across subscription providers. The report includes provenance,
+requested model, binary SHA-256 and inspected verdicts; it is bounded, redacted
+and owner-only, and an unsuccessful run creates no success report.
 
-### Completing the live gate through GitHub Actions
-
-`.github/workflows/advisor-live-acceptance.yml` runs for this owned completion PR
-and fails before checkout/build when the dedicated credential is absent. It never
-falls back to the local provider fixture. To finish the pending gate:
-
-1. Add repository Actions secret `ADVISOR_ACCEPTANCE_OPENAI_API_KEY` using an
-   existing OpenAI API credential. Do not put the key in a PR, commit or chat.
-2. Optionally set repository Actions variable `ADVISOR_ACCEPTANCE_MODEL`; the
-   default is `gpt-5`.
-3. Rerun the failed **Advisor live acceptance** job. It builds its own selfdev
-   binary and runs all three modes with isolated state and read tools available
-   to the primary agent; the advisor stays tool-less.
-4. Inspect the seven-day `advisor-live-report` artifact, review each verdict, and
-   record the successful run and model in PR #10 before closing this gate.
-
-The credential is scoped to the preflight and live test steps. It is absent from
-the build and artifact steps. Automatic billable execution is restricted to this
-owned PR; manual dispatch is available after the workflow reaches the default
-branch. The separate deterministic workflow saves `advisor-fixture-report`,
-explicitly labelled `local-http-fixture`.
-
-This invokes billable provider calls. The key is read only from the caller's
-existing environment and is not printed or copied into the acceptance report.
-No live-model success, competitive OMP win, or resource-regression floor is
-claimed by the fixture results. See [PHASE0_3_AUDIT.md](./PHASE0_3_AUDIT.md) for the
-bounded audit of preceding phases and repository-level gates outside this slice.
+The optional live probe remains available through the local command above; its
+obsolete branch-specific workflow was removed during CI consolidation. Record
+and inspect successful live verdicts separately before closing the live-model
+gate. No live-model success, OMP competitive win or measured resource-regression
+floor is claimed here. See [PHASE0_3_AUDIT.md](./PHASE0_3_AUDIT.md) for the earlier
+bounded audit of Phases 0–3.

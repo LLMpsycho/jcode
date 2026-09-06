@@ -145,12 +145,21 @@ impl MultiProvider {
             None
         };
 
+        let selected_named_profile = match std::env::var("JCODE_NAMED_PROVIDER_PROFILE") {
+            Ok(name) => Some(name),
+            Err(std::env::VarError::NotPresent) => default_named_provider_profile.clone(),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                crate::logging::warn("Ignoring non-Unicode named provider profile selection");
+                None
+            }
+        };
+
         let anthropic = if has_claude_creds && !use_claude_cli {
             let provider =
                 external::instantiate_expected_external_provider(external::ANTHROPIC_RUNTIME);
-            let active_profile_is_anthropic = std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
-                .ok()
-                .and_then(|name| cfg.providers.get(&name))
+            let active_profile_is_anthropic = selected_named_profile
+                .as_deref()
+                .and_then(|name| cfg.providers.get(name))
                 .is_some_and(|profile| {
                     matches!(
                         profile.provider_type,
@@ -214,10 +223,9 @@ impl MultiProvider {
             None
         };
 
-        let active_named_profile_is_anthropic = std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
-            .ok()
-            .or_else(|| default_named_provider_profile.clone())
-            .and_then(|name| cfg.providers.get(&name))
+        let active_named_profile_is_anthropic = selected_named_profile
+            .as_deref()
+            .and_then(|name| cfg.providers.get(name))
             .is_some_and(|profile| {
                 matches!(
                     profile.provider_type,
@@ -225,9 +233,7 @@ impl MultiProvider {
                 )
             });
         let openrouter = if has_openrouter_creds && !active_named_profile_is_anthropic {
-            let named_profile = std::env::var("JCODE_NAMED_PROVIDER_PROFILE")
-                .ok()
-                .or_else(|| default_named_provider_profile.clone());
+            let named_profile = selected_named_profile.clone();
             let spec = named_profile
                 .as_deref()
                 .and_then(|profile_name| {
@@ -341,6 +347,7 @@ impl MultiProvider {
             routes_memo: Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            private_session: std::sync::atomic::AtomicBool::new(false),
         };
 
         // An explicit CLI/environment provider selection owns startup routing.

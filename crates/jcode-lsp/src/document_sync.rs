@@ -108,7 +108,10 @@ impl DocumentSync {
     }
 
     pub async fn get(&self, path: &Path) -> Option<DocumentState> {
-        let path = path.canonicalize().ok()?;
+        // Missing or inaccessible paths cannot identify a synchronized document.
+        let Ok(path) = path.canonicalize() else {
+            return None;
+        };
         self.documents.lock().await.get(&path).cloned()
     }
 }

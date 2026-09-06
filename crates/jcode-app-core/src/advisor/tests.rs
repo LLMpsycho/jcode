@@ -33,21 +33,23 @@ async fn handled_note_immunity_survives_restart_and_prevents_paraphrase_storms()
     drop(manager);
     let manager = Arc::new(AdvisorManager::persistent(dir.path().to_path_buf()));
     manager.resume("immunity");
-    // No provider call means paraphrased or alternating findings cannot defeat
-    // suppression. A duplicate ack does not extend the window indefinitely.
+    // Reviews continue during concern-specific suppression, so unrelated new
+    // problems remain visible. A duplicate ack does not extend the window.
     for _ in 0..2 {
-        assert!(!manager.schedule_turn(
+        assert!(manager.schedule_turn(
             "immunity".into(),
             provider.clone(),
             queue.clone(),
             AdvisorTurnInput::default(),
             enabled_config()
         ));
+        wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
+        assert_eq!(manager.notes("immunity").len(), 1);
         manager
             .resolve_note("immunity", &id, AdvisorNoteDisposition::Acknowledged)
             .expect("duplicate ack");
     }
-    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
     assert!(manager.schedule_turn(
         "immunity".into(),
         provider,
@@ -56,7 +58,7 @@ async fn handled_note_immunity_survives_restart_and_prevents_paraphrase_storms()
         enabled_config()
     ));
     wait_for_status(&manager, "immunity", AdvisorStatus::Ready).await;
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
 }
 
 struct AdvisorProvider {
@@ -108,7 +110,7 @@ impl Provider for SelectedRouteFailureProvider {
         _: &str,
         _: Option<&str>,
     ) -> Result<crate::provider::EventStream> {
-        assert!(tools.is_empty());
+        assert!(tools.iter().all(|tool| tool.name == "advise"));
         self.selected_calls.fetch_add(1, Ordering::SeqCst);
         anyhow::bail!("selected route quota exhausted");
     }
@@ -210,7 +212,7 @@ impl Provider for AdvisorProvider {
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<crate::provider::EventStream> {
-        assert!(tools.is_empty());
+        assert!(tools.iter().all(|tool| tool.name == "advise"));
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(Box::pin(stream::iter(vec![
             Ok(StreamEvent::TextDelta(self.response.clone())),
@@ -241,7 +243,7 @@ impl Provider for ModeCaptureProvider {
         system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<crate::provider::EventStream> {
-        assert!(tools.is_empty());
+        assert!(tools.iter().all(|tool| tool.name == "advise"));
         self.systems
             .lock()
             .expect("systems")
@@ -293,7 +295,9 @@ impl Provider for BlockingAdvisorProvider {
     }
 
     fn name(&self) -> &str {
-        "advisor-blocking-test"
+        // The delayed and immediate fixtures represent the same selected route.
+        // A genuinely different provider must cancel the old review instead.
+        "advisor-test"
     }
 
     fn fork(&self) -> Arc<dyn Provider> {
@@ -448,7 +452,11 @@ async fn duplicate_notes_are_delivered_only_once_across_turns() {
     }
 
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(queue.lock().expect("queue").len(), 1);
+    assert!(
+        queue.lock().expect("queue").is_empty(),
+        "nits never start a corrective primary request"
+    );
+    assert_eq!(manager.take_asides("dedupe").len(), 1);
 }
 
 #[tokio::test]
@@ -483,6 +491,21 @@ async fn review_finishing_while_another_turn_completes_runs_latest_pending_revie
         enabled_config(),
     ));
 
+    {
+        let sessions = manager.sessions.lock().expect("sessions");
+        let active = &sessions["coalesce"];
+        assert_eq!(active.cursor, 1, "same-route update must stay coalesced");
+        assert_eq!(active.status, AdvisorStatus::Reviewing);
+        assert_eq!(
+            active
+                .pending
+                .as_ref()
+                .expect("pending update")
+                .input
+                .objective,
+            "latest"
+        );
+    }
     release.notify_one();
     tokio::time::timeout(std::time::Duration::from_secs(1), async {
         loop {
@@ -498,8 +521,9 @@ async fn review_finishing_while_another_turn_completes_runs_latest_pending_revie
     .expect("pending review should run after the active review");
 
     let pending = queue.lock().expect("queue");
-    assert_eq!(pending.len(), 2);
-    assert!(pending[1].content.contains("latest"));
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].content.contains("latest"));
+    assert_eq!(manager.take_asides("coalesce").len(), 1);
 }
 
 #[tokio::test]
@@ -510,7 +534,7 @@ async fn malformed_advisor_response_fails_without_interrupting_primary_session()
         "failure".to_string(),
         Arc::new(AdvisorProvider {
             calls: Arc::new(AtomicUsize::new(0)),
-            response: "not-json".to_string(),
+            response: "{invalid-json".to_string(),
         }),
         Arc::clone(&queue),
         AdvisorTurnInput::default(),
@@ -573,6 +597,8 @@ async fn stale_review_completion_cannot_publish_into_recreated_session() {
             input: AdvisorTurnInput::default(),
             config: enabled_config(),
             model_override: None,
+            context: AdvisorUpdateContext::default(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
             },
         )
         .await;
@@ -738,6 +764,8 @@ async fn pending_review_cannot_clear_a_checkpoint_failure() {
             input: AdvisorTurnInput::default(),
             config: enabled_config(),
             model_override: None,
+            context: AdvisorUpdateContext::default(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
         });
     }
     // A transient filesystem recovery does not authorize the scheduler to
@@ -765,9 +793,9 @@ fn advisor_modes_have_distinct_toolless_evidence_contracts() {
     let final_review = advisor_system_prompt(AdvisorMode::FinalReview);
 
     for prompt in [&interactive, &guardian, &final_review] {
-        assert!(prompt.contains("You have no tools"));
-        assert!(prompt.contains("Return exactly one JSON object"));
-        assert!(prompt.contains("Do not include markdown or hidden reasoning"));
+        assert!(prompt.contains("read-only tools"));
+        assert!(prompt.contains("Stay silent when work is on track"));
+        assert!(prompt.contains("Do not include hidden reasoning in advice"));
     }
     assert!(interactive.contains("materially helps the user"));
     assert!(guardian.contains("strictly read-only"));
@@ -881,7 +909,7 @@ async fn unresolved_blocker_gates_only_future_risky_tools_until_handled_or_disab
         }),
         Arc::new(Mutex::new(Vec::new())),
         AdvisorTurnInput::default(),
-        enabled_config(),
+        AdvisorConfig { mode: AdvisorMode::SelfdevGuardian, ..enabled_config() },
     ));
     wait_for_status(&manager, "gating", AdvisorStatus::Ready).await;
 

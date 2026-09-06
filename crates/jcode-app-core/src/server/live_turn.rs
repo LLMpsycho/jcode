@@ -83,7 +83,15 @@ pub(super) async fn idle_live_agent(
         return None;
     }
 
-    agent.try_lock_owned().ok()
+    match agent.try_lock_owned() {
+        Ok(agent) => Some(agent),
+        Err(_) => {
+            crate::logging::debug(
+                "Background wake cannot start immediately: the session is already processing a turn",
+            );
+            None
+        }
+    }
 }
 
 /// Spawn `message` as a full tracked turn in a live session.

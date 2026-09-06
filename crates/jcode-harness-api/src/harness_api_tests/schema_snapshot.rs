@@ -389,3 +389,20 @@ fn snake_case(name: &str) -> String {
     }
     out
 }
+
+#[test]
+fn advisor_result_box_preserves_the_existing_wire_shape() {
+    let wire = r#"{"v":1,"reply_to":7,"ev":"advisor_result","session_id":"s1","result":{"message":"Advisor enabled"}}"#;
+    let frame = ServerFrame::reply(
+        7,
+        ApiEvent::AdvisorResult {
+            session_id: "s1".into(),
+            result: Box::new(AdvisorControlResult {
+                message: "Advisor enabled".into(),
+                ..Default::default()
+            }),
+        },
+    );
+    assert_eq!(serde_json::to_string(&frame).unwrap(), wire);
+    assert_eq!(serde_json::from_str::<ServerFrame>(wire).unwrap(), frame);
+}

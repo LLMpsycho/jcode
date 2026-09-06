@@ -84,6 +84,118 @@ fn fixture_provider(url: String) -> AnthropicProvider {
 }
 
 #[test]
+fn private_fork_credential_switch_isolates_primary_mode_cache_and_runtime_identity() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _identity = EnvVarGuard::set("JCODE_RUNTIME_PROVIDER", "claude");
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "fixture-key");
+    let _key_name = EnvVarGuard::set("JCODE_ANTHROPIC_API_KEY_NAME", "ANTHROPIC_API_KEY");
+    // No async runtime is entered: construction cannot launch a usage fetch.
+    let primary = AnthropicProvider::new();
+    *primary.credentials.try_write().unwrap() = Some(CachedCredentials {
+        access_token: "cached-primary-token".into(),
+        refresh_token: String::new(),
+        expires_at: i64::MAX,
+    });
+    let private = primary.fork();
+    assert_eq!(private.credential_mode(), AnthropicCredentialMode::OAuth);
+    private
+        .set_credential_mode(AnthropicCredentialMode::ApiKey)
+        .unwrap();
+    assert_eq!(private.credential_mode(), AnthropicCredentialMode::ApiKey);
+    assert_eq!(
+        primary.credential_mode_snapshot(),
+        AnthropicCredentialMode::OAuth
+    );
+    assert!(primary.credentials.try_read().unwrap().is_some());
+    assert_eq!(std::env::var("JCODE_RUNTIME_PROVIDER").unwrap(), "claude");
+
+    // Primary changes cannot overwrite a private fork's authentication mode.
+    primary
+        .set_credential_mode(AnthropicCredentialMode::Auto)
+        .unwrap();
+    assert_eq!(
+        primary.credential_mode_snapshot(),
+        AnthropicCredentialMode::Auto
+    );
+    assert_eq!(private.credential_mode(), AnthropicCredentialMode::ApiKey);
+    assert!(primary.credentials.try_read().unwrap().is_none());
+}
+
+#[test]
+fn private_preparation_suppresses_global_identity_changes_but_primary_selection_keeps_them() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _identity = EnvVarGuard::set("JCODE_RUNTIME_PROVIDER", "claude");
+    let _api_key = EnvVarGuard::set("ANTHROPIC_API_KEY", "fixture-key");
+    let _key_name = EnvVarGuard::set("JCODE_ANTHROPIC_API_KEY_NAME", "ANTHROPIC_API_KEY");
+    let primary = AnthropicProvider::new();
+    let private = AnthropicProvider::new();
+    Provider::prepare_private_session(&private);
+    private
+        .set_credential_mode(AnthropicCredentialMode::ApiKey)
+        .unwrap();
+    assert_eq!(
+        private.credential_mode_snapshot(),
+        AnthropicCredentialMode::ApiKey
+    );
+    assert_eq!(
+        primary.credential_mode_snapshot(),
+        AnthropicCredentialMode::OAuth
+    );
+    assert_eq!(std::env::var("JCODE_RUNTIME_PROVIDER").unwrap(), "claude");
+
+    primary
+        .set_credential_mode(AnthropicCredentialMode::ApiKey)
+        .unwrap();
+    assert_eq!(
+        std::env::var("JCODE_RUNTIME_PROVIDER").unwrap(),
+        "claude-api"
+    );
+    private
+        .set_credential_mode(AnthropicCredentialMode::Auto)
+        .unwrap();
+    assert_eq!(
+        std::env::var("JCODE_RUNTIME_PROVIDER").unwrap(),
+        "claude-api"
+    );
+    assert_eq!(
+        primary.credential_mode_snapshot(),
+        AnthropicCredentialMode::ApiKey
+    );
+}
+
+#[test]
+fn private_fork_during_credential_mode_write_fails_without_guessing_authentication() {
+    let _lock = jcode_base::storage::lock_test_env();
+    let temp = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("JCODE_HOME", temp.path());
+    let _identity = EnvVarGuard::set("JCODE_RUNTIME_PROVIDER", "claude");
+    let primary = AnthropicProvider::new();
+    let held = primary.credential_mode.try_write().unwrap();
+    let private = primary.fork();
+    assert!(
+        private
+            .set_model(&primary.model())
+            .unwrap_err()
+            .to_string()
+            .contains("authentication is changing")
+    );
+    let result = futures::executor::block_on(private.complete(&[], &[], "", None));
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("authentication is changing")
+    );
+    assert_eq!(*held, AnthropicCredentialMode::OAuth);
+    assert_eq!(std::env::var("JCODE_RUNTIME_PROVIDER").unwrap(), "claude");
+}
+
+#[test]
 fn role_pinned_forks_isolate_policy_and_preserve_model_scoped_quota_choice() {
     let _lock = jcode_base::storage::lock_test_env();
     let temp = tempfile::tempdir().unwrap();

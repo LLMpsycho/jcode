@@ -18,18 +18,30 @@ const MAX_LINE_LEN: usize = 2000;
 
 pub struct ReadTool {
     file_snapshots: Option<FileSnapshotLedger>,
+    max_text_bytes: Option<usize>,
 }
 
 impl ReadTool {
     pub fn new() -> Self {
         Self {
             file_snapshots: None,
+            max_text_bytes: None,
+        }
+    }
+
+    /// Autonomous investigators share text formatting, but cannot invoke media
+    /// helpers or read unbounded bytes if a file grows after its metadata check.
+    pub(super) fn for_advisor(max_text_bytes: usize) -> Self {
+        Self {
+            file_snapshots: None,
+            max_text_bytes: Some(max_text_bytes),
         }
     }
 
     pub(crate) fn with_file_snapshots(file_snapshots: FileSnapshotLedger) -> Self {
         Self {
             file_snapshots: Some(file_snapshots),
+            max_text_bytes: None,
         }
     }
 }
@@ -187,6 +199,13 @@ impl Tool for ReadTool {
             }
         }
 
+        if self.max_text_bytes.is_some() {
+            anyhow::ensure!(
+                !is_image_file(&path) && !is_pdf_file(&path),
+                "Advisor investigation reads text files only"
+            );
+        }
+
         // Check for image files and display in terminal if supported
         if is_image_file(&path) {
             return handle_image_file(&path, &params.file_path);
@@ -206,7 +225,19 @@ impl Tool for ReadTool {
         }
 
         // Read file
-        let content = tokio::fs::read_to_string(&path).await?;
+        let content = if let Some(limit) = self.max_text_bytes {
+            use tokio::io::AsyncReadExt;
+            let file = tokio::fs::File::open(&path).await?;
+            let mut bytes = Vec::new();
+            file.take(limit as u64 + 1).read_to_end(&mut bytes).await?;
+            anyhow::ensure!(
+                bytes.len() <= limit,
+                "Advisor text read exceeded its byte limit; narrow the file"
+            );
+            String::from_utf8(bytes)?
+        } else {
+            tokio::fs::read_to_string(&path).await?
+        };
 
         // Single-pass: count lines while building output
         let mut output = String::with_capacity(range.limit.min(2000) * 80);
@@ -327,9 +358,24 @@ impl ReadTool {
     ) -> Option<String> {
         let ledger = self.file_snapshots.as_ref()?;
         let workspace_root = ctx.working_dir.as_deref()?;
-        let canonical_root = std::fs::canonicalize(workspace_root).ok()?;
-        let canonical_path = std::fs::canonicalize(path).ok()?;
-        let relative_path = canonical_path.strip_prefix(&canonical_root).ok()?;
+        let canonical_root = match std::fs::canonicalize(workspace_root) {
+            Ok(root) => root,
+            Err(_) => {
+                crate::logging::warn("Read snapshot unavailable: workspace cannot be resolved");
+                return None;
+            }
+        };
+        let canonical_path = match std::fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(_) => {
+                crate::logging::warn("Read snapshot unavailable: file cannot be resolved");
+                return None;
+            }
+        };
+        let relative_path = match canonical_path.strip_prefix(&canonical_root) {
+            Ok(path) => path,
+            Err(_) => return None, // Reads outside the workspace are intentionally excluded from its ledger.
+        };
         let relative_path = relative_path
             .components()
             .map(|component| component.as_os_str().to_string_lossy())
@@ -339,11 +385,20 @@ impl ReadTool {
             return None;
         }
 
-        let mtime_ns = std::fs::metadata(&canonical_path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_nanos());
+        let mtime_ns = match std::fs::metadata(&canonical_path)
+            .and_then(|metadata| metadata.modified())
+        {
+            Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                Ok(duration) => Some(duration.as_nanos()),
+                Err(_) => None, // Content fingerprints remain authoritative for pre-epoch files.
+            },
+            Err(_) => {
+                crate::logging::debug(
+                    "Read snapshot modification time unavailable; retaining content fingerprint",
+                );
+                None
+            }
+        };
         let snapshot = match ledger
             .record_read(
                 &ctx.session_id,

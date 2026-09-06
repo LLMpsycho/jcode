@@ -182,6 +182,12 @@ pub(super) async fn create_headless_session(
         new_agent.set_canary("self-dev");
     }
 
+    // The returned ID must be loadable even before its first visible message.
+    if let Err(error) = new_agent.persist_session_for_handoff() {
+        new_agent.mark_closed();
+        return Err(error.context("persisting headless session before handoff"));
+    }
+
     {
         let mut current = global_session_id.write().await;
         if current.is_empty() {

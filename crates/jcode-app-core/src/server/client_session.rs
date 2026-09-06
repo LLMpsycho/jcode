@@ -1,5 +1,11 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
+mod session_signals;
+use session_signals::log_ignored_subscribe_working_dir;
+use session_signals::mark_remote_reload_started;
+use session_signals::rename_shutdown_signal;
+use session_signals::subscribe_should_mark_ready;
+
 use super::client_state::{handle_get_history, spawn_model_prefetch_update};
 use super::{
     ClientConnectionInfo, ClientDebugState, FileTouchService, SessionInterruptQueues, SwarmEvent,
@@ -96,38 +102,6 @@ pub(super) fn restored_session_was_interrupted(
         || closed_pending_user_during_reload
 }
 
-fn mark_remote_reload_started(request_id: &str) {
-    crate::server::write_reload_state(
-        request_id,
-        jcode_build_meta::version(),
-        crate::server::ReloadPhase::Starting,
-        None,
-    );
-}
-
-async fn rename_shutdown_signal(
-    shutdown_signals: &Arc<RwLock<HashMap<String, InterruptSignal>>>,
-    old_session_id: &str,
-    new_session_id: &str,
-) {
-    if old_session_id == new_session_id {
-        return;
-    }
-
-    let mut signals = shutdown_signals.write().await;
-    if let Some(signal) = signals.remove(old_session_id) {
-        signals.insert(new_session_id.to_string(), signal);
-    }
-    drop(signals);
-    rename_background_tool_signal(old_session_id, new_session_id);
-    // In-flight turns are registered in the process-global cancel registry by
-    // session id. Attaching to / resuming a session renames it underneath a
-    // still-streaming turn, so the registration must follow, or a later Esc
-    // finds no active-turn signal for the new id and the model keeps
-    // generating (issue #732, regression of issue #428).
-    crate::turn_cancel_registry::rename_active_turns(old_session_id, new_session_id);
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_clear_session(
     id: u64,
@@ -164,18 +138,9 @@ pub(super) async fn handle_clear_session(
             ("client_selfdev", client_selfdev.to_string()),
         ],
     );
-    let (preserve_debug, working_dir) = {
-        let agent_guard = agent.lock().await;
-        (
-            agent_guard.is_debug(),
-            agent_guard.working_dir().map(str::to_string),
-        )
-    };
-
-    {
-        let mut agent_guard = agent.lock().await;
-        agent_guard.mark_closed();
-    }
+    let mut agent_guard = agent.lock().await;
+    let preserve_debug = agent_guard.is_debug();
+    let working_dir = agent_guard.working_dir().map(str::to_string);
 
     let mut new_agent = Agent::new_with_initial_working_dir(
         Arc::clone(provider),
@@ -190,8 +155,24 @@ pub(super) async fn handle_clear_session(
     if preserve_debug {
         new_agent.set_debug(true);
     }
+    if (preserve_debug || client_selfdev)
+        && let Err(error) = new_agent.persist_session_for_handoff()
+    {
+        new_agent.mark_closed();
+        if client_event_tx
+            .send(ServerEvent::Error {
+                id,
+                message: format!("Cannot clear session: failed to persist replacement: {error}"),
+                retry_after_secs: None,
+            })
+            .is_err()
+        {
+            crate::logging::debug("Clear persistence error recipient disconnected");
+        }
+        return;
+    }
 
-    let mut agent_guard = agent.lock().await;
+    agent_guard.mark_closed();
     *agent_guard = new_agent;
     super::session_provider::register(agent, &agent_guard.provider_handle());
     drop(agent_guard);
@@ -506,13 +487,6 @@ pub(super) fn subscribe_working_dir_replacement(
         return None;
     }
     Some(reported_trimmed.to_string())
-}
-
-fn log_ignored_subscribe_working_dir(session_id: &str, current: &str, reported: &str) {
-    crate::logging::warn(&format!(
-        "Ignoring subscribe working_dir {} for session {}: it is the home directory while the session is already bound to {} (issue #481)",
-        reported, session_id, current
-    ));
 }
 
 fn apply_or_defer_subscribe_working_dir(
@@ -899,16 +873,6 @@ pub(super) async fn handle_subscribe(
         session_id: client_session_id.to_string(),
     });
     let _ = client_event_tx.send(ServerEvent::Done { id });
-}
-
-async fn subscribe_should_mark_ready(
-    client_session_id: &str,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-) -> bool {
-    let members = swarm_members.read().await;
-    members
-        .get(client_session_id)
-        .is_none_or(|member| member.status != "running")
 }
 
 async fn rename_swarm_member_session(

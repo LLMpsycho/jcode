@@ -1533,6 +1533,13 @@ Add a second model that catches requirement drift, unsafe assumptions, incomplet
 
 ## Implementation status
 
+Behavioral correction on 2026-09-05: the ongoing investigative advisor plan in
+[`PHASE4_ADVISOR_AGENT_PLAN.md`](./PHASE4_ADVISOR_AGENT_PLAN.md) supersedes the
+earlier tool-free, completed-turn-only design. The target is an independent
+advisor conversation observing primary steps, investigating through permitted
+read tools, and delivering bounded corrective feedback. Implementation and
+validation status are tracked there and in `PHASE4_ADVISOR.md`.
+
 The foundation and live-session controls from PRs #6/#7 are extended by PR #10
 with bounded evidence enrichment, redacted restart-safe controls, handled-note
 immunity, first-class tool capabilities, permission-aware reviewer/verification
@@ -1575,7 +1582,7 @@ pub struct AdvisorRuntime {
 Send:
 
 - user objective;
-- latest completed primary turn;
+- incremental visible primary steps and completed-turn state;
 - tool names, intents, concise results;
 - diff summary;
 - new diagnostics;
@@ -1593,6 +1600,11 @@ Do not send:
 ## 10.3 Advisor output
 
 Structured:
+
+An advisor may finish an update silently. When it finds an actionable issue,
+it emits structured advice with a stable concern identity; it can first inspect
+the workspace using its explicitly granted read-only tools. The legacy note
+shape below remains compatible, but a note is not required for healthy work.
 
 ```json
 {
@@ -1619,10 +1631,12 @@ blocker   unsafe action, data-integrity risk, or unmet hard acceptance criterion
 
 - `nit`: visible note; no interruption;
 - `concern`: enqueue at next safe reasoning boundary;
-- `blocker`: prevent the next destructive/write/exec tool until primary acknowledges or resolves;
+- `blocker`: steer corrective work at a safe boundary; only explicit
+  selfdev-guardian mode gates subsequent effectful tools;
 - never interrupt halfway through an atomic multi-file publication;
 - deduplicate repeated notes;
-- introduce an immunity window after a handled note to avoid advisor loops;
+- introduce concern-specific handled-note immunity and interruption cooldowns
+  without stopping observation of unrelated problems;
 - rate-limit and budget advisor calls;
 - advisor failure must not corrupt the primary session.
 
@@ -1666,7 +1680,9 @@ Routing decisions must preserve provider permissions and must not mutate a cache
 - private cursor advances exactly once;
 - resume/rewind/compaction resets or re-primes safely;
 - no duplicate concern storm;
-- blocker gates only future risky tools;
+- interactive blockers permit corrective tools; guardian blockers gate future effects;
+- advisor investigates and corrects ongoing work without another user prompt;
+- healthy updates remain silent and explicit cancellation prevents late continuation;
 - advisor outage degrades gracefully;
 - no secret leakage;
 - rate limits respected;
@@ -2412,14 +2428,16 @@ Requirements:
 ```text
 Execute only the advisor-types/runtime slice from Phase 4.
 
-Integrate with the existing turn-end lifecycle and soft-interrupt architecture.
+Integrate with safe model/tool-step boundaries and the soft-interrupt architecture.
 Do not create an external hook-only implementation.
 
 Requirements:
 - separate private advisor context/cursor;
-- selected, redacted, bounded primary-turn input;
-- structured nit/concern/blocker result;
-- advisor cannot edit, execute tools, alter evaluator, or approve promotion;
+- selected, redacted, bounded visible transcript updates and task requirements;
+- independent ongoing conversation and permitted investigative read-only tools;
+- structured nit/concern/blocker advice or successful silence;
+- advisor cannot mutate the workspace, alter evaluator, or approve promotion;
+- bounded final drain and corrective continuation; respect explicit user stop;
 - no hidden chain-of-thought capture;
 - dedupe and budget;
 - graceful provider/rate-limit failure;

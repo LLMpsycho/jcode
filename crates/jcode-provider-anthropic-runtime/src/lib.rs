@@ -15,6 +15,12 @@
 //! Uses the Anthropic Messages API directly without the Python SDK.
 //! This provides better control and eliminates the Python dependency.
 
+mod direct_transport;
+mod reasoning;
+use direct_transport::DirectTransportConfig;
+#[cfg(test)]
+use direct_transport::{configured_direct_headers, direct_api_url, direct_auth_mode};
+
 use jcode_base::auth;
 use jcode_base::auth::oauth;
 use jcode_provider_core::{EventStream, NativeToolResultSender, Provider};
@@ -59,81 +65,6 @@ const API_URL: &str = "https://api.anthropic.com/v1/messages";
 
 /// OAuth endpoint (with beta=true query param)
 const API_URL_OAUTH: &str = "https://api.anthropic.com/v1/messages?beta=true";
-
-fn direct_api_url() -> String {
-    let base = std::env::var("JCODE_ANTHROPIC_API_BASE")
-        .ok()
-        .or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok())
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty());
-    match base {
-        Some(base) if base.ends_with("/messages") => base,
-        Some(base) => format!("{base}/messages"),
-        None => API_URL.to_string(),
-    }
-}
-
-fn configured_direct_headers() -> Result<HeaderMap> {
-    let Some(raw) = std::env::var("JCODE_ANTHROPIC_HEADERS")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return Ok(HeaderMap::new());
-    };
-    let headers: std::collections::BTreeMap<String, String> = serde_json::from_str(&raw)
-        .context("JCODE_ANTHROPIC_HEADERS must be a JSON object of string values")?;
-    let mut result = HeaderMap::new();
-    for (name, value) in headers {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .with_context(|| format!("invalid Anthropic-compatible header name '{name}'"))?;
-        let value = HeaderValue::from_str(&value)
-            .with_context(|| format!("invalid value for Anthropic-compatible header '{name}'"))?;
-        result.insert(name, value);
-    }
-    Ok(result)
-}
-
-fn direct_auth_mode() -> String {
-    std::env::var("JCODE_ANTHROPIC_AUTH")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| {
-            if std::env::var("ANTHROPIC_AUTH_TOKEN")
-                .ok()
-                .is_some_and(|value| !value.trim().is_empty())
-            {
-                "bearer".to_string()
-            } else {
-                "header".to_string()
-            }
-        })
-        .trim()
-        .to_ascii_lowercase()
-}
-
-#[derive(Clone)]
-struct DirectTransportConfig {
-    api_url: String,
-    headers: std::result::Result<HeaderMap, String>,
-    auth_mode: String,
-    auth_header: String,
-    #[cfg(test)]
-    oauth_fixture_url: Option<String>,
-}
-
-impl DirectTransportConfig {
-    fn from_env() -> Self {
-        Self {
-            api_url: direct_api_url(),
-            headers: configured_direct_headers().map_err(|err| format!("{err:#}")),
-            auth_mode: direct_auth_mode(),
-            auth_header: std::env::var("JCODE_ANTHROPIC_AUTH_HEADER")
-                .unwrap_or_else(|_| "x-api-key".to_string()),
-            #[cfg(test)]
-            oauth_fixture_url: None,
-        }
-    }
-}
 
 fn active_anthropic_profile_models() -> Option<Vec<String>> {
     let Ok(profile_name) = std::env::var("JCODE_NAMED_PROVIDER_PROFILE") else {
@@ -468,6 +399,8 @@ pub struct AnthropicProvider {
     client: Client,
     model: Arc<std::sync::RwLock<String>>,
     route_pinned: AtomicBool,
+    /// Private role runtimes must not change the primary process identity.
+    private_session: AtomicBool,
     reasoning_effort: Arc<std::sync::RwLock<Option<String>>>,
     service_tier: Arc<std::sync::RwLock<Option<String>>>,
     /// Cached OAuth credentials (None if using API key)
@@ -622,11 +555,13 @@ impl AnthropicProvider {
         });
 
         // Trigger background usage fetch so extra_usage is known before first API call
-        let _ = tokio::runtime::Handle::try_current().map(|_| {
-            tokio::spawn(async {
-                let _ = jcode_base::usage::get().await;
-            })
-        });
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async {
+                // The cache retains the refreshed usage; construction does not
+                // need to retain a second copy of the returned snapshot.
+                drop(jcode_base::usage::get().await);
+            });
+        }
 
         let max_tokens_override = std::env::var("JCODE_ANTHROPIC_MAX_TOKENS")
             .ok()
@@ -647,6 +582,7 @@ impl AnthropicProvider {
             client: jcode_provider_core::shared_http_client(),
             model: Arc::new(std::sync::RwLock::new(model)),
             route_pinned: AtomicBool::new(false),
+            private_session: AtomicBool::new(false),
             reasoning_effort: Arc::new(std::sync::RwLock::new(reasoning_effort)),
             service_tier: Arc::new(std::sync::RwLock::new(None)),
             credentials: Arc::new(RwLock::new(None)),
@@ -668,273 +604,6 @@ impl AnthropicProvider {
             Some(Err(err)) => anyhow::bail!(err.clone()),
             None => load_anthropic_api_key(),
         }
-    }
-
-    fn normalized_model_key(model: &str) -> String {
-        strip_1m_suffix(model).trim().to_ascii_lowercase()
-    }
-
-    fn model_supports_output_effort(model: &str) -> bool {
-        // Shared capability table (with an optimistic default for unknown 5.x+
-        // generations); see `jcode_provider_core::anthropic_reasoning_caps`.
-        // Fable 5 verified live 2026-07-01; Sonnet 5 verified live 2026-07-07.
-        jcode_provider_core::anthropic_reasoning_caps(model).output_effort
-    }
-
-    fn model_supports_adaptive_thinking(model: &str) -> bool {
-        jcode_provider_core::anthropic_reasoning_caps(model).adaptive_thinking
-    }
-
-    fn model_supports_manual_thinking(model: &str) -> bool {
-        jcode_provider_core::anthropic_reasoning_caps(model).manual_thinking
-    }
-
-    fn model_supports_xhigh_effort(model: &str) -> bool {
-        jcode_provider_core::anthropic_reasoning_caps(model).xhigh_effort
-    }
-
-    /// `max` effort ("absolute maximum capability with no constraints on token
-    /// spending") is a real API level on the `output_config` effort models,
-    /// except Claude Opus 4.5 where manual thinking keeps `max` as an alias for
-    /// the strongest supported level.
-    fn model_supports_max_effort(model: &str) -> bool {
-        jcode_provider_core::anthropic_reasoning_caps(model).max_effort
-    }
-
-    fn model_supports_reasoning_effort(model: &str) -> bool {
-        jcode_provider_core::anthropic_reasoning_caps(model).supports_reasoning_effort()
-    }
-
-    fn normalize_reasoning_effort(raw: &str) -> Option<String> {
-        let value = raw.trim().to_ascii_lowercase();
-        if value.is_empty() || matches!(value.as_str(), "default" | "auto") {
-            return None;
-        }
-        match value.as_str() {
-            "off" | "disabled" => Some("none".to_string()),
-            // `swarm` is a UI sentinel meaning "max effort + use the swarm tool".
-            // Stored verbatim; resolved to a real effort in `actual_effort_for_model`.
-            "none" | "low" | "medium" | "high" | "xhigh" | "max" | "swarm" | "swarm-deep" => {
-                Some(value)
-            }
-            other => {
-                jcode_base::logging::info(&format!(
-                    "Warning: Ignoring unsupported Anthropic reasoning effort '{}'; expected none|low|medium|high|xhigh|max.",
-                    other
-                ));
-                None
-            }
-        }
-    }
-
-    fn actual_effort_for_model(model: &str, effort: &str) -> String {
-        if jcode_base::prompt::is_swarm_effort(effort) {
-            // Swarm rungs sit above `max` on the ladder and mean "strongest
-            // reasoning the model supports", so cycling upward never lowers
-            // the wire effort.
-            if Self::model_supports_max_effort(model) {
-                "max".to_string()
-            } else if Self::model_supports_xhigh_effort(model) {
-                "xhigh".to_string()
-            } else {
-                "high".to_string()
-            }
-        } else if effort == "max" && !Self::model_supports_max_effort(model) {
-            if Self::model_supports_xhigh_effort(model) {
-                "xhigh".to_string()
-            } else {
-                "high".to_string()
-            }
-        } else if effort == "xhigh" && !Self::model_supports_xhigh_effort(model) {
-            "high".to_string()
-        } else {
-            effort.to_string()
-        }
-    }
-
-    /// Like [`Self::actual_effort_for_model`], but preserves the swarm sentinels
-    /// (light `swarm` and `swarm-deep`) so the stored/UI value keeps reflecting
-    /// the chosen swarm mode. Used when persisting the user's choice; request
-    /// building resolves swarm to a real effort.
-    fn store_effort_for_model(model: &str, effort: &str) -> String {
-        if jcode_base::prompt::is_deep_swarm_effort(effort) {
-            jcode_base::prompt::SWARM_DEEP_EFFORT.to_string()
-        } else if jcode_base::prompt::is_swarm_effort(effort) {
-            jcode_base::prompt::SWARM_EFFORT.to_string()
-        } else {
-            Self::actual_effort_for_model(model, effort)
-        }
-    }
-
-    /// Default reasoning effort to apply when the user has *not* explicitly
-    /// configured one. Claude Opus 5 defaults to `low`: it is strong enough
-    /// at low effort for day-to-day coding/agentic work, and users can cycle
-    /// up when they want deeper reasoning. Older Claude Opus models are
-    /// reasoning-heavy flagships, so we default them to `xhigh` where
-    /// supported (Opus 4.7/4.8), clamped to `high` on older Opus.
-    /// Deliberately NOT `max`: Anthropic recommends `xhigh` as the starting
-    /// point for coding/agentic work and reserves `max` for frontier problems
-    /// (it costs much more and can overthink). Claude Fable 5 defaults to
-    /// `high`: it benefits from deeper reasoning on coding/agentic work.
-    /// Every other model keeps the model's own default (no forced effort) so
-    /// cheaper models stay cheap.
-    fn default_reasoning_effort_for_model(model: &str) -> Option<String> {
-        let key = Self::normalized_model_key(model);
-        if key.contains("claude-opus-5") {
-            Some("low".to_string())
-        } else if key.contains("claude-opus") {
-            Some(if Self::model_supports_xhigh_effort(model) {
-                "xhigh".to_string()
-            } else {
-                "high".to_string()
-            })
-        } else if key.contains("claude-fable-5") {
-            // Fable 5 defaults to `high` reasoning for stronger day-to-day
-            // results. Users can still cycle down for faster/cheaper turns.
-            Some("high".to_string())
-        } else {
-            None
-        }
-    }
-
-    /// The raw, user-configured reasoning effort for this provider, if any.
-    /// `None` means "use the model default" (see
-    /// [`Self::default_reasoning_effort_for_model`]).
-    fn stored_reasoning_effort(&self) -> Option<String> {
-        self.reasoning_effort
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
-    }
-
-    /// Effective reasoning effort for `model`, resolving the model default when
-    /// the user has not configured an explicit effort.
-    fn effort_for_model(&self, model: &str) -> Option<String> {
-        if !Self::model_supports_reasoning_effort(model) {
-            return None;
-        }
-        Some(
-            self.stored_reasoning_effort()
-                .or_else(|| Self::default_reasoning_effort_for_model(model))
-                .unwrap_or_else(|| "none".to_string()),
-        )
-    }
-
-    fn model_supports_priority_service_tier(model: &str) -> bool {
-        Self::normalized_model_key(model).contains("claude-opus-4-8")
-    }
-
-    fn normalize_service_tier(raw: &str) -> Result<Option<String>> {
-        let value = raw.trim().to_ascii_lowercase();
-        match value.as_str() {
-            "" | "default" => Ok(None),
-            "off" | "standard" | "standard_only" => Ok(Some("standard_only".to_string())),
-            // The Anthropic API uses `auto` for the latency-optimized tier. Keep
-            // accepting `priority` because `/fast on` is shared with OpenAI.
-            "priority" | "auto" => Ok(Some("auto".to_string())),
-            other => anyhow::bail!(
-                "Unsupported Anthropic service tier '{}'; expected priority/auto or off/standard_only",
-                other
-            ),
-        }
-    }
-
-    fn current_service_tier_for_model(&self, model: &str) -> Option<String> {
-        let tier = self
-            .service_tier
-            .read()
-            .map(|guard| guard.clone())
-            .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
-        tier.filter(|_| Self::model_supports_priority_service_tier(model))
-    }
-
-    /// Output-token budget for `model`: an explicit env override when set,
-    /// otherwise the model's published maximum. A flat default would clamp
-    /// 128K-output models to 32K and truncate long agentic turns mid-tool-call.
-    fn max_tokens_for(&self, model: &str) -> u32 {
-        self.max_tokens_override
-            .unwrap_or_else(|| jcode_provider_core::anthropic::anthropic_max_output_tokens(model))
-    }
-
-    fn manual_thinking_budget(effort: &str, max_tokens: u32) -> Option<u32> {
-        let desired = match effort {
-            "low" => 1_024,
-            "medium" => 4_096,
-            "high" => 8_192,
-            "xhigh" | "max" => 16_384,
-            e if jcode_base::prompt::is_swarm_effort(e) => 16_384,
-            _ => return None,
-        };
-        let budget = desired.min(max_tokens.saturating_sub(1));
-        (budget >= 1_024).then_some(budget)
-    }
-
-    fn build_reasoning_request_parts(
-        &self,
-        model: &str,
-        is_oauth: bool,
-    ) -> (Option<ApiThinking>, Option<ApiOutputConfig>, Option<f32>) {
-        // `display.show_thinking` is a request to *see* the model's reasoning.
-        // Anthropic only streams thinking summaries when a thinking request is
-        // present, so opting into the display must also opt into generating it.
-        let show_thinking = jcode_base::config::config().display.show_thinking;
-        self.build_reasoning_request_parts_inner(model, is_oauth, show_thinking)
-    }
-
-    fn build_reasoning_request_parts_inner(
-        &self,
-        model: &str,
-        is_oauth: bool,
-        show_thinking: bool,
-    ) -> (Option<ApiThinking>, Option<ApiOutputConfig>, Option<f32>) {
-        let effort = self.effort_for_model(model);
-        // An explicit "none" (user-configured or a model default) means
-        // reasoning was deliberately disabled, so it must also win over the
-        // `display.show_thinking` fallback below. `effort_for_model` returns
-        // Some("none") even when nothing is configured, so check the
-        // stored/default effort instead.
-        let effort_is_explicit_none = self
-            .stored_reasoning_effort()
-            .or_else(|| Self::default_reasoning_effort_for_model(model))
-            .as_deref()
-            == Some("none");
-        let effort = effort.as_deref().filter(|effort| *effort != "none");
-        let show_thinking = show_thinking && !effort_is_explicit_none;
-
-        let output_config = effort
-            .filter(|_| Self::model_supports_output_effort(model))
-            .map(|effort| ApiOutputConfig {
-                effort: Self::actual_effort_for_model(model, effort),
-            });
-
-        // When only the display toggle is on (no explicit effort), request
-        // thinking without forcing `output_config`, so the model keeps its
-        // default reasoning strength and only the thinking *display* is enabled.
-        let thinking = if Self::model_supports_adaptive_thinking(model) {
-            (effort.is_some() || show_thinking).then_some(ApiThinking::Adaptive {
-                display: Some("summarized"),
-            })
-        } else if Self::model_supports_manual_thinking(model) {
-            // Manual-thinking models need a concrete budget. Use the configured
-            // effort, or fall back to a minimal budget when only the display
-            // toggle is on.
-            effort
-                .or(show_thinking.then_some("low"))
-                .and_then(|effort| Self::manual_thinking_budget(effort, self.max_tokens_for(model)))
-                .map(|budget_tokens| ApiThinking::Enabled { budget_tokens })
-        } else {
-            None
-        };
-
-        // Extended/adaptive thinking is incompatible with temperature. OAuth path
-        // normally mirrors Claude Code's temperature=1.0, so omit it when thinking is active.
-        let temperature = if is_oauth && thinking.is_none() {
-            Some(1.0)
-        } else {
-            None
-        };
-
-        (thinking, output_config, temperature)
     }
 
     /// Get the access token from credentials
@@ -1092,18 +761,14 @@ impl AnthropicProvider {
         if let Ok(mut cached) = self.credentials.try_write() {
             *cached = None;
         }
-        // Keep the runtime provider identity in sync with the explicit credential
-        // choice so UI surfaces (model picker, header widget) report the auth
-        // method that requests will actually use, instead of inferring it from
-        // credential presence. `Auto` leaves the existing identity untouched.
-        if let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::Anthropic) {
-            jcode_base::env::set_var("JCODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+        if !self.private_session.load(Ordering::Relaxed) {
+            // Only a primary selection updates the process identity consulted
+            // by global UI/auth probes. A private role owns its choice locally.
+            if let Some(route) = mode.auth_route(jcode_provider_core::DualAuthProvider::Anthropic) {
+                jcode_base::env::set_var("JCODE_RUNTIME_PROVIDER", route.runtime_provider_key());
+            }
+            jcode_base::auth::AuthStatus::invalidate_cached_status();
         }
-        // Drop any cached auth snapshot so surfaces that still consult the cheap
-        // cached probe (auto-mode resolution, usage availability, account labels)
-        // re-derive from the new credential choice on their next read instead of
-        // lingering on a snapshot taken before the switch.
-        jcode_base::auth::AuthStatus::invalidate_cached_status();
         Ok(())
     }
 
@@ -1542,7 +1207,16 @@ impl Provider for AnthropicProvider {
         true
     }
 
+    fn prepare_private_session(&self) {
+        self.private_session.store(true, Ordering::Relaxed);
+    }
+
     fn fork(&self) -> Arc<dyn Provider> {
+        let Ok(credential_mode) = self.credential_mode.try_read().map(|mode| *mode) else {
+            return Arc::new(private_session::UnavailableFork {
+                model: self.model(),
+            });
+        };
         Arc::new(Self {
             client: self.client.clone(),
             model: Arc::new(std::sync::RwLock::new(
@@ -1552,10 +1226,11 @@ impl Provider for AnthropicProvider {
                     .clone(),
             )),
             route_pinned: AtomicBool::new(self.route_pinned()),
+            private_session: AtomicBool::new(true),
             reasoning_effort: Arc::new(std::sync::RwLock::new(self.stored_reasoning_effort())),
             service_tier: Arc::new(std::sync::RwLock::new(self.service_tier())),
             credentials: Arc::new(RwLock::new(None)),
-            credential_mode: Arc::clone(&self.credential_mode),
+            credential_mode: Arc::new(RwLock::new(credential_mode)),
             max_tokens_override: self.max_tokens_override,
             oauth_session_id: self.oauth_session_id.clone(),
             oauth_preflight_done: Arc::new(AtomicBool::new(
@@ -2718,6 +2393,7 @@ use sse_types::{
 };
 
 mod context_window;
+mod private_session;
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]

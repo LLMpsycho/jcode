@@ -42,6 +42,11 @@ pub enum TranscriptMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", tag = "action")]
 pub enum AdvisorRequest {
+    /// Apply a control to one configured advisor instead of the default.
+    ForAdvisor {
+        name: String,
+        request: Box<AdvisorRequest>,
+    },
     Status,
     Inspect,
     Dismiss {

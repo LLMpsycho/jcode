@@ -62,6 +62,7 @@ input = ["text"]
             initial_provider: None,
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 

@@ -4,8 +4,8 @@
 //! Environment variables override config file settings.
 
 pub use jcode_config_types::{
-    AdvisorConfig, AdvisorMode, AdvisorSeverity, AgentModelRole, AgentsConfig, AmbientConfig,
-    AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig, CompactionMode,
+    AdvisorConfig, AdvisorMode, AdvisorRosterEntry, AdvisorSeverity, AgentModelRole, AgentsConfig,
+    AmbientConfig, AuthConfig, AutoJudgeConfig, AutoReviewConfig, CompactionConfig, CompactionMode,
     ConfigModelRoute, CrossProviderFailoverMode, DiagramDisplayMode, DiagramPanePosition,
     DiffDisplayMode, DisplayConfig, FeatureConfig, GatewayConfig, HookCommands, HooksConfig,
     KeybindingsConfig, LatexRenderingMode, LaunchHotkeyEntry, LaunchHotkeysConfig,

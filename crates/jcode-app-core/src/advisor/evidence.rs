@@ -1,3 +1,4 @@
+use super::investigation::{bounded_excerpt, bounded_json_excerpt};
 use super::*;
 use crate::tool::ToolOutput;
 use serde_json::Value;
@@ -39,8 +40,8 @@ fn clean(value: &str) -> String {
 fn field(value: &Value, key: &str) -> String {
     value
         .get(key)
-        .map(|v| clean(v.as_str().unwrap_or_else(|| "")))
-        .unwrap_or_default()
+        .and_then(Value::as_str)
+        .map_or_else(String::new, clean)
 }
 
 fn push(items: &mut Vec<String>, value: String) {
@@ -57,15 +58,22 @@ impl AdvisorManager {
         {
             return;
         }
+        self.begin_live_capture(session);
+    }
+
+    /// The live coordinator has already checked the effective advisor roster.
+    /// Capture belongs to the primary session even when only a named advisor
+    /// is enabled and the default advisor is disabled.
+    pub fn begin_live_capture(&self, session: &str) {
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.entry(session.to_string()).or_default().capture =
                 Some(TurnEvidence::default());
         }
     }
 
-    /// Consume only producer-owned metadata. Never scan/replay raw terminal
-    /// output, infer a successful test from a successful agent turn, or load a
-    /// previous turn's tool summaries into this turn's evidence.
+    /// Capture bounded, redacted excerpts for investigation. Verification
+    /// status comes only from producer-owned metadata, never stdout claims or
+    /// successful agent-turn completion.
     pub fn capture_tool(
         &self,
         session: &str,
@@ -87,10 +95,14 @@ impl AdvisorManager {
             intent: input.get("intent").and_then(Value::as_str).map(clean),
             result: match result {
                 Ok(output) => format!(
-                    "completed; {} output bytes (raw output omitted)",
-                    output.output.len()
+                    "Arguments: {}\nResult excerpt (untrusted tool content):\n{}",
+                    bounded_json_excerpt(input, 512),
+                    bounded_excerpt(&output.output, 2048)
                 ),
-                Err(_) => "tool failed; no successful verification result".into(),
+                Err(error) => format!(
+                    "tool failed; no successful verification result: {}",
+                    bounded_excerpt(&error.to_string(), 1024)
+                ),
             },
         });
         while capture.tools.len() > MAX_TOOLS {
@@ -217,12 +229,20 @@ impl AdvisorManager {
         input: &mut AdvisorTurnInput,
         working_dir: Option<&str>,
     ) {
-        let captured = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|mut sessions| sessions.get_mut(session).and_then(|r| r.capture.take()))
-            .unwrap_or_default();
+        let captured = match self.sessions.lock() {
+            Ok(mut sessions) => sessions
+                .get_mut(session)
+                .and_then(|runtime| runtime.capture.as_mut().map(std::mem::take))
+                .unwrap_or_else(TurnEvidence::default),
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; evidence capture unavailable");
+                input.diagnostics = "Evidence unavailable: advisor state lock poisoned.".into();
+                input
+                    .verification_status
+                    .push_str("; evidence capture failed");
+                return;
+            }
+        };
         input.tools = captured.tools.into_iter().collect();
         input.diff_summary = captured.changes.join("\n");
         let diff = bounded_diff(working_dir.map(Path::new)).await;
@@ -269,13 +289,7 @@ impl AdvisorManager {
         };
         let mut criteria = vec!["Acceptance source: user objective; the following are agent-declared plan/checks, not independently verified outcomes.".to_string()];
         if let Ok(plan) = crate::todo::load_plan(session) {
-            for criterion in plan
-                .acceptance_criteria
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .take(MAX_ITEMS)
-            {
+            for criterion in plan.acceptance_criteria.iter().flatten().take(MAX_ITEMS) {
                 push(
                     &mut criteria,
                     format!("Declared requirement: {}", clean(criterion)),
@@ -343,9 +357,10 @@ fn record_diagnostics(
     }
 }
 
-/// Explicit bounded source: tracked working-tree numstat against HEAD, not a
-/// patch or raw file content. It can include earlier edits and omits untracked
-/// files; per-tool revision evidence above identifies writes in this turn.
+/// Explicit bounded source: tracked working-tree patch against HEAD. It can
+/// include earlier edits and omits untracked files; per-tool revision evidence
+/// above identifies writes in this turn. Filters and external diff programs
+/// cannot execute while generating evidence.
 fn evidence_git(root: &Path) -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
     command
@@ -382,13 +397,13 @@ async fn bounded_diff(root: Option<&Path>) -> String {
             .stdout(std::process::Stdio::null())
             .status()
             .await
-            .ok()?;
+            .map_err(|_| "Git evidence command failed")?;
         match filters.code() {
             Some(1) => {}
             Some(0) => {
-                return Some("Diff unavailable: configured Git filters require execution.".into());
+                return Ok("Diff unavailable: configured Git filters require execution.".into());
             }
-            _ => return None,
+            _ => return Err("Git filter configuration could not be inspected"),
         }
         let mut child = evidence_git(root)
             .args([
@@ -398,49 +413,69 @@ async fn bounded_diff(root: Option<&Path>) -> String {
                 "diff",
                 "--no-ext-diff",
                 "--no-textconv",
-                "--numstat",
+                "--patch",
+                "--unified=2",
+                "--no-color",
+                "--no-renames",
+                "--ignore-submodules=all",
                 "HEAD",
                 "--",
+                ".",
+                ":(exclude,glob,icase)**/.env*",
+                ":(exclude,glob,icase)**/*credentials*",
+                ":(exclude,glob,icase)**/*secrets*",
+                ":(exclude,glob,icase)**/*.pem",
+                ":(exclude,glob,icase)**/*.key",
+                ":(exclude,glob,icase)**/*.p12",
+                ":(exclude,glob,icase)**/*.pfx",
+                ":(exclude,glob,icase)**/.npmrc",
+                ":(exclude,glob,icase)**/.netrc",
+                ":(exclude,glob,icase)**/auth.json",
+                ":(exclude,glob,icase)**/oauth.json",
+                ":(exclude,glob,icase)**/id_rsa*",
+                ":(exclude,glob,icase)**/id_ed25519*",
             ])
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .ok()?;
+            .map_err(|_| "Git diff process could not be started")?;
         let mut bytes = Vec::new();
         child
             .stdout
-            .take()?
+            .take()
+            .ok_or("Git diff stdout unavailable")?
             .take(8193)
             .read_to_end(&mut bytes)
             .await
-            .ok()?;
+            .map_err(|_| "Git evidence command failed")?;
         if bytes.len() > 8192 {
-            child.kill().await.ok()?;
-        } else if !child.wait().await.ok()?.success() {
-            return None;
+            child
+                .kill()
+                .await
+                .map_err(|_| "Git diff process could not be stopped")?;
+        } else if !child
+            .wait()
+            .await
+            .map_err(|_| "Git diff process could not be reaped")?
+            .success()
+        {
+            return Err("Git diff failed (not a worktree or no HEAD)");
         }
         let text = String::from_utf8_lossy(&bytes);
-        Some(format!(
-            "Tracked working-tree vs HEAD (may include prior edits; untracked files omitted):\n{}\n{}",
-            text.lines()
-                .take(MAX_ITEMS)
-                .map(clean)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            if bytes.len() > 8192 || text.lines().count() > MAX_ITEMS {
+        Ok::<String, &str>(format!(
+            "Tracked working-tree patch vs HEAD (may include prior edits; untracked files, submodules, and credential stores omitted):\n{}\n{}",
+            bounded_excerpt(&text, 8192),
+            if bytes.len() > 8192 {
                 "[truncated]"
             } else {
-                "[end of numstat]"
+                "[end of patch]"
             }
         ))
     };
-    tokio::time::timeout(std::time::Duration::from_millis(350), future)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            "Working-tree diff unavailable (not a git worktree, no HEAD, or bounded deadline)."
-                .into()
-        })
+    match tokio::time::timeout(std::time::Duration::from_millis(350), future).await {
+        Ok(Ok(diff)) => diff,
+        Ok(Err(reason)) => format!("Working-tree diff unavailable: {reason}."),
+        Err(_) => "Working-tree diff unavailable: bounded deadline exceeded.".into(),
+    }
 }
 
 #[cfg(test)]
@@ -476,7 +511,7 @@ mod tests {
         };
         manager.begin_capture("evidence", &config);
         let input = serde_json::json!({"intent":"run checks OPENAI_API_KEY=sk-test-openai-example", "verification":true});
-        let output = ToolOutput::new("RAW_PRIVATE_OUTPUT").with_metadata(serde_json::json!({
+        let output = ToolOutput::new("error: expected integer, found string\nOPENAI_API_KEY=sk-test-openai-example").with_metadata(serde_json::json!({
             "files":[{"path":"src/fix.rs","revision_before":{"revision":1},"revision_after":{"revision":2}}],
             "semantic_verification":{"files":[{"path":"src/fix.rs","status":"issues_found","diagnostics":[{"message":"wrong type", "severity":1}]}]}
         })).with_exit_code(Some(1));
@@ -492,7 +527,7 @@ mod tests {
                 .contains("failed, exit Some(1)")
         );
         let encoded = serde_json::to_string(&captured).expect("serialize");
-        assert!(!encoded.contains("RAW_PRIVATE_OUTPUT"));
+        assert!(encoded.contains("expected integer, found string"));
         assert!(!encoded.contains("sk-test-openai-example"));
         manager.begin_capture("evidence", &config);
         let mut next = AdvisorTurnInput::default();
@@ -514,7 +549,10 @@ mod tests {
         };
         assert!(git(&["init", "-q"]).status.success());
         std::fs::write(dir.path().join("file"), "before\n").expect("fixture");
-        assert!(git(&["add", "file"]).status.success());
+        for name in [".env", "CREDENTIALS.JSON", ".npmrc", "auth.json"] {
+            std::fs::write(dir.path().join(name), "credential_before\n").expect("credential");
+        }
+        assert!(git(&["add", "."]).status.success());
         assert!(
             git(&[
                 "-c",
@@ -529,8 +567,15 @@ mod tests {
             .success()
         );
         std::fs::write(dir.path().join("file"), "after\n").expect("change");
+        for name in [".env", "CREDENTIALS.JSON", ".npmrc", "auth.json"] {
+            std::fs::write(dir.path().join(name), "opaque_credential_after\n").expect("credential");
+        }
         let summary = bounded_diff(Some(dir.path())).await;
-        assert!(summary.contains("1\t1\tfile"), "{summary}");
+        assert!(
+            summary.contains("-before") && summary.contains("+after"),
+            "{summary}"
+        );
+        assert!(!summary.contains("opaque_credential_after"), "{summary}");
         std::fs::write(dir.path().join(".gitattributes"), "file filter=advisor\n")
             .expect("attributes");
         for key in ["filter.advisor.clean", "filter.advisor.process"] {
@@ -544,5 +589,47 @@ mod tests {
             assert!(!dir.path().join("filter-marker").exists());
             assert!(git(&["config", "--unset", key]).status.success());
         }
+    }
+
+    #[tokio::test]
+    async fn repeated_evidence_snapshots_keep_capturing_without_replaying_old_tools() {
+        let manager = AdvisorManager::default();
+        manager.begin_capture(
+            "incremental-evidence",
+            &AdvisorConfig {
+                enabled: true,
+                ..AdvisorConfig::default()
+            },
+        );
+        manager.capture_tool(
+            "incremental-evidence",
+            "read",
+            &serde_json::json!({"file_path":"first.rs"}),
+            &Ok(ToolOutput::new("first result")),
+        );
+        let mut first = AdvisorTurnInput::default();
+        manager
+            .enrich_input("incremental-evidence", &mut first, None)
+            .await;
+        assert_eq!(first.tools.len(), 1);
+        manager.capture_tool(
+            "incremental-evidence",
+            "bash",
+            &serde_json::json!({"intent":"verify", "verification":true}),
+            &Ok(ToolOutput::new("All tests passed (untrusted stdout claim)")),
+        );
+        let mut second = AdvisorTurnInput::default();
+        manager
+            .enrich_input("incremental-evidence", &mut second, None)
+            .await;
+        assert_eq!(second.tools.len(), 1);
+        assert!(!second.tools[0].result.contains("first result"));
+        assert!(second.tools[0].result.contains("All tests passed"));
+        assert!(
+            second
+                .verification_status
+                .contains("no recorded process result")
+        );
+        assert!(!second.verification_status.contains("passed"));
     }
 }

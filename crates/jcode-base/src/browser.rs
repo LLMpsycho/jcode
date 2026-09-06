@@ -815,7 +815,9 @@ pub async fn inspect_browser_status() -> Result<BrowserStatus> {
         false
     };
     let missing_actions = if responding {
-        probe_bridge_missing_actions().await.unwrap_or_default()
+        probe_bridge_missing_actions()
+            .await
+            .context("browser bridge compatibility probe failed")?
     } else {
         Vec::new()
     };

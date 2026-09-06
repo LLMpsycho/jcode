@@ -133,15 +133,39 @@ impl LspProcess {
     }
 
     pub async fn shutdown(&self, timeout: Duration) {
-        let _ = self.client.request("shutdown", None, timeout).await;
-        let _ = self.client.notify("exit", None).await;
+        if let Err(error) = self.client.request("shutdown", None, timeout).await {
+            self.record_shutdown_error("shutdown request", &error);
+        }
+        if let Err(error) = self.client.notify("exit", None).await {
+            self.record_shutdown_error("exit notification", &error);
+        }
         let mut child = self.state.child.lock().await;
-        if tokio::time::timeout(timeout, child.wait()).await.is_err() {
+        let needs_termination = match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(Ok(_)) => false,
+            Ok(Err(error)) => {
+                self.record_shutdown_error("wait", &error);
+                true
+            }
+            Err(error) => {
+                self.record_shutdown_error("shutdown timeout", &error);
+                true
+            }
+        };
+        if needs_termination {
             if let Some(pid) = self.state.pid {
                 terminate_process_group(pid);
             }
-            let _ = child.kill().await;
+            if let Err(error) = child.kill().await {
+                self.record_shutdown_error("terminate", &error);
+            }
         }
+    }
+
+    fn record_shutdown_error(&self, operation: &str, error: &impl std::fmt::Display) {
+        self.stderr
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(format!("\nLSP {operation} failed: {error}\n").as_bytes());
     }
 }
 
@@ -304,5 +328,32 @@ mod tests {
             true
         );
         assert_eq!(params["workspaceFolders"][0]["uri"], "file:///workspace/");
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_of_exited_server_retains_failure_diagnostics() {
+        let config = LspServerConfig {
+            command: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "exit 0".to_owned()],
+            ..Default::default()
+        };
+        let process = LspProcess::spawn(&config, Path::new("/")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while matches!(process.status().await.unwrap(), ProcessStatus::Running) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        process.shutdown(Duration::from_millis(20)).await;
+        assert!(
+            process
+                .recent_stderr()
+                .contains("LSP shutdown request failed:")
+        );
+        assert!(matches!(
+            process.status().await.unwrap(),
+            ProcessStatus::Exited { .. }
+        ));
     }
 }

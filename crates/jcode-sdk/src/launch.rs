@@ -199,11 +199,11 @@ pub fn launch_instance(options: &LaunchOptions) -> Result<LaunchedInstance> {
             remove_ephemeral_home(&jcode_home, Duration::ZERO);
         }
     };
-    if options.inherit_logins {
-        if let Err(error) = inherit_credentials(&user_jcode_home(), &jcode_home) {
-            cleanup_on_error();
-            return Err(error);
-        }
+    if options.inherit_logins
+        && let Err(error) = inherit_credentials(&user_jcode_home(), &jcode_home)
+    {
+        cleanup_on_error();
+        return Err(error);
     }
 
     let binary = options
@@ -295,7 +295,10 @@ pub fn launch_instance(options: &LaunchOptions) -> Result<LaunchedInstance> {
                 if let Some(reader) = stderr_reader.take() {
                     let _ = reader.join();
                 }
-                let stderr = stderr.lock().map(|value| value.clone()).unwrap_or_default();
+                let stderr = stderr
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
                 cleanup_on_error();
                 return Err(Error::new(
                     ErrorKind::StartupFailed,
@@ -319,7 +322,10 @@ pub fn launch_instance(options: &LaunchOptions) -> Result<LaunchedInstance> {
     if let Some(reader) = stderr_reader.take() {
         let _ = reader.join();
     }
-    let stderr = stderr.lock().map(|value| value.clone()).unwrap_or_default();
+    let stderr = stderr
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     cleanup_on_error();
     Err(Error::new(
         ErrorKind::StartupTimeout,

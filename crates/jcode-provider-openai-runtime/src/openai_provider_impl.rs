@@ -3,21 +3,24 @@ use super::openai_stream_runtime::{
 };
 use super::*;
 
-/// Whether a model catalog fetch error is an auth rejection (401/403) that a
-/// token force-refresh may fix, as opposed to a network/server failure.
-fn catalog_error_is_auth_rejection(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<jcode_base::provider::ModelCatalogHttpStatus>()
-        .is_some_and(|status| status.0 == 401 || status.0 == 403)
-}
-
 #[async_trait]
 impl Provider for OpenAIProvider {
+    fn prepare_private_session(&self) {
+        self.private_session.store(true, AtomicOrdering::Relaxed);
+    }
+
     fn set_route_pinned(&self, pinned: bool) {
         self.route_pinned.store(pinned, AtomicOrdering::Relaxed);
     }
 
     fn route_pinned(&self) -> bool {
         self.route_pinned.load(AtomicOrdering::Relaxed)
+    }
+
+    fn restrict_to_explicit_tools(&self) -> Result<()> {
+        self.explicit_tools_only
+            .store(true, AtomicOrdering::Relaxed);
+        Ok(())
     }
 
     fn reload_credentials(&self) {
@@ -72,7 +75,7 @@ impl Provider for OpenAIProvider {
             .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
         let native_compaction_threshold =
             self.native_compaction_threshold_for_context_window(self.context_window());
-        let request = Self::build_response_request(
+        let mut request = Self::build_response_request(
             &model_id,
             instructions,
             &input,
@@ -85,6 +88,7 @@ impl Provider for OpenAIProvider {
             self.prompt_cache_retention.as_deref(),
             native_compaction_threshold,
         );
+        self.apply_explicit_tool_policy(&mut request);
 
         // --- Persistent WebSocket continuation path ---
         // Try to reuse an existing WebSocket connection with previous_response_id
@@ -816,86 +820,7 @@ impl Provider for OpenAIProvider {
     }
 
     async fn prefetch_models(&self) -> Result<()> {
-        if self.is_browser_only() {
-            return Ok(());
-        }
-        // The loaded credential's *shape* is authoritative for which catalog
-        // endpoint to hit, not the requested credential mode. In Auto mode a
-        // user with only an OPENAI_API_KEY loads an API-key-shaped credential
-        // while the mode stays Auto; routing by mode would send that platform
-        // key to the ChatGPT/Codex endpoint and get a 401.
-        let account_label = jcode_base::auth::codex::active_account_label();
-        let (access_token, is_chatgpt_mode, credential_identity) = {
-            let creds = self.credentials.read().await;
-            (
-                creds.access_token.clone(),
-                Self::is_chatgpt_mode(&creds),
-                Self::catalog_credential_identity(&creds),
-            )
-        };
-        let catalog = if is_chatgpt_mode {
-            let access_token = openai_access_token(&self.credentials).await?;
-            match jcode_base::provider::fetch_openai_model_catalog(&access_token).await {
-                Ok(catalog) => catalog,
-                // The server can reject a token that still looks fresh by its
-                // local expiry (revoked/rotated). The chat path recovers by
-                // force-refreshing; without the same recovery here the model
-                // catalog silently stays stale and newly released models never
-                // show up until the user happens to re-login (observed as
-                // days of bootstrap 401s in the logs).
-                Err(err) if catalog_error_is_auth_rejection(&err) => {
-                    let refresh_token = {
-                        let creds = self.credentials.read().await;
-                        creds.refresh_token.clone()
-                    };
-                    if refresh_token.is_empty() {
-                        return Err(err);
-                    }
-                    jcode_base::logging::info(
-                        "OpenAI model catalog fetch rejected the access token; force-refreshing and retrying",
-                    );
-                    let refreshed = super::openai_stream_runtime::force_refresh_openai_token(
-                        &self.credentials,
-                        &refresh_token,
-                    )
-                    .await
-                    .map_err(|refresh_err| {
-                        err.context(format!(
-                            "token force-refresh after catalog 401/403 also failed: {refresh_err:#}"
-                        ))
-                    })?;
-                    jcode_base::provider::fetch_openai_model_catalog(&refreshed).await?
-                }
-                Err(err) => return Err(err),
-            }
-        } else {
-            jcode_base::provider::fetch_openai_api_key_model_catalog(&access_token).await?
-        };
-        let current_credential_identity = {
-            let credentials = self.credentials.read().await;
-            Self::catalog_credential_identity(&credentials)
-        };
-        if current_credential_identity != credential_identity
-            || jcode_base::auth::codex::active_account_label() != account_label
-        {
-            jcode_base::logging::info(
-                "Discarding OpenAI model catalog fetched for credentials that are no longer active",
-            );
-            return Ok(());
-        }
-        match self.model_reasoning_efforts.write() {
-            Ok(mut efforts) => *efforts = catalog.reasoning_efforts.clone(),
-            Err(poisoned) => *poisoned.into_inner() = catalog.reasoning_efforts.clone(),
-        }
-        self.revalidate_reasoning_effort();
-        jcode_base::provider::persist_openai_model_catalog(&catalog);
-        if !catalog.context_limits.is_empty() {
-            jcode_base::provider::populate_context_limits(catalog.context_limits);
-        }
-        if !catalog.available_models.is_empty() {
-            jcode_base::provider::populate_account_models(catalog.available_models);
-        }
-        Ok(())
+        self.prefetch_model_catalog().await
     }
 
     fn reasoning_effort(&self) -> Option<String> {
@@ -1192,10 +1117,16 @@ impl Provider for OpenAIProvider {
 
     fn fork(&self) -> Arc<dyn Provider> {
         let model = self.model();
+        let Ok(credentials) = self.credentials.try_read() else {
+            return Arc::new(super::private_session::UnavailableFork { model });
+        };
+        let Ok(credential_mode) = self.credential_mode.try_read() else {
+            return Arc::new(super::private_session::UnavailableFork { model });
+        };
         Arc::new(OpenAIProvider {
             client: self.client.clone(),
-            credentials: Arc::clone(&self.credentials),
-            credential_mode: Arc::clone(&self.credential_mode),
+            credentials: Arc::new(RwLock::new(credentials.clone())),
+            credential_mode: Arc::new(RwLock::new(*credential_mode)),
             model: Arc::new(RwLock::new(model)),
             prompt_cache_key: self.prompt_cache_key.clone(),
             prompt_cache_retention: self.prompt_cache_retention.clone(),
@@ -1209,7 +1140,12 @@ impl Provider for OpenAIProvider {
                     .map(|guard| guard.clone())
                     .unwrap_or_else(|poisoned| poisoned.into_inner().clone()),
             )),
-            model_reasoning_efforts: Arc::clone(&self.model_reasoning_efforts),
+            model_reasoning_efforts: Arc::new(StdRwLock::new(
+                self.model_reasoning_efforts
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+            )),
             service_tier: Arc::new(StdRwLock::new(self.service_tier())),
             native_compaction_mode: self.native_compaction_mode,
             native_compaction_threshold_tokens: self.native_compaction_threshold_tokens,
@@ -1218,8 +1154,12 @@ impl Provider for OpenAIProvider {
             websocket_failure_streaks: Arc::clone(&self.websocket_failure_streaks),
             persistent_ws: Arc::new(Mutex::new(None)),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
-            browser_only: Arc::clone(&self.browser_only),
+            browser_only: Arc::new(AtomicBool::new(self.is_browser_only())),
+            private_session: AtomicBool::new(true),
             route_pinned: AtomicBool::new(self.route_pinned()),
+            explicit_tools_only: AtomicBool::new(
+                self.explicit_tools_only.load(AtomicOrdering::Relaxed),
+            ),
         })
     }
 

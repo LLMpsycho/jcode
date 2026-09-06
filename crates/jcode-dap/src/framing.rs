@@ -39,7 +39,7 @@ impl FrameDecoder {
                 .windows(4)
                 .position(|window| window == b"\r\n\r\n")
             else {
-                let delimiter_prefix = remaining.get(self.max_header_bytes..).unwrap_or_default();
+                let delimiter_prefix = remaining.get(self.max_header_bytes..).unwrap_or(&[]);
                 if remaining.len() > self.max_header_bytes
                     && !b"\r\n\r\n".starts_with(delimiter_prefix)
                 {

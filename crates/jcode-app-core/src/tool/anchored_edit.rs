@@ -140,7 +140,7 @@ impl Tool for AnchoredEditTool {
             })?;
             if live != target.original {
                 let metadata = std::fs::metadata(&target.canonical_path)?;
-                let _ = self
+                if self
                     .file_snapshots
                     .observe_text(
                         &workspace_root,
@@ -148,7 +148,13 @@ impl Tool for AnchoredEditTool {
                         &live,
                         modified_ns(&metadata),
                     )
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    crate::logging::warn(
+                        "Stale anchored edit rejected; latest snapshot could not be recorded",
+                    );
+                }
                 return Err(rejected(format!(
                     "{} changed while the edit was being staged",
                     target.relative_path
@@ -164,9 +170,13 @@ impl Tool for AnchoredEditTool {
                 relative_path: target.relative_path.clone(),
                 expected_revision: target.observed_revision.clone(),
                 contents: target.replacement.clone(),
-                mtime_ns: std::fs::metadata(&target.canonical_path)
-                    .ok()
-                    .and_then(|metadata| modified_ns(&metadata)),
+                mtime_ns: match std::fs::metadata(&target.canonical_path) {
+                    Ok(metadata) => modified_ns(&metadata),
+                    Err(_) => {
+                        crate::logging::warn("Published anchored edit metadata unavailable; retaining content revision");
+                        None
+                    }
+                },
             })
             .collect();
         let records = match self
@@ -177,10 +187,10 @@ impl Tool for AnchoredEditTool {
             Ok(records) => records,
             Err(error) => {
                 let rollback = rollback_published(&mut targets);
-                let suffix = rollback
-                    .err()
-                    .map(|rollback| format!("; rollback also failed: {rollback}"))
-                    .unwrap_or_default();
+                let suffix = rollback.map_or_else(
+                    |rollback| format!("; rollback also failed: {rollback}"),
+                    |()| String::new(),
+                );
                 bail!("anchored edit ledger update failed: {error}{suffix}");
             }
         };
@@ -308,10 +318,10 @@ fn publish_all(targets: &mut [TargetFile]) -> Result<()> {
             .context("missing staged anchored edit")?;
         if let Err(error) = staged.persist(&targets[index].canonical_path) {
             let rollback = rollback_prefix(targets, index);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!(
                 "failed to publish {}: {}{}",
                 targets[index].relative_path,
@@ -346,11 +356,18 @@ fn rollback_published(targets: &mut [TargetFile]) -> Result<()> {
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> Option<u128> {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+    match metadata.modified() {
+        Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => Some(duration.as_nanos()),
+            Err(_) => None, // Pre-epoch timestamps cannot be represented; content revisions still guard writes.
+        },
+        Err(_) => {
+            crate::logging::debug(
+                "File modification time unavailable; using content revision only",
+            );
+            None
+        }
+    }
 }
 
 fn compact_diff(before: &[u8], after: &[u8]) -> String {

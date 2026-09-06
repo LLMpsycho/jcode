@@ -183,9 +183,11 @@ impl Tool for ApplyPatchTool {
                         params.intent.as_deref(),
                     );
                     touched_paths.push(display_path.clone());
-                    let suffix = (hunk_count > 0)
-                        .then(|| format!(" ({hunk_count} hunks)"))
-                        .unwrap_or_default();
+                    let suffix = if hunk_count > 0 {
+                        format!(" ({hunk_count} hunks)")
+                    } else {
+                        String::new()
+                    };
                     let mut result = format!("✓ {display_path}: {verb}{suffix}");
                     if !diff.is_empty() {
                         result.push('\n');

@@ -406,6 +406,24 @@ struct AdvisorInternalRuntime {
     supports_toolless: bool,
 }
 
+#[test]
+fn advisor_explicit_tool_policy_delegates_and_rejects_autonomous_runtimes() {
+    with_clean_provider_test_env(|| {
+        let provider = test_multi_provider_with_cursor();
+        *provider.cursor.write().unwrap() = None;
+        provider.set_active_provider(ActiveProvider::OpenAI);
+        *provider.openai.write().unwrap() = Some(Arc::new(AdvisorInternalRuntime {
+            supports_toolless: true,
+        }));
+        assert!(provider.supports_toolless_requests());
+        // Supporting an empty list does not establish that a nonempty list
+        // excludes the internal agent's own tools.
+        assert!(provider.restrict_to_explicit_tools().is_err());
+        *provider.openai.write().unwrap() = None;
+        assert!(provider.restrict_to_explicit_tools().is_err());
+    });
+}
+
 #[async_trait::async_trait]
 impl Provider for AdvisorInternalRuntime {
     async fn complete(
@@ -663,14 +681,13 @@ fn assert_pinned_role_quota_preserves_account_and_context(split: bool) {
                         })
                 );
                 let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
-                let captured = calls.clone();
-                external::register_external_provider(external::OPENAI_RUNTIME, move || {
-                    Arc::new(AdvisorQuotaRuntime {
-                        calls: captured.clone(),
-                        quota_error: true,
-                        route_pinned: std::sync::atomic::AtomicBool::new(false),
-                    })
-                });
+                // Private helpers fork the current authenticated runtime rather
+                // than reconstructing it from the process-wide factory.
+                *provider.openai.write().unwrap() = Some(Arc::new(AdvisorQuotaRuntime {
+                    calls: calls.clone(),
+                    quota_error: true,
+                    route_pinned: std::sync::atomic::AtomicBool::new(false),
+                }));
                 let role = provider.fork();
                 role.set_route_pinned(true);
                 assert!(role.route_pinned());

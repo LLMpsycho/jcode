@@ -125,6 +125,9 @@ fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
             (40, 30, false, false),
             (160, 24, true, true),
         ] {
+            let case = format!(
+                "centered={centered}, width={width}, height={height}, streaming={streaming}, scheduled={scheduled}"
+            );
             clear_flicker_frame_history_for_tests();
             let mut state = fact_test_state("typed text\nsecond line".to_string(), scheduled);
             state.suppress_info_widgets = false;
@@ -144,16 +147,21 @@ fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
             assert!(
                 rows[input.y as usize..input.bottom() as usize]
                     .iter()
-                    .any(|r| r.contains("typed text"))
+                    .any(|r| r.contains("typed text")),
+                "missing typed text in input ({case}):\n{}",
+                rows.join("\n")
             );
             assert!(
                 rows[input.y as usize..input.bottom() as usize]
                     .iter()
-                    .any(|r| r.contains("second line"))
+                    .any(|r| r.contains("second line")),
+                "missing second line in input ({case}):\n{}",
+                rows.join("\n")
             );
             assert!(
-                footer[0].contains("Context"),
-                "stats must start directly under input: {rows:?}"
+                footer.first().is_some_and(|row| row.contains("Context")),
+                "stats must start directly under input ({case}):\n{}",
+                rows.join("\n")
             );
             for needle in [
                 "74k/256k",
@@ -175,17 +183,23 @@ fn prompt_stats_are_inline_below_input_without_sidebar_duplicates() {
             ] {
                 assert!(
                     footer.iter().any(|row| row.contains(needle)),
-                    "missing {needle} at width {width}:\n{}",
+                    "missing {needle} ({case}):\n{}",
                     rows.join("\n")
                 );
                 // The conversation header intentionally retains the directory.
                 if needle != "~/jcode" {
-                    assert_eq!(footer.join("\n").matches(needle).count(), 1);
+                    assert_eq!(
+                        footer.join("\n").matches(needle).count(),
+                        1,
+                        "expected exactly one {needle:?} in footer ({case}):\n{}",
+                        rows.join("\n")
+                    );
                     assert!(
                         !rows[..input.y as usize]
                             .iter()
                             .any(|row| row.contains(needle)),
-                        "duplicate {needle} above input"
+                        "duplicate {needle} above input ({case}):\n{}",
+                        rows.join("\n")
                     );
                 }
             }

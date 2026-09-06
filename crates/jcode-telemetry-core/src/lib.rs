@@ -1,3 +1,14 @@
+mod session_summary;
+use session_summary::infer_agent_role;
+use session_summary::infer_session_stop_reason;
+
+mod feature_usage;
+#[cfg(test)]
+use feature_usage::increment_tool_category;
+use feature_usage::mark_command_family_usage;
+use feature_usage::mark_tool_feature_usage;
+use feature_usage::mark_tool_success_side_effects;
+
 use jcode_logging as logging;
 use jcode_storage as storage;
 mod lifecycle;
@@ -34,8 +45,8 @@ const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
-static TELEMETRY_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
-static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
+static TELEMETRY_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
+static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
 static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -514,8 +525,13 @@ pub fn set_usage_telemetry_enabled(enabled: bool) -> bool {
         if !path.exists() && !opt_out_forced_by_env() {
             emit_telemetry_opt_out();
         }
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            logging::warn(&format!(
+                "Failed to create telemetry preference directory: {error}"
+            ));
+            return false;
         }
         match std::fs::write(&path, b"1") {
             Ok(()) => {
@@ -589,8 +605,13 @@ pub fn set_content_sharing_enabled(enabled: bool) -> bool {
         return false;
     };
     if enabled {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            logging::warn(&format!(
+                "Failed to create telemetry preference directory: {error}"
+            ));
+            return false;
         }
         match std::fs::write(&path, b"1") {
             Ok(()) => {
@@ -963,45 +984,6 @@ fn now_ms_since(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn increment_tool_category(state: &mut SessionTelemetry, category: ToolCategory) {
-    match category {
-        ToolCategory::ReadSearch => state.tool_cat_read_search += 1,
-        ToolCategory::Write => state.tool_cat_write += 1,
-        ToolCategory::Shell => state.tool_cat_shell += 1,
-        ToolCategory::Web => state.tool_cat_web += 1,
-        ToolCategory::Memory => state.tool_cat_memory += 1,
-        ToolCategory::Subagent => state.tool_cat_subagent += 1,
-        ToolCategory::Swarm => state.tool_cat_swarm += 1,
-        ToolCategory::Email => state.tool_cat_email += 1,
-        ToolCategory::SidePanel => state.tool_cat_side_panel += 1,
-        ToolCategory::Goal => state.tool_cat_goal += 1,
-        ToolCategory::Todo => {
-            state.tool_cat_todo += 1;
-            state.todo.todo_updates = state.todo.todo_updates.saturating_add(1);
-        }
-        ToolCategory::Mcp => state.tool_cat_mcp += 1,
-        ToolCategory::Other => state.tool_cat_other += 1,
-    }
-}
-
-fn increment_turn_tool_category(state: &mut TurnTelemetry, category: ToolCategory) {
-    match category {
-        ToolCategory::ReadSearch => state.tool_cat_read_search += 1,
-        ToolCategory::Write => state.tool_cat_write += 1,
-        ToolCategory::Shell => state.tool_cat_shell += 1,
-        ToolCategory::Web => state.tool_cat_web += 1,
-        ToolCategory::Memory => state.tool_cat_memory += 1,
-        ToolCategory::Subagent => state.tool_cat_subagent += 1,
-        ToolCategory::Swarm => state.tool_cat_swarm += 1,
-        ToolCategory::Email => state.tool_cat_email += 1,
-        ToolCategory::SidePanel => state.tool_cat_side_panel += 1,
-        ToolCategory::Goal => state.tool_cat_goal += 1,
-        ToolCategory::Todo => state.tool_cat_todo += 1,
-        ToolCategory::Mcp => state.tool_cat_mcp += 1,
-        ToolCategory::Other => state.tool_cat_other += 1,
-    }
-}
-
 fn observe_session_concurrency(state: &mut SessionTelemetry) {
     state.max_concurrent_sessions = state.max_concurrent_sessions.max(observe_active_sessions());
 }
@@ -1033,249 +1015,6 @@ fn time_to_first_useful_action_ms(state: &SessionTelemetry) -> Option<u64> {
         state.first_test_pass_ms,
     ])
     .or(state.first_assistant_response_ms)
-}
-
-fn infer_agent_role(state: &SessionTelemetry) -> &'static str {
-    if state.feature_swarm_used || state.tool_cat_swarm > 0 {
-        "swarm"
-    } else if state.feature_subagent_used || state.tool_cat_subagent > 0 {
-        "subagent"
-    } else if state.feature_background_used || state.background_task_count > 0 {
-        "background"
-    } else {
-        "foreground"
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn infer_session_stop_reason(
-    event_name: &'static str,
-    reason: SessionEndReason,
-    state: &SessionTelemetry,
-    errors: &ErrorCounts,
-    duration_secs: u64,
-    session_success: bool,
-    abandoned_before_response: bool,
-    workflow_coding_used: bool,
-) -> &'static str {
-    if event_name == "session_crash"
-        || matches!(reason, SessionEndReason::Panic | SessionEndReason::Signal)
-    {
-        return "crash";
-    }
-    if errors.auth_failed > 0 {
-        return "auth_blocked";
-    }
-    if errors.rate_limited > 0 {
-        return "rate_limited";
-    }
-    if errors.provider_timeout > 0 {
-        return "provider_timeout";
-    }
-    if !state.had_user_prompt {
-        return "never_prompted";
-    }
-    if abandoned_before_response {
-        return "no_first_response";
-    }
-    if state.user_cancelled_count > 0 || matches!(reason, SessionEndReason::Disconnect) {
-        return "user_interrupted";
-    }
-    if matches!(state.first_assistant_response_ms, Some(ms) if ms > 60_000)
-        && time_to_first_useful_action_ms(state).is_none_or(|ms| ms > 60_000)
-    {
-        return "too_slow";
-    }
-    if state.executed_tool_failures >= 3 && state.executed_tool_successes == 0 {
-        return "tool_error_loop";
-    }
-    if errors.tool_error > 0 && state.executed_tool_successes == 0 {
-        return "tool_failures";
-    }
-    if workflow_coding_used && state.file_write_calls == 0 {
-        return "no_file_change";
-    }
-    if state.tests_run > 0 && state.tests_passed == 0 {
-        return "test_failure_unresolved";
-    }
-    if !session_success && duration_secs >= 300 && state.agent_active_ms_total >= 300_000 {
-        return "agent_got_stuck";
-    }
-    if !session_success {
-        return "no_useful_action";
-    }
-    "completed_successfully"
-}
-
-fn mark_command_family_usage(state: &mut SessionTelemetry, command: &str) {
-    let family = command
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_start_matches('/');
-    match family {
-        "login" | "auth" => state.command_login_used = true,
-        "model" => state.command_model_used = true,
-        "usage" => state.command_usage_used = true,
-        "resume" | "session" | "back" | "catchup" => state.command_resume_used = true,
-        "memory" => state.command_memory_used = true,
-        "swarm" | "agents" => state.command_swarm_used = true,
-        "goal" | "goals" => state.command_goal_used = true,
-        "selfdev" | "dev" => state.command_selfdev_used = true,
-        "feedback" => state.command_feedback_used = true,
-        _ => state.command_other_used = true,
-    }
-}
-
-fn mark_tool_feature_usage(state: &mut SessionTelemetry, name: &str, input: &Value) {
-    let category = classify_tool_category(name);
-    increment_tool_category(state, category);
-    if let Some(turn) = state.current_turn.as_mut() {
-        increment_turn_tool_category(turn, category);
-    }
-
-    match name {
-        "memory" => {
-            state.feature_memory_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_memory_used = true;
-            }
-        }
-        "communicate" => {
-            state.feature_swarm_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_swarm_used = true;
-            }
-        }
-        "webfetch" | "websearch" | "codesearch" => {
-            state.feature_web_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_web_used = true;
-            }
-        }
-        "gmail" => {
-            state.feature_email_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_email_used = true;
-            }
-        }
-        "side_panel" => {
-            state.feature_side_panel_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_side_panel_used = true;
-            }
-        }
-        "initiative" => {
-            state.feature_goal_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_goal_used = true;
-            }
-        }
-        "todo" | "todowrite" | "todo_write" | "todoread" | "todo_read" => {
-            state.feature_todo_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_todo_used = true;
-            }
-        }
-        "selfdev" => {
-            state.feature_selfdev_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_selfdev_used = true;
-            }
-        }
-        "bg" | "schedule" => {
-            state.feature_background_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_background_used = true;
-            }
-        }
-        "subagent" => {
-            state.feature_subagent_used = true;
-            if let Some(turn) = state.current_turn.as_mut() {
-                turn.feature_subagent_used = true;
-            }
-        }
-        _ => {}
-    }
-
-    if matches!(
-        name,
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
-    ) {
-        state.file_write_calls += 1;
-        if let Some(turn) = state.current_turn.as_mut() {
-            turn.file_write_calls += 1;
-        }
-    }
-
-    if name == "mcp" || name.starts_with("mcp__") {
-        state.feature_mcp_used = true;
-        if let Some(turn) = state.current_turn.as_mut() {
-            turn.feature_mcp_used = true;
-        }
-        if let Some(server) = mcp_server_name(name, input) {
-            state.unique_mcp_servers.insert(server);
-            if let Some(turn) = state.current_turn.as_mut()
-                && let Some(server) = mcp_server_name(name, input)
-            {
-                turn.unique_mcp_servers.insert(server);
-            }
-        }
-    }
-
-    if looks_like_test_run(name, input) {
-        state.tests_run += 1;
-        if let Some(turn) = state.current_turn.as_mut() {
-            turn.tests_run += 1;
-        }
-    }
-}
-
-fn mark_tool_success_side_effects(state: &mut SessionTelemetry, name: &str, input: &Value) {
-    if looks_like_test_run(name, input) {
-        state.tests_passed += 1;
-        if state.first_test_pass_ms.is_none() {
-            state.first_test_pass_ms = Some(now_ms_since(state.started_at));
-        }
-        if let Some(turn) = state.current_turn.as_mut() {
-            turn.tests_passed += 1;
-            if turn.first_test_pass_ms.is_none() {
-                turn.first_test_pass_ms = Some(now_ms_since(turn.started_at));
-            }
-        }
-    }
-
-    if state.first_tool_success_ms.is_none() {
-        state.first_tool_success_ms = Some(now_ms_since(state.started_at));
-    }
-    if let Some(turn) = state.current_turn.as_mut()
-        && turn.first_tool_success_ms.is_none()
-    {
-        turn.first_tool_success_ms = Some(now_ms_since(turn.started_at));
-    }
-
-    if matches!(
-        name,
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
-    ) && state.first_file_edit_ms.is_none()
-    {
-        state.first_file_edit_ms = Some(now_ms_since(state.started_at));
-    }
-    if matches!(
-        name,
-        "write" | "edit" | "multiedit" | "patch" | "apply_patch"
-    ) && let Some(turn) = state.current_turn.as_mut()
-        && turn.first_file_edit_ms.is_none()
-    {
-        turn.first_file_edit_ms = Some(now_ms_since(turn.started_at));
-    }
-
-    if name == "memory" {
-        state.feature_memory_used = true;
-        if let Some(turn) = state.current_turn.as_mut() {
-            turn.feature_memory_used = true;
-        }
-    }
 }
 
 pub fn record_command_family(command: &str) {
@@ -1393,22 +1132,28 @@ where
     Ok(sender)
 }
 
-fn background_sender() -> &'static SyncSender<Value> {
-    TELEMETRY_BACKGROUND_SENDER.get_or_init(|| {
-        spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
-            let _ = post_payload_with_retry(payload, ASYNC_SEND_TIMEOUT);
+fn background_sender() -> std::io::Result<&'static SyncSender<Value>> {
+    TELEMETRY_BACKGROUND_SENDER
+        .get_or_init(|| {
+            spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
+                let _ = post_payload_with_retry(payload, ASYNC_SEND_TIMEOUT);
+            })
         })
-        .expect("telemetry background worker should start")
-    })
+        .as_ref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
-fn transcript_background_sender() -> &'static SyncSender<Value> {
-    TRANSCRIPT_BACKGROUND_SENDER.get_or_init(|| {
-        spawn_background_worker(64, |payload| {
-            let _ = post_transcript_payload(payload, ASYNC_SEND_TIMEOUT);
+fn transcript_background_sender() -> std::io::Result<&'static SyncSender<Value>> {
+    TRANSCRIPT_BACKGROUND_SENDER
+        .get_or_init(|| {
+            spawn_background_worker(64, |payload| {
+                if !post_transcript_payload(payload, ASYNC_SEND_TIMEOUT) {
+                    logging::debug("transcript upload was not delivered");
+                }
+            })
         })
-        .expect("transcript telemetry background worker should start")
-    })
+        .as_ref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
 fn send_transcript_payload(payload: Value) -> bool {
@@ -1420,7 +1165,17 @@ fn send_transcript_payload(payload: Value) -> bool {
         return true;
     }
     #[cfg(not(test))]
-    match transcript_background_sender().try_send(payload) {
+    let sender = match transcript_background_sender() {
+        Ok(sender) => sender,
+        Err(error) => {
+            logging::warn(&format!(
+                "Failed to start transcript upload worker: {error}"
+            ));
+            return false;
+        }
+    };
+    #[cfg(not(test))]
+    match sender.try_send(payload) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             logging::warn("transcript upload queue is full; dropping transcript");
@@ -1449,7 +1204,14 @@ fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
                 return false;
             }
             logging::debug("queueing telemetry payload for background delivery");
-            match background_sender().try_send(payload) {
+            let sender = match background_sender() {
+                Ok(sender) => sender,
+                Err(error) => {
+                    logging::warn(&format!("Failed to start telemetry worker: {error}"));
+                    return false;
+                }
+            };
+            match sender.try_send(payload) {
                 Ok(()) => {
                     TELEMETRY_QUEUE_OVERFLOW_WARNED.store(false, Ordering::Relaxed);
                     true

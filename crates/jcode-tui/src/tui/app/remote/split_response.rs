@@ -59,14 +59,7 @@ pub(super) fn handle_split_response(
         );
     }
     let exe = app_mod::launch_client_executable();
-    let cwd = crate::session::Session::load(&new_session_id)
-        .ok()
-        .and_then(|session| session.working_dir)
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_dir())
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let socket = std::env::var("JCODE_SOCKET").ok();
+    let (cwd, socket) = app_mod::terminal_launch_context::resolve(&new_session_id);
     match spawn_in_new_terminal(&exe, &new_session_id, &cwd, socket.as_deref()) {
         Ok(true) => {
             if let Some(label) = split_label.as_deref() {

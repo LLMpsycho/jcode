@@ -167,10 +167,8 @@ impl OwnedChildProcess {
 
     pub(crate) async fn spawn_debug_target(
         target: &ResolvedProgram,
-        allowed_tracer_pid: Option<u32>,
+        _allowed_tracer_pid: Option<u32>,
     ) -> Result<Self> {
-        #[cfg(not(target_os = "linux"))]
-        let _ = allowed_tracer_pid;
         let program_identity = target.program.canonicalize()?;
         if program_identity != target.program || !program_identity.is_file() {
             return Err(DapError::InvalidDebugProgram {
@@ -199,7 +197,7 @@ impl OwnedChildProcess {
         #[cfg(unix)]
         command.process_group(0);
         #[cfg(target_os = "linux")]
-        if let Some(adapter_pid) = allowed_tracer_pid {
+        if let Some(adapter_pid) = _allowed_tracer_pid {
             // SAFETY: pre_exec invokes only the async-signal-safe prctl syscall and creates no allocations.
             unsafe {
                 command.pre_exec(move || set_ptracer(adapter_pid));

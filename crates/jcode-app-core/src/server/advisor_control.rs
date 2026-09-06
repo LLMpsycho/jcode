@@ -1,4 +1,4 @@
-use crate::advisor::{AdvisorManager, AdvisorNoteDisposition};
+use crate::advisor::{AdvisorManager, AdvisorNoteDisposition, roster};
 use crate::agent::Agent;
 use crate::config::AdvisorConfig;
 use crate::protocol::{AdvisorControlResult, AdvisorRequest, ServerEvent};
@@ -31,7 +31,73 @@ fn handle_with_manager(
     events: &mpsc::UnboundedSender<ServerEvent>,
     manager: Arc<AdvisorManager>,
 ) {
-    let config = crate::advisor::config_for_current_session();
+    let global = crate::advisor::config_for_current_session();
+    if matches!(request, AdvisorRequest::Disable) {
+        let outcome = roster::disable_all(&manager, session, &global);
+        match outcome {
+            Ok(()) => {
+                if (events.send(ServerEvent::AdvisorResult {
+                    id,
+                    result: AdvisorControlResult {
+                        message: "All advisors disabled for this session.".into(),
+                        ..Default::default()
+                    },
+                }))
+                .is_err()
+                {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
+            }
+            Err(error) => send_error(id, events, error.to_string()),
+        }
+        return;
+    }
+    let working_dir = match agent.try_lock() {
+        Ok(agent) => agent.working_dir().map(std::path::PathBuf::from),
+        Err(_) => {
+            // The owner roster cache retains project configuration during an active turn.
+            crate::logging::debug(
+                "Advisor control using cached project roster while session is busy",
+            );
+            None
+        }
+    };
+    let config = match roster::config_for_owner(session, &global, working_dir.as_deref()) {
+        Ok(config) => config,
+        Err(error) => {
+            send_error(id, events, error.to_string());
+            return;
+        }
+    };
+    handle_with_config(id, request, session, agent, events, manager, config);
+}
+
+fn handle_with_config(
+    id: u64,
+    request: AdvisorRequest,
+    owner_session: &str,
+    agent: &Arc<Mutex<Agent>>,
+    events: &mpsc::UnboundedSender<ServerEvent>,
+    manager: Arc<AdvisorManager>,
+    config: AdvisorConfig,
+) {
+    if matches!(request, AdvisorRequest::Enable)
+        && let Err(error) = roster::enable_owner(&manager, owner_session)
+    {
+        send_error(id, events, error.to_string());
+        return;
+    }
+    let (session_key, mut config, request) = match target_request(&config, owner_session, request) {
+        Ok(target) => target,
+        Err(error) => {
+            send_error(id, events, error.to_string());
+            return;
+        }
+    };
+    let session = session_key.as_str();
+    manager.resume(owner_session);
+    config.enabled &= roster::owner_enabled(&manager, owner_session);
+    manager.resume(session);
     if matches!(request, AdvisorRequest::ModelOptions { .. }) {
         // Catalog reads and effort previews must remain available during a
         // primary turn, including when this connection attached to a busy
@@ -49,7 +115,9 @@ fn handle_with_manager(
                 }
             }
         };
-        let _ = events.send(ServerEvent::AdvisorResult { id, result });
+        if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+            crate::logging::debug("Event recipient disconnected before delivery");
+        }
         return;
     }
     if matches!(
@@ -77,7 +145,9 @@ fn handle_with_manager(
                 request,
                 selection_id,
             );
-            let _ = events.send(ServerEvent::AdvisorResult { id, result });
+            if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+                crate::logging::debug("Event recipient disconnected before delivery");
+            }
         } else {
             // Waiting for a primary turn must not hold up cancel, acknowledge,
             // dismiss, or disable requests on this connection. Capture the
@@ -96,20 +166,139 @@ fn handle_with_manager(
                     request,
                     selection_id,
                 );
-                let _ = events.send(ServerEvent::AdvisorResult { id, result });
+                if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
             });
         }
         return;
     }
     let is_status = matches!(request, AdvisorRequest::Status);
-    let mut result = control_request(&manager, session, &config, request);
+    let mut result = if config.roster.is_empty() {
+        control_request(&manager, session, &config, request)
+    } else {
+        roster_control_request(&manager, owner_session, &config, request)
+    };
     if is_status {
         result.model_settings = Some(match agent.try_lock() {
             Ok(agent) => manager.model_settings(session, agent.provider_handle().as_ref(), &config),
             Err(_) => manager.saved_model_settings(session, &config),
         });
     }
-    let _ = events.send(ServerEvent::AdvisorResult { id, result });
+    if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+        crate::logging::debug("Event recipient disconnected before delivery");
+    }
+}
+
+fn send_error(id: u64, events: &mpsc::UnboundedSender<ServerEvent>, message: String) {
+    let message = crate::message::redact_secrets(&message);
+    if (events.send(ServerEvent::AdvisorResult {
+        id,
+        result: AdvisorControlResult {
+            error: Some(message.clone()),
+            message,
+            ..Default::default()
+        },
+    }))
+    .is_err()
+    {
+        crate::logging::debug("Event recipient disconnected before delivery");
+    }
+}
+
+fn target_request(
+    config: &AdvisorConfig,
+    owner: &str,
+    request: AdvisorRequest,
+) -> anyhow::Result<(String, AdvisorConfig, AdvisorRequest)> {
+    let requested = match request {
+        AdvisorRequest::ForAdvisor { name, request } => {
+            anyhow::ensure!(
+                !matches!(*request, AdvisorRequest::ForAdvisor { .. }),
+                "nested advisor targeting is not supported"
+            );
+            Some((name, *request))
+        }
+        request
+            if matches!(
+                request,
+                AdvisorRequest::ModelOptions { .. }
+                    | AdvisorRequest::SelectModel { .. }
+                    | AdvisorRequest::UsePrimary
+            ) =>
+        {
+            let entries = roster::entries(config)?;
+            let name = entries
+                .iter()
+                .find(|entry| entry.name == roster::DEFAULT_ADVISOR)
+                .or_else(|| entries.first())
+                .ok_or_else(|| anyhow::anyhow!("advisor roster is empty"))?
+                .name
+                .clone();
+            Some((name, request))
+        }
+        request => {
+            roster::entries(config)?;
+            return Ok((owner.into(), config.clone(), request));
+        }
+    };
+    let (name, request) = requested.ok_or_else(|| anyhow::anyhow!("advisor target missing"))?;
+    let entry = roster::entry(config, &name)?;
+    Ok((
+        roster::runtime_session_key(owner, &name),
+        entry.config,
+        request,
+    ))
+}
+
+fn roster_control_request(
+    manager: &AdvisorManager,
+    owner: &str,
+    config: &AdvisorConfig,
+    request: AdvisorRequest,
+) -> AdvisorControlResult {
+    let outcome = (|| -> anyhow::Result<String> {
+        let entries = roster::entries(config)?;
+        if matches!(request, AdvisorRequest::Enable) {
+            roster::enable_owner(manager, owner)?;
+        }
+        let note_id = match &request {
+            AdvisorRequest::Acknowledge { note_id } | AdvisorRequest::Dismiss { note_id } => {
+                Some(note_id)
+            }
+            _ => None,
+        };
+        let mut messages = Vec::new();
+        for mut entry in entries {
+            entry.config.enabled &= roster::owner_enabled(manager, owner);
+            let key = roster::runtime_session_key(owner, &entry.name);
+            manager.resume(&key);
+            if let Some(note_id) = note_id
+                && !manager.notes(&key).iter().any(|note| note.id == *note_id)
+            {
+                continue;
+            }
+            let result = control_request(manager, &key, &entry.config, request.clone());
+            anyhow::ensure!(result.error.is_none(), "{}", result.message);
+            messages.push(format!("{}: {}", entry.name, result.message));
+        }
+        anyhow::ensure!(!messages.is_empty(), "advisor note was not found");
+        Ok(messages.join("\n"))
+    })();
+    match outcome {
+        Ok(message) => AdvisorControlResult {
+            message,
+            ..Default::default()
+        },
+        Err(error) => {
+            let message = crate::message::redact_secrets(&error.to_string());
+            AdvisorControlResult {
+                error: Some(message.clone()),
+                message,
+                ..Default::default()
+            }
+        }
+    }
 }
 
 fn model_request(
@@ -158,7 +347,7 @@ fn model_request(
     result.model_settings = Some(manager.model_settings(session, provider, config));
     if let Err(error) = outcome {
         result.error = Some(crate::message::redact_secrets(&error.to_string()));
-        result.message = result.error.clone().unwrap_or_default();
+        result.message = result.error.clone().unwrap_or_else(String::new);
     }
     result
 }
@@ -192,16 +381,21 @@ fn control_request(
             let enabled = manager.is_enabled(session, config.enabled);
             Ok(match manager.snapshot(session) {
                 Some(snapshot) => format!(
-                    "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); {}",
+                    "Advisor: {} ({:?}); {} unresolved blocking note(s), {} retained note(s); reviews {}/{}; context {} message(s); {} suppressed; {}",
                     if enabled { "on" } else { "off" },
                     snapshot.status,
                     snapshot.unresolved_blocking_notes,
                     manager.notes(session).len(),
+                    snapshot.cursor,
+                    config.max_reviews_per_session,
+                    snapshot.history_messages,
+                    snapshot.suppressed_notes,
                     snapshot.last_error.as_deref().unwrap_or("no error")
                 ),
                 None => format!(
-                    "Advisor: {} (idle); no retained notes",
-                    if enabled { "on" } else { "off" }
+                    "Advisor: {} (idle); no retained notes; reviews 0/{}; context 0 message(s)",
+                    if enabled { "on" } else { "off" },
+                    config.max_reviews_per_session
                 ),
             })
         }

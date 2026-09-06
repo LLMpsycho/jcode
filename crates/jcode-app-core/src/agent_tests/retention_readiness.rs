@@ -12,10 +12,22 @@
 //
 //   cargo test -p jcode-app-core --lib retention_readiness -- --nocapture
 
-#[derive(Clone)]
 struct RetentionReadinessProvider {
+    private_session: std::sync::atomic::AtomicBool,
     fail_d7_once: std::sync::Arc<std::sync::atomic::AtomicBool>,
     transcripts: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+}
+
+impl Clone for RetentionReadinessProvider {
+    fn clone(&self) -> Self {
+        Self {
+            private_session: std::sync::atomic::AtomicBool::new(
+                self.private_session.load(std::sync::atomic::Ordering::Acquire),
+            ),
+            fail_d7_once: std::sync::Arc::clone(&self.fail_d7_once),
+            transcripts: std::sync::Arc::clone(&self.transcripts),
+        }
+    }
 }
 
 struct RetentionHomeRestore(Option<std::ffi::OsString>);
@@ -99,6 +111,7 @@ fn retention_factor_registry() -> [RetentionFactor; 9] {
 impl RetentionReadinessProvider {
     fn new() -> Self {
         Self {
+            private_session: std::sync::atomic::AtomicBool::new(false),
             fail_d7_once: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             transcripts: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
@@ -121,6 +134,17 @@ impl Provider for RetentionReadinessProvider {
         _system: &str,
         _resume_session_id: Option<&str>,
     ) -> Result<EventStream> {
+        if self.private_session.load(std::sync::atomic::Ordering::Acquire) {
+            // The cohort measures primary-session continuity and one primary
+            // outage. Advisor observations must not consume its failure script
+            // or count as primary transcript evidence.
+            return Ok(Box::pin(futures::stream::iter(vec![
+                Ok(StreamEvent::TextDelta(r#"{"silence":true}"#.to_string())),
+                Ok(StreamEvent::MessageEnd {
+                    stop_reason: Some("end_turn".to_string()),
+                }),
+            ])));
+        }
         let transcript: Vec<String> = messages
             .iter()
             .map(|message| message_text(message).to_string())
@@ -175,9 +199,38 @@ impl Provider for RetentionReadinessProvider {
         "retention-fixture-v1".to_string()
     }
 
+    fn prepare_private_session(&self) {
+        self.private_session.store(true, std::sync::atomic::Ordering::Release);
+    }
+
     fn fork(&self) -> std::sync::Arc<dyn Provider> {
         std::sync::Arc::new(self.clone())
     }
+}
+
+#[tokio::test]
+async fn retention_readiness_private_d7_observation_preserves_primary_outage() {
+    use futures::StreamExt;
+
+    let provider = RetentionReadinessProvider::new();
+    let private = provider.fork();
+    private.prepare_private_session();
+    let messages = [Message::user("D7_RECOVER private observation before primary")];
+    let events = private.fork().complete(&messages, &[], "private", None).await
+        .expect("private observation completes independently")
+        .collect::<Vec<_>>().await;
+    assert!(matches!(&events[0], Ok(StreamEvent::TextDelta(text)) if text == r#"{"silence":true}"#));
+    assert!(provider.transcript_snapshots().is_empty(), "private evidence must not enter primary cohort snapshots");
+    assert!(provider.fail_d7_once.load(std::sync::atomic::Ordering::Acquire),
+        "private observation must not consume the primary outage");
+
+    let messages = [Message::user("D7_RECOVER primary attempt")];
+    let outage = provider.fork().complete(&messages, &[], "primary", None).await;
+    let Err(error) = outage else { panic!("primary attempt must still receive its scripted outage"); };
+    assert!(error.to_string().contains("synthetic provider outage"));
+    assert_eq!(provider.transcript_snapshots(), vec![vec!["D7_RECOVER primary attempt".to_string()]]);
+    assert!(provider.fork().complete(&messages, &[], "primary", None).await.is_ok(),
+        "the primary outage must occur exactly once");
 }
 
 #[derive(Debug, Clone, Copy)]

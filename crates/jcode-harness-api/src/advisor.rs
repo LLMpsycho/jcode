@@ -27,6 +27,11 @@ pub struct AdvisorRouteSelection {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum AdvisorRequest {
+    /// Apply a control to one configured advisor. Wrappers may not be nested.
+    ForAdvisor {
+        name: String,
+        request: Box<AdvisorRequest>,
+    },
     Status,
     Inspect,
     Enable,

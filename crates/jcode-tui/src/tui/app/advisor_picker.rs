@@ -10,6 +10,7 @@ use jcode_tui_messages::DisplayMessage;
 #[derive(Default)]
 pub(super) struct AdvisorPickerState {
     pending: Option<AdvisorRequest>,
+    target: Option<String>,
     request_id: Option<u64>,
     session_id: Option<String>,
     in_flight: std::collections::BTreeMap<u64, AdvisorInFlight>,
@@ -43,22 +44,40 @@ pub(super) fn command(input: &str) -> Option<Result<AdvisorRequest, &'static str
         },
         _ => return Some(Err(usage())),
     };
+    let target = words.next().map(str::to_owned);
     if words.next().is_some()
         || matches!(&request, AdvisorRequest::Dismiss { note_id } | AdvisorRequest::Acknowledge { note_id } if note_id.is_empty())
     {
         return Some(Err(usage()));
     }
-    Some(Ok(request))
+    Some(Ok(for_target(target.as_deref(), request)))
 }
 
-fn preview_filter(input: &str) -> Option<String> {
+fn for_target(target: Option<&str>, request: AdvisorRequest) -> AdvisorRequest {
+    match target {
+        Some(name) => AdvisorRequest::ForAdvisor {
+            name: name.to_owned(),
+            request: Box::new(request),
+        },
+        None => request,
+    }
+}
+
+fn target_control(request: &AdvisorRequest) -> (Option<&str>, &AdvisorRequest) {
+    match request {
+        AdvisorRequest::ForAdvisor { name, request } => (Some(name), request),
+        request => (None, request),
+    }
+}
+
+fn preview_filter(input: &str) -> Option<(Option<String>, String)> {
     let trimmed = input.trim_start();
     let rest = trimmed.strip_prefix("/advisor")?;
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
     let rest = rest.trim_start();
-    let first = rest.split_whitespace().next().unwrap_or_default();
+    let first = rest.split_whitespace().next().unwrap_or("");
     if matches!(
         first,
         "inherit" | "status" | "inspect" | "on" | "off" | "dismiss" | "ack"
@@ -66,13 +85,21 @@ fn preview_filter(input: &str) -> Option<String> {
         return None;
     }
     if matches!(first, "model" | "models") {
-        return Some(rest[first.len()..].trim_start().to_string());
+        let rest = rest[first.len()..].trim_start();
+        let target = rest.split_whitespace().next();
+        // Wait for a name boundary or Enter. Partial names would otherwise
+        // cause one rejected catalog request per typed character.
+        if target.is_some_and(|target| rest.len() == target.len()) {
+            return None;
+        }
+        let filter = target.map_or("", |target| rest[target.len()..].trim_start());
+        return Some((target.map(str::to_owned), filter.to_owned()));
     }
-    Some(rest.to_string())
+    Some((None, rest.to_string()))
 }
 
 fn usage() -> &'static str {
-    "Usage: /advisor (model + effort), /advisor inherit|status|inspect|dismiss <id>|ack <id>|on|off"
+    "Usage: /advisor (model + effort), /advisor model|inherit|status|inspect|on|off [name], /advisor dismiss|ack <id> [name]"
 }
 
 fn entry(
@@ -155,16 +182,19 @@ impl App {
             .is_remote
             .then(|| preview_filter(&self.input))
             .flatten();
-        let Some(filter) = filter else {
+        let Some((target, filter)) = filter else {
             if advisor_preview {
                 self.cancel_advisor_picker();
             }
             return false;
         };
-        if !advisor_preview {
+        if !advisor_preview || self.advisor_picker.target != target {
             let input = self.input.clone();
             let cursor = self.cursor_pos;
-            self.queue_advisor_request(AdvisorRequest::ModelOptions { selection: None });
+            self.queue_advisor_request(for_target(
+                target.as_deref(),
+                AdvisorRequest::ModelOptions { selection: None },
+            ));
             if let Some(picker) = self.inline_interactive_state.as_mut() {
                 picker.preview = true;
             }
@@ -246,6 +276,7 @@ impl App {
 
     pub(super) fn cancel_advisor_picker(&mut self) {
         self.advisor_picker.pending = None;
+        self.advisor_picker.target = None;
         self.advisor_picker.request_id = None;
         self.advisor_picker.session_id = None;
         // Retain request correlation until the reply arrives, even when a
@@ -290,7 +321,7 @@ impl App {
             entries,
             selected,
             column: 0,
-            filter: preview_filter.clone().unwrap_or_default(),
+            filter: preview_filter.as_deref().unwrap_or("").to_owned(),
             preview: preview_filter.is_some(),
         });
         if preview_filter.is_some() {
@@ -306,7 +337,9 @@ impl App {
     pub(super) fn queue_advisor_request(&mut self, request: AdvisorRequest) {
         self.advisor_picker.request_id = None;
         self.advisor_picker.session_id = self.remote_session_id.clone();
-        if let AdvisorRequest::ModelOptions { selection } = &request {
+        let (target, control) = target_control(&request);
+        self.advisor_picker.target = target.map(str::to_owned);
+        if let AdvisorRequest::ModelOptions { selection } = control {
             self.show_advisor_entries(vec![entry(
                 if selection.is_some() {
                     "Loading reasoning efforts…"
@@ -316,7 +349,9 @@ impl App {
                 .into(),
                 "Signed-in providers".into(),
                 String::new(),
-                "Esc to cancel".into(),
+                target
+                    .map(|name| format!("Advisor: {name} · Esc to cancel"))
+                    .unwrap_or_else(|| "Esc to cancel".into()),
                 None,
                 false,
             )]);
@@ -333,7 +368,10 @@ impl App {
         if self.advisor_picker.session_id != self.remote_session_id {
             return;
         }
-        let opens_picker = matches!(request, AdvisorRequest::ModelOptions { .. });
+        let opens_picker = matches!(
+            target_control(&request).1,
+            AdvisorRequest::ModelOptions { .. }
+        );
         match remote.advisor(request).await {
             Ok(id) => {
                 self.advisor_picker.request_id = opens_picker.then_some(id);
@@ -422,7 +460,7 @@ impl App {
         current: Option<&RouteSelection>,
         follows_primary: bool,
     ) {
-        let entries = if let Some(selection) = options.selection {
+        let mut entries: Vec<PickerEntry> = if let Some(selection) = options.selection {
             let mut efforts = options
                 .available_efforts
                 .into_iter()
@@ -509,6 +547,18 @@ impl App {
             }));
             entries
         };
+        if let Some(name) = self.advisor_picker.target.as_deref() {
+            for entry in &mut entries {
+                if let PickerAction::Advisor(request) = &mut entry.action {
+                    *request = request
+                        .take()
+                        .map(|request| for_target(Some(name), request));
+                }
+                for option in &mut entry.options {
+                    option.detail = format!("Advisor: {name} · {}", option.detail);
+                }
+            }
+        }
         self.show_advisor_entries(entries);
     }
 }

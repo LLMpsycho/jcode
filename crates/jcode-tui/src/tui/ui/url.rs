@@ -5,15 +5,25 @@ use unicode_width::UnicodeWidthStr;
 pub(crate) fn url_regex() -> Option<&'static Regex> {
     static URL_REGEX: OnceLock<Option<Regex>> = OnceLock::new();
     URL_REGEX
-        .get_or_init(|| Regex::new(r#"(?i)(?:https?://|mailto:|file://)[^\s<>'\"]+"#).ok())
+        .get_or_init(|| compile_link_regex(r#"(?i)(?:https?://|mailto:|file://)[^\s<>'\"]+"#))
         .as_ref()
 }
 
 fn markdown_link_regex() -> Option<&'static Regex> {
     static MARKDOWN_LINK_REGEX: OnceLock<Option<Regex>> = OnceLock::new();
     MARKDOWN_LINK_REGEX
-        .get_or_init(|| Regex::new(r#"\[([^]\n]+)\]\(([^\s)]+)(?:\s+[^)]*)?\)"#).ok())
+        .get_or_init(|| compile_link_regex(r#"\[([^]\n]+)\]\(([^\s)]+)(?:\s+[^)]*)?\)"#))
         .as_ref()
+}
+
+fn compile_link_regex(pattern: &str) -> Option<Regex> {
+    match Regex::new(pattern) {
+        Ok(regex) => Some(regex),
+        Err(error) => {
+            crate::logging::warn(&format!("TUI link matcher could not initialize: {error}"));
+            None
+        }
+    }
 }
 
 pub(crate) fn trim_url_candidate(candidate: &str) -> &str {

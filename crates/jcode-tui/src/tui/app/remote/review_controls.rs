@@ -17,7 +17,8 @@ pub(super) async fn dispatch(app: &mut App, remote: &mut RemoteConnection, input
         "/judge" => ("Judge", false, true),
         _ => return false,
     };
-    let arg = words.next().unwrap_or_default();
+    // A bare command requests the default action; no argument is an empty token.
+    let arg = words.next().unwrap_or("");
     let usage = if automatic {
         format!("Usage: {command} [on|off|status|now]")
     } else {

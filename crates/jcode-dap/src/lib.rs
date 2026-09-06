@@ -4,8 +4,8 @@
 //! ```compile_fail
 //! use jcode_dap::{AdapterCommand, AdapterProcess, DapClient};
 //! let client = DapClient::start(tokio::io::duplex(64).0);
-//! let _ = client.request("attach", Some(serde_json::json!({"pid": 1234})), std::time::Duration::from_secs(1));
-//! let _ = AdapterProcess::spawn(&AdapterCommand::new("/usr/bin/lldb-dap", "/"));
+//! client.request("attach", Some(serde_json::json!({"pid": 1234})), std::time::Duration::from_secs(1));
+//! AdapterProcess::spawn(&AdapterCommand::new("/usr/bin/lldb-dap", "/"));
 //! ```
 
 mod breakpoints;
@@ -32,7 +32,12 @@ pub use framing::{
     DEFAULT_MAX_HEADER_BYTES, DEFAULT_MAX_PAYLOAD_BYTES, FrameDecoder, encode_frame,
 };
 pub use inspection::*;
-pub use jcode_dap_types::*;
+pub use jcode_dap_types::{
+    Capabilities, DapAdapterConfig, DapAdapterKind, DapConfig, Event, EventType,
+    InitializeRequestArguments, MAX_OPAQUE_HANDLES_PER_OWNER, MAX_OUTPUT_BYTES,
+    MIN_OPAQUE_HANDLES_PER_OWNER, MIN_OUTPUT_BYTES, Request, RequestType, Response, ResponseType,
+    RunInTerminalKind, RunInTerminalRequestArguments,
+};
 pub use launch::{
     DebugAdapterConfig, DebugAdapterKind, DebugLaunchRequest, DebugOwnedAttachRequest,
     DebugSessionStart,

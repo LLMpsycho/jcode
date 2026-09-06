@@ -417,6 +417,12 @@ impl Agent {
             );
         }
 
+        for interrupt in &injected {
+            if interrupt.source == SoftInterruptSource::System {
+                crate::advisor::advisor_manager()
+                    .record_delivery(&self.session.id, &interrupt.content);
+            }
+        }
         self.persist_session_best_effort("soft interrupt injection");
         logging::info(&format!(
             "AGENT_SOFT_INTERRUPT_INJECT_COMMIT session={} groups={} total_content_bytes={}",

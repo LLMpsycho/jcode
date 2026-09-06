@@ -655,6 +655,13 @@ pub(crate) enum DebugTerminationPolicy {
     OwnedAttach,
 }
 
+#[derive(Clone, Copy)]
+enum TerminalRetention {
+    Always,
+    OnFailure,
+    Never,
+}
+
 mod breakpoints;
 mod control;
 mod startup;
@@ -688,9 +695,23 @@ impl ManagerCore {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             let core = Arc::clone(self);
             handle.spawn(async move {
-                let _ = core
-                    .finalize_owned(entry, DebugSessionEndReason::LaunchCancelled, false, true)
-                    .await;
+                match core
+                    .finalize_owned(
+                        entry,
+                        DebugSessionEndReason::LaunchCancelled,
+                        TerminalRetention::OnFailure,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(()) => {
+                        core.remove_entry(id);
+                    }
+                    Err(_) => {
+                        // Failed cleanup remains in the bounded terminal history,
+                        // including cleanup_error, so the owner can inspect it.
+                    }
+                }
             });
             return;
         }
@@ -805,7 +826,12 @@ impl ManagerCore {
                 continue;
             }
             match self
-                .finalize_owned(entry.clone(), reason.clone(), false, true)
+                .finalize_owned(
+                    entry.clone(),
+                    reason.clone(),
+                    TerminalRetention::Never,
+                    true,
+                )
                 .await
             {
                 Ok(()) => report.cleaned += 1,
@@ -831,7 +857,12 @@ impl ManagerCore {
         let session_id = entry.id;
         let core = Arc::clone(self);
         match tokio::spawn(async move {
-            core.finalize_owned(entry, reason, retain, abort_supervisor)
+            let retention = if retain {
+                TerminalRetention::Always
+            } else {
+                TerminalRetention::Never
+            };
+            core.finalize_owned(entry, reason, retention, abort_supervisor)
                 .await
         })
         .await
@@ -848,7 +879,7 @@ impl ManagerCore {
         self: &Arc<Self>,
         entry: Arc<SessionEntry>,
         reason: DebugSessionEndReason,
-        retain: bool,
+        retention: TerminalRetention,
         abort_supervisor: bool,
     ) -> Result<()> {
         entry.fence_terminal(InspectionInvalidation::from_end_reason(&reason));
@@ -904,6 +935,11 @@ impl ManagerCore {
             notify(&entry, &mut data);
         }
         self.release_active(&entry);
+        let retain = match retention {
+            TerminalRetention::Always => true,
+            TerminalRetention::OnFailure => cleanup_error.is_some(),
+            TerminalRetention::Never => false,
+        };
         if retain {
             self.record_terminal(&entry);
         } else {

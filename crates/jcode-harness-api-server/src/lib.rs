@@ -104,7 +104,8 @@ pub(crate) fn single_instance_lock(api_socket: &std::path::Path) -> Result<Optio
 
     let path = api_socket.with_extension("lock");
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create API socket directory {}", parent.display()))?;
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -144,7 +145,8 @@ pub async fn run_bridge(api_socket: PathBuf, legacy_socket: PathBuf) -> Result<(
     #[cfg(unix)]
     let _ = std::fs::remove_file(&api_socket);
     if let Some(parent) = api_socket.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create API socket directory {}", parent.display()))?;
     }
     // `mut` only on Windows: the named-pipe listener republishes a pipe
     // instance on every accept, so accepting takes `&mut self`. Unix's

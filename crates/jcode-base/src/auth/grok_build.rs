@@ -139,23 +139,27 @@ pub async fn complete_device_login(
 }
 
 fn save_tokens(tokens: TokenResponse) -> Result<()> {
-    let claims = tokens
-        .access_token
-        .split('.')
-        .nth(1)
-        .and_then(|part| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(part)
-                .ok()
-        })
-        .and_then(|bytes| serde_json::from_slice::<JwtClaims>(&bytes).ok())
-        .unwrap_or_default();
+    // JWT claims are optional display metadata; opaque access tokens remain valid.
+    // Never include decoded claims or token bytes in an error message.
+    let claims = match tokens.access_token.split('.').nth(1) {
+        None => JwtClaims::default(),
+        Some(part) => match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part) {
+            Ok(bytes) => serde_json::from_slice::<JwtClaims>(&bytes).unwrap_or_else(|_| {
+                crate::logging::debug("Grok token has no readable display claims");
+                JwtClaims::default()
+            }),
+            Err(_) => {
+                crate::logging::debug("Grok token display claims are not base64 encoded");
+                JwtClaims::default()
+            }
+        },
+    };
     let now = chrono::Utc::now();
     let credential = StoredCredential {
         key: tokens.access_token,
         auth_mode: "oidc",
         create_time: now.to_rfc3339(),
-        user_id: claims.sub.unwrap_or_default(),
+        user_id: claims.sub.unwrap_or_else(String::new),
         email: claims.email,
         coding_data_retention_opt_out: false,
         first_name: claims.given_name,
@@ -173,21 +177,23 @@ fn save_tokens(tokens: TokenResponse) -> Result<()> {
     )
     .context("No home directory available for Grok Build credentials")?;
     std::fs::create_dir_all(&home)?;
-    let path = home.join("auth.json");
-    let mut credentials = std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| {
-            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes).ok()
-        })
-        .unwrap_or_default();
-    credentials.insert(
-        format!("{OAUTH_ISSUER}::{OAUTH_CLIENT_ID}"),
-        serde_json::to_value(credential)?,
-    );
+    persist_credential(&home.join("auth.json"), serde_json::to_value(credential)?)
+}
+
+fn persist_credential(path: &std::path::Path, credential: serde_json::Value) -> Result<()> {
+    let mut credentials = match std::fs::read(path) {
+        Ok(bytes) => {
+            serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes)
+                .context("existing Grok credential store is invalid; refusing to overwrite it")?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
+        Err(error) => return Err(error).context("could not read existing Grok credential store"),
+    };
+    credentials.insert(format!("{OAUTH_ISSUER}::{OAUTH_CLIENT_ID}"), credential);
     let temporary = path.with_extension(format!("json.tmp-{}", std::process::id()));
     std::fs::write(&temporary, serde_json::to_vec_pretty(&credentials)?)?;
     crate::platform::set_permissions_owner_only(&temporary)?;
-    std::fs::rename(&temporary, &path)?;
+    std::fs::rename(&temporary, path)?;
     Ok(())
 }
 
@@ -233,10 +239,7 @@ pub fn cli_available() -> bool {
 /// Backend presence alone is not authentication and must not make `/login` or
 /// `jcode auth status` claim that Grok Build is ready.
 pub fn has_cached_login() -> bool {
-    if std::env::var("GROK_DEPLOYMENT_KEY")
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
+    if std::env::var("GROK_DEPLOYMENT_KEY").is_ok_and(|value| !value.trim().is_empty()) {
         return true;
     }
     let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
@@ -274,7 +277,7 @@ fn platform_name() -> Result<&'static str> {
 
 fn valid_version(version: &str) -> bool {
     let mut core_and_suffix = version.splitn(2, '-');
-    let core = core_and_suffix.next().unwrap_or_default();
+    let core = core_and_suffix.next().unwrap_or("");
     let suffix_ok = core_and_suffix.next().is_none_or(|suffix| {
         !suffix.is_empty()
             && suffix
@@ -383,6 +386,39 @@ mod tests {
         assert_eq!(
             grok_home(None, None, Some("C:\\Users\\jcode".into())),
             Some(PathBuf::from("C:\\Users\\jcode").join(".grok"))
+        );
+    }
+
+    #[test]
+    fn invalid_existing_credentials_are_not_overwritten() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("auth.json");
+        let original = b"{ corrupt existing credentials";
+        std::fs::write(&path, original).expect("existing store");
+        let error =
+            super::persist_credential(&path, serde_json::json!({"key":"synthetic-new-key"}))
+                .expect_err("corrupt store must block replacement");
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(std::fs::read(&path).expect("original store"), original);
+    }
+
+    #[test]
+    fn saving_credentials_preserves_other_accounts() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let path = directory.path().join("auth.json");
+        std::fs::write(
+            &path,
+            br#"{"other-account":{"key":"synthetic-existing-key"}}"#,
+        )
+        .expect("existing store");
+        super::persist_credential(&path, serde_json::json!({"key":"synthetic-new-key"}))
+            .expect("save credential");
+        let stored: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("store")).expect("valid store");
+        assert_eq!(stored["other-account"]["key"], "synthetic-existing-key");
+        assert_eq!(
+            stored[format!("{}::{}", super::OAUTH_ISSUER, super::OAUTH_CLIENT_ID)]["key"],
+            "synthetic-new-key"
         );
     }
 

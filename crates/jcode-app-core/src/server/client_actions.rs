@@ -706,7 +706,12 @@ fn create_transfer_child_session(
     parent: &Session,
     compaction: Option<crate::session::StoredCompactionState>,
 ) -> anyhow::Result<(String, String)> {
-    let todos = crate::todo::load_todos(parent_session_id).unwrap_or_default();
+    let todos = crate::todo::load_todos(parent_session_id).unwrap_or_else(|_| {
+        crate::logging::warn(
+            "Split session task summary omitted: parent todos could not be loaded",
+        );
+        Vec::new()
+    });
     let mut child = Session::create(Some(parent_session_id.to_string()), None);
     child.messages.clear();
     child.compaction = compaction;

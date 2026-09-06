@@ -1,3 +1,13 @@
+#[path = "bash_shell.rs"]
+mod shell;
+#[cfg(all(test, unix))]
+use shell::shell_single_quote;
+#[cfg(unix)]
+use shell::{build_detached_shell_wrapper, wrap_repo_cargo_commands};
+use shell::{
+    build_shell_command, configure_background_command_stdio, format_command_output, timeout_message,
+};
+
 use super::{StdinInputRequest, Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
 use crate::bus::{
@@ -35,55 +45,6 @@ const BACKGROUND_PROGRESS_GUIDANCE: &str = "For long-running background commands
 const BASH_TOOL_DESCRIPTION: &str = "Run a bash command.";
 const WINDOWS_SHELL_TOOL_DESCRIPTION: &str =
     "Run a Windows cmd.exe command (compatibility name `bash`). Use cmd.exe syntax, not Bash.";
-
-#[cfg(unix)]
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-/// Route ordinary `cargo` invocations (including those inside child scripts)
-/// through the repository wrapper. Besides applying the project's build policy,
-/// that wrapper appends real action timings to rust-actions.jsonl.
-#[cfg(unix)]
-fn wrap_repo_cargo_commands(command: &str, working_dir: Option<&Path>) -> Option<String> {
-    let working_dir = working_dir?;
-    let repo = crate::build::find_repo_in_ancestors(working_dir)?;
-    let wrapper = repo.join("scripts").join("dev_cargo.sh");
-    if !wrapper.is_file() {
-        return None;
-    }
-
-    Some(format!(
-        r#"export JCODE_DEV_CARGO_SCRIPT={wrapper}
-cargo() {{
-  if [[ "${{JCODE_IN_DEV_CARGO:-0}}" == "1" ]]; then
-    command cargo "$@"
-  else
-    JCODE_IN_DEV_CARGO=1 "$JCODE_DEV_CARGO_SCRIPT" "$@"
-  fi
-}}
-export -f cargo
-{command}"#,
-        wrapper = shell_single_quote(&wrapper.to_string_lossy()),
-    ))
-}
-
-/// Build a clear timeout message. The `timeout` param is in milliseconds, which
-/// agents frequently mistake for seconds (e.g. passing 1000 thinking it means
-/// 1000s when it is 1s). Spell out the seconds equivalent and, for suspiciously
-/// short timeouts, hint that the unit is milliseconds so the next attempt uses a
-/// sane value instead of repeating the same mistake.
-fn timeout_message(timeout_ms: u64) -> String {
-    let secs = timeout_ms as f64 / 1000.0;
-    let mut msg = format!("Command timed out after {}ms ({:.1}s)", timeout_ms, secs);
-    if timeout_ms <= 5000 {
-        msg.push_str(
-            ". Note: the `timeout` parameter is in MILLISECONDS, not seconds. \
-             If you meant a longer limit, pass a larger value (e.g. 600000 = 10min) or omit `timeout`.",
-        );
-    }
-    msg
-}
 
 fn progress_ratio_regex() -> Result<&'static regex::Regex> {
     static REGEX: LazyLock<Result<regex::Regex, regex::Error>> = LazyLock::new(|| {
@@ -513,7 +474,10 @@ struct PromotedCommandProgress {
 impl PromotedCommandProgress {
     async fn record(&self, update: ProgressLineUpdate) {
         let direct = {
-            let mut pending = self.pending.lock().expect("progress mutex poisoned");
+            let mut pending = self.pending.lock().unwrap_or_else(|poisoned| {
+                crate::logging::warn("Recovering pending command progress after a poisoned mutex");
+                poisoned.into_inner()
+            });
             if self.task_id.get().is_none() {
                 *pending = Some(update);
                 None
@@ -530,7 +494,14 @@ impl PromotedCommandProgress {
 
     async fn attach_task(&self, task_id: &str) {
         let _ = self.task_id.set(task_id.to_string());
-        let pending = self.pending.lock().expect("progress mutex poisoned").take();
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| {
+                crate::logging::warn("Recovering pending command progress after a poisoned mutex");
+                poisoned.into_inner()
+            })
+            .take();
         if let Some(update) = pending {
             apply_progress_update(task_id, update).await;
         }
@@ -622,13 +593,6 @@ fn tool_scratch_dir() -> Option<std::path::PathBuf> {
     Some(dir)
 }
 
-#[cfg(not(windows))]
-fn configure_tool_scratch(command: &mut TokioCommand) {
-    if let Some(dir) = tool_scratch_dir() {
-        command.env("TMPDIR", &dir).env("JCODE_SCRATCH_DIR", dir);
-    }
-}
-
 #[cfg(unix)]
 struct ProcessGroupKillGuard {
     pid: Option<u32>,
@@ -654,152 +618,9 @@ impl Drop for ProcessGroupKillGuard {
     }
 }
 
-fn build_shell_command(cmd_str: &str) -> TokioCommand {
-    #[cfg(windows)]
-    {
-        let mut cmd = TokioCommand::new("cmd.exe");
-        // cmd.exe does not use the standard C runtime argument-decoding rules.
-        // Passing the command through `arg` makes Rust escape nested quotes for
-        // CommandLineToArgvW, which can corrupt commands such as:
-        //
-        //     gh issue create --title "text with spaces"
-        //
-        // Tokio's `raw_arg` is specifically provided for `cmd.exe /C`. Wrap the
-        // full command in the outer quotes expected by cmd so its inner quotes
-        // reach child programs intact. `/D` disables AutoRun hooks and `/S`
-        // selects the documented quote handling used with this form.
-        cmd.args(["/D", "/S", "/C"])
-            .raw_arg(format!("\"{cmd_str}\""));
-        cmd
-    }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = TokioCommand::new("bash");
-        cmd.arg("-c").arg(cmd_str);
-        configure_tool_scratch(&mut cmd);
-        cmd
-    }
-}
-
-fn configure_background_command_stdio(command: &mut TokioCommand) {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-}
-
-#[cfg(unix)]
-fn build_detached_shell_wrapper(command: &str) -> StdCommand {
-    let mut cmd = StdCommand::new("bash");
-    cmd.arg("-lc")
-        .arg(
-            r#"eval "$JCODE_RELOAD_DETACH_COMMAND"; status=$?; printf '\n--- Command finished with exit code: %s ---\n' "$status"; exit "$status""#,
-        )
-        .env("JCODE_RELOAD_DETACH_COMMAND", command);
-    if let Some(dir) = tool_scratch_dir() {
-        cmd.env("TMPDIR", &dir).env("JCODE_SCRATCH_DIR", dir);
-    }
-    cmd
-}
-
-fn format_command_output(mut output: String, exit_code: Option<i32>) -> String {
-    if output.len() > MAX_OUTPUT_LEN {
-        output = truncate_str(&output, MAX_OUTPUT_LEN).to_string();
-        output.push_str("\n... (output truncated)");
-    }
-
-    if let Some(code) = exit_code.filter(|code| *code != 0) {
-        output.push_str(&format!("\n\nExit code: {}", code));
-    }
-
-    if output.trim().is_empty() {
-        "Command completed successfully (no output)".to_string()
-    } else {
-        output
-    }
-}
-
 #[cfg(test)]
-mod utf8_truncation_tests {
-    #[cfg(any(windows, unix))]
-    use super::build_shell_command;
-    use super::format_command_output;
-
-    #[test]
-    fn format_command_output_truncates_on_utf8_boundary() {
-        let input = format!("{}é", "a".repeat(29_999));
-        let output = format_command_output(input, None);
-        assert!(output.ends_with("\n... (output truncated)"));
-        assert!(output.starts_with(&"a".repeat(29_999)));
-    }
-
-    #[cfg(windows)]
-    #[tokio::test]
-    async fn build_shell_command_uses_cmd_and_executes_command() {
-        let output = build_shell_command("echo hello-from-cmd")
-            .output()
-            .await
-            .expect("run cmd command");
-        assert!(output.status.success(), "cmd command should succeed");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.to_ascii_lowercase().contains("hello-from-cmd"),
-            "unexpected stdout: {}",
-            stdout
-        );
-
-        let probe_path = std::env::temp_dir().join(format!(
-            "jcode-cmd-quoting-probe-{}.cmd",
-            std::process::id()
-        ));
-        std::fs::write(
-            &probe_path,
-            concat!(
-                "@echo off\r\n",
-                "if \"%~1\"==\"text with spaces\" if \"%~2\"==\"\" (\r\n",
-                "  echo quoted-argument-ok\r\n",
-                "  exit /b 0\r\n",
-                ")\r\n",
-                "echo first=[%~1] second=[%~2]\r\n",
-                "exit /b 1\r\n",
-            ),
-        )
-        .expect("write cmd quoting probe");
-
-        let quoted_command = format!("call \"{}\" \"text with spaces\"", probe_path.display());
-        let quoted_output = build_shell_command(&quoted_command)
-            .output()
-            .await
-            .expect("run cmd quoting probe");
-        let _ = std::fs::remove_file(&probe_path);
-        let quoted_stdout = String::from_utf8_lossy(&quoted_output.stdout);
-        let quoted_stderr = String::from_utf8_lossy(&quoted_output.stderr);
-        assert!(
-            quoted_output.status.success(),
-            "quoted argument should remain one child-process argument; stdout={quoted_stdout:?} stderr={quoted_stderr:?}"
-        );
-        assert!(
-            quoted_stdout.contains("quoted-argument-ok"),
-            "unexpected quoted-command stdout: {quoted_stdout}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn build_shell_command_uses_disk_backed_scratch_directory() {
-        let expected = super::tool_scratch_dir().expect("jcode scratch directory");
-        let output = build_shell_command("printf '%s\\n%s\\n' \"$TMPDIR\" \"$JCODE_SCRATCH_DIR\"")
-            .output()
-            .await
-            .expect("run bash command");
-        assert!(output.status.success(), "bash command should succeed");
-        let stdout = String::from_utf8(output.stdout).expect("utf-8 scratch paths");
-        let paths = stdout.lines().collect::<Vec<_>>();
-        let expected = expected.to_string_lossy().into_owned();
-        assert_eq!(paths, vec![expected.as_str(), expected.as_str()]);
-        assert!(std::path::Path::new(&expected).is_dir());
-    }
-}
+#[path = "bash_utf8_tests.rs"]
+mod utf8_truncation_tests;
 
 pub struct BashTool;
 

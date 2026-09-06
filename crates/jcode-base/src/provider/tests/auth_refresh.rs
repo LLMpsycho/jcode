@@ -92,6 +92,7 @@ fn test_on_auth_changed_hot_initializes_openai_and_marks_routes_available() {
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -161,6 +162,7 @@ fn test_on_auth_changed_refreshes_existing_openai_provider_credentials() {
             initial_provider: Some(ActiveProvider::OpenAI),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -200,6 +202,7 @@ fn test_on_auth_changed_hot_initializes_anthropic_and_marks_routes_available() {
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -247,6 +250,7 @@ fn test_on_auth_changed_hot_initializes_anthropic_from_api_key_and_marks_routes_
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -313,6 +317,7 @@ fn test_anthropic_model_routes_keep_plain_4_6_available_without_extra_usage() {
             initial_provider: Some(ActiveProvider::Claude),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -380,6 +385,7 @@ fn test_on_auth_changed_hot_initializes_openrouter_and_marks_routes_available() 
                     initial_provider: Some(ActiveProvider::OpenRouter),
                     routes_memo: std::sync::Mutex::new(None),
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
 
@@ -422,6 +428,7 @@ fn test_on_auth_changed_preserves_openrouter_model_and_explicit_provider_pin() {
                     initial_provider: Some(ActiveProvider::OpenRouter),
                     routes_memo: std::sync::Mutex::new(None),
                     route_pinned: std::sync::atomic::AtomicBool::new(false),
+                    private_session: std::sync::atomic::AtomicBool::new(false),
                     post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 };
 
@@ -481,6 +488,7 @@ fn test_on_auth_changed_hot_initializes_copilot_and_marks_routes_available() {
                 initial_provider: Some(ActiveProvider::Copilot),
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 
@@ -564,6 +572,7 @@ fn test_on_auth_changed_hot_initializes_antigravity_when_tokens_exist_but_are_ex
             initial_provider: Some(ActiveProvider::Antigravity),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -596,6 +605,7 @@ fn test_multi_provider_antigravity_routes_do_not_include_legacy_duplicate_entrie
         initial_provider: Some(ActiveProvider::Antigravity),
         routes_memo: std::sync::Mutex::new(None),
         route_pinned: std::sync::atomic::AtomicBool::new(false),
+        private_session: std::sync::atomic::AtomicBool::new(false),
         post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
     };
 
@@ -732,6 +742,7 @@ fn test_on_auth_changed_hot_initializes_gemini_and_marks_routes_available() {
             initial_provider: Some(ActiveProvider::Gemini),
             routes_memo: std::sync::Mutex::new(None),
             route_pinned: std::sync::atomic::AtomicBool::new(false),
+            private_session: std::sync::atomic::AtomicBool::new(false),
             post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
@@ -777,6 +788,7 @@ fn test_on_auth_changed_hot_initializes_cursor_and_marks_routes_available() {
                 initial_provider: Some(ActiveProvider::Cursor),
                 routes_memo: std::sync::Mutex::new(None),
                 route_pinned: std::sync::atomic::AtomicBool::new(false),
+                private_session: std::sync::atomic::AtomicBool::new(false),
                 post_auth_refreshes_pending: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             };
 

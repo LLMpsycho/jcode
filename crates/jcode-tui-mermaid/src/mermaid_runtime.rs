@@ -348,11 +348,16 @@ fn probe_picker() -> Picker {
 /// just blocks on the same `LazyLock`.
 pub(crate) fn prewarm_svg_font_db_async() {
     SVG_FONT_DB_PREWARM_STARTED.get_or_init(|| {
-        let _ = std::thread::Builder::new()
+        if let Err(error) = std::thread::Builder::new()
             .name("jcode-mermaid-fontdb-prewarm".to_string())
             .spawn(|| {
-                let _ = &*SVG_FONT_DB;
-            });
+                LazyLock::force(&SVG_FONT_DB);
+            })
+        {
+            log_warn(&format!(
+                "Mermaid font prewarm thread could not start: {error}"
+            ));
+        }
     });
 }
 

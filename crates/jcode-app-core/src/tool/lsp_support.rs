@@ -80,7 +80,12 @@ pub(super) fn select_server(
     }
     match config.servers.len() {
         0 => bail!("no LSP servers are configured"),
-        1 => Ok(config.servers.keys().next().cloned().unwrap_or_default()),
+        1 => config
+            .servers
+            .keys()
+            .next()
+            .cloned()
+            .ok_or_else(|| anyhow!("configured LSP server disappeared")),
         _ => bail!("this LSP action requires `server` when no file selects a language"),
     }
 }

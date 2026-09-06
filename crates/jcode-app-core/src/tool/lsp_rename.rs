@@ -31,6 +31,7 @@ struct RenameTarget {
     original: Vec<u8>,
     replacement: Vec<u8>,
     guarded: GuardedFile,
+    expected_revision: jcode_edit_types::FileRevision,
     edit_count: usize,
     staged_replacement: Option<TempPath>,
     staged_rollback: Option<TempPath>,
@@ -92,12 +93,17 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         let plan = apply_text_edits(original_text, &edits)?;
         let replacement = plan.updated.into_bytes();
         let permissions = metadata.permissions();
+        let expected_revision = guarded
+            .revision_before
+            .clone()
+            .context("existing rename target has no recorded revision; no bytes were written")?;
         targets.push(RenameTarget {
             relative_path,
             path: path.clone(),
             original: original.clone(),
             replacement: replacement.clone(),
             guarded,
+            expected_revision,
             edit_count: plan.edit_count,
             staged_replacement: Some(stage_file(&path, &replacement, &permissions)?),
             staged_rollback: Some(stage_file(&path, &original, &permissions)?),
@@ -119,15 +125,17 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         .iter()
         .map(|target| SnapshotWrite {
             relative_path: target.relative_path.clone(),
-            expected_revision: target
-                .guarded
-                .revision_before
-                .clone()
-                .expect("existing rename target must have a revision"),
+            expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
-            mtime_ns: std::fs::metadata(&target.path)
-                .ok()
-                .and_then(|metadata| modified_ns(&metadata)),
+            mtime_ns: std::fs::metadata(&target.path).map_or_else(
+                |_| {
+                    crate::logging::warn(
+                        "Renamed file metadata unavailable; retaining content revision",
+                    );
+                    None
+                },
+                |metadata| modified_ns(&metadata),
+            ),
         })
         .collect();
     let records = match ledger.record_writes(&ctx.session_id, root, writes).await {
@@ -135,10 +143,10 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         Err(error) => {
             let published = targets.len();
             let rollback = rollback_prefix(&mut targets, published);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!("semantic rename ledger update failed: {error}{suffix}");
         }
     };
@@ -232,6 +240,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
     let source_guard = transaction
         .preflight_existing(source_path, &source_original, RequiredCoverage::FullFile)
         .await?;
+    let source_revision = source_guard
+        .revision_before
+        .clone()
+        .context("existing file rename source has no recorded revision; no bytes were written")?;
     let destination_guard = transaction.prepare_new(destination_path)?;
 
     let mut targets = Vec::new();
@@ -260,12 +272,17 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         };
         let plan = apply_text_edits(original_text, &edits)?;
         let replacement = plan.updated.into_bytes();
+        let expected_revision = guarded
+            .revision_before
+            .clone()
+            .context("existing rename target has no recorded revision; no bytes were written")?;
         targets.push(RenameTarget {
             relative_path,
             path: path.clone(),
             original: original.clone(),
             replacement: replacement.clone(),
             guarded,
+            expected_revision,
             edit_count: plan.edit_count,
             staged_replacement: Some(stage_file(&path, &replacement, &metadata.permissions())?),
             staged_rollback: Some(stage_file(&path, &original, &metadata.permissions())?),
@@ -296,10 +313,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
     if let Err(error) = rename_no_replace(source_path, destination_path) {
         let published = targets.len();
         let rollback = rollback_prefix(&mut targets, published);
-        let suffix = rollback
-            .err()
-            .map(|rollback| format!("; rollback also failed: {rollback}"))
-            .unwrap_or_default();
+        let suffix = rollback.map_or_else(
+            |rollback| format!("; rollback also failed: {rollback}"),
+            |()| String::new(),
+        );
         bail!("failed to rename file: {error}{suffix}");
     }
 
@@ -311,28 +328,33 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         .iter()
         .map(|target| SnapshotWrite {
             relative_path: target.relative_path.clone(),
-            expected_revision: target
-                .guarded
-                .revision_before
-                .clone()
-                .expect("existing file rename edit target must have a revision"),
+            expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
-            mtime_ns: std::fs::metadata(&target.path)
-                .ok()
-                .and_then(|metadata| modified_ns(&metadata)),
+            mtime_ns: std::fs::metadata(&target.path).map_or_else(
+                |_| {
+                    crate::logging::warn(
+                        "Renamed file metadata unavailable; retaining content revision",
+                    );
+                    None
+                },
+                |metadata| modified_ns(&metadata),
+            ),
         })
         .collect();
     let movement = SnapshotMove {
         source_relative_path: source_guard.relative_path.clone(),
-        expected_revision: source_guard
-            .revision_before
-            .clone()
-            .expect("existing file rename source must have a revision"),
+        expected_revision: source_revision,
         destination_relative_path: destination_guard.relative_path.clone(),
         contents: source_replacement,
-        mtime_ns: std::fs::metadata(destination_path)
-            .ok()
-            .and_then(|metadata| modified_ns(&metadata)),
+        mtime_ns: std::fs::metadata(destination_path).map_or_else(
+            |_| {
+                crate::logging::warn(
+                    "Rename destination metadata unavailable; retaining content revision",
+                );
+                None
+            },
+            |metadata| modified_ns(&metadata),
+        ),
     };
     let (destination_record, write_records) = match ledger
         .record_move_with_writes(&ctx.session_id, root, movement, writes)
@@ -350,10 +372,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
                         "failed to restore source path: {rename_error}"
                     ))
                 });
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!("file rename ledger update failed: {error}{suffix}");
         }
     };
@@ -411,7 +433,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
             .iter()
             .find(|target| target.path == source_path)
             .map(|target| target.edit_count)
-            .unwrap_or_default(),
+            .unwrap_or(0),
     })];
     files.extend(related_files);
     let edit_count = targets.iter().map(|target| target.edit_count).sum();
@@ -501,10 +523,10 @@ fn publish_all(targets: &mut [RenameTarget]) -> Result<()> {
             .context("missing staged semantic rename")?;
         if let Err(error) = staged.persist(&targets[index].path) {
             let rollback = rollback_prefix(targets, index);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!(
                 "failed to publish semantic rename for {}: {}{}",
                 targets[index].relative_path,
@@ -535,11 +557,18 @@ fn rollback_prefix(targets: &mut [RenameTarget], published: usize) -> Result<()>
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> Option<u128> {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+    match metadata.modified() {
+        Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => Some(duration.as_nanos()),
+            Err(_) => None, // Pre-epoch timestamps cannot be represented; content revisions still guard writes.
+        },
+        Err(_) => {
+            crate::logging::debug(
+                "File modification time unavailable; using content revision only",
+            );
+            None
+        }
+    }
 }
 
 fn path_entry_exists(path: &Path) -> Result<bool> {
@@ -612,7 +641,14 @@ fn path_cstring(path: &Path) -> std::io::Result<CString> {
 fn rename_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::hard_link(source, destination)?;
     if let Err(error) = std::fs::remove_file(source) {
-        let _ = std::fs::remove_file(destination);
+        if let Err(rollback_error) = std::fs::remove_file(destination) {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "file rename failed: {error}; destination rollback also failed: {rollback_error}"
+                ),
+            ));
+        }
         return Err(error);
     }
     Ok(())

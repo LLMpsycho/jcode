@@ -1,5 +1,6 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
+mod advisor_live;
 mod compaction;
 mod environment;
 mod inline_tail;
@@ -12,6 +13,7 @@ mod role_model;
 mod status;
 mod streaming;
 mod tools;
+mod turn_completion;
 mod turn_execution;
 mod turn_loops;
 mod turn_streaming_mpsc;
@@ -262,6 +264,8 @@ pub struct Agent {
     /// Prevent duplicate content uploads when shutdown/finalization is invoked
     /// more than once for the same in-memory agent.
     transcript_telemetry_sent: bool,
+    /// Ephemeral observation cursor and original objective for the active primary turn.
+    advisor_turn: Option<advisor_live::AdvisorTurnState>,
 }
 
 impl Agent {
@@ -332,6 +336,7 @@ impl Agent {
             inline_output_tap: false,
             inline_tail: inline_tail::InlineTailBuffer::default(),
             transcript_telemetry_sent: false,
+            advisor_turn: None,
         };
         agent.refresh_profile_tool_policy();
         agent
@@ -578,6 +583,7 @@ impl Agent {
     }
 
     fn reset_runtime_state_for_session_change(&mut self) {
+        self.advisor_turn = None;
         self.active_skill = None;
         self.last_upstream_provider = None;
         self.last_connection_type = None;

@@ -40,5 +40,6 @@ mod cases;
 mod role_model;
 
 mod child_persistence;
+mod handoff_persistence;
 
 mod agent_profile;

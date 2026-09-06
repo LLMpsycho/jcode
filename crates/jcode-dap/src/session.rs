@@ -387,7 +387,8 @@ struct ContinuedBody {
     #[serde(default)]
     thread_id: Option<i64>,
     #[serde(default = "default_true")]
-    all_threads_continued: bool,
+    #[serde(rename = "allThreadsContinued")]
+    _all_threads_continued: bool,
 }
 
 fn default_true() -> bool {
@@ -468,7 +469,6 @@ pub(crate) fn parse_event(event: Event) -> Result<SessionEvent> {
                         )
                     })?;
                 }
-                let _ = parsed.all_threads_continued;
             }
             Ok(SessionEvent::Continued)
         }

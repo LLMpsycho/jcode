@@ -239,7 +239,12 @@ pub(super) fn handle_bus_event(
                 )
             });
             app.session.model = Some(model.clone());
-            let _ = app.session.save();
+            if let Err(error) = app.session.save() {
+                crate::logging::warn(&format!("Failed to save local session: {error}"));
+                app.push_display_message(DisplayMessage::error(format!(
+                    "Session changes could not be saved: {error}"
+                )));
+            }
             if !app.auth_catalog_refresh_pending {
                 app.push_display_message(crate::tui::DisplayMessage::system(message));
             }
@@ -376,7 +381,12 @@ fn handle_manual_tool_completed(app: &mut App, result: ManualToolCompleted) {
         }],
         Some(result.duration_ms),
     );
-    let _ = app.session.save();
+    if let Err(error) = app.session.save() {
+        crate::logging::warn(&format!("Failed to save local session: {error}"));
+        app.push_display_message(DisplayMessage::error(format!(
+            "Session changes could not be saved: {error}"
+        )));
+    }
 
     if result.tool_call.name == "subagent" {
         app.subagent_status = None;
@@ -469,7 +479,12 @@ fn handle_background_task_completed(app: &mut App, task: BackgroundTaskCompleted
             }],
             Some(StoredDisplayRole::BackgroundTask),
         );
-        let _ = app.session.save();
+        if let Err(error) = app.session.save() {
+            crate::logging::warn(&format!("Failed to save local session: {error}"));
+            app.push_display_message(DisplayMessage::error(format!(
+                "Session changes could not be saved: {error}"
+            )));
+        }
 
         if task.wake {
             app.pending_turn = true;
@@ -529,7 +544,12 @@ fn handle_background_task_stalled(app: &mut App, task: crate::bus::BackgroundTas
             }],
             Some(StoredDisplayRole::BackgroundTask),
         );
-        let _ = app.session.save();
+        if let Err(error) = app.session.save() {
+            crate::logging::warn(&format!("Failed to save local session: {error}"));
+            app.push_display_message(DisplayMessage::error(format!(
+                "Session changes could not be saved: {error}"
+            )));
+        }
 
         if task.wake {
             app.pending_turn = true;

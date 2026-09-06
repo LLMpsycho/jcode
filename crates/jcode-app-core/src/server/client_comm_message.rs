@@ -385,7 +385,7 @@ pub(super) async fn handle_comm_message(
         }
 
         let scope_value = if scope == "channel" {
-            format!("#{}", channel.clone().unwrap_or_default())
+            format!("#{}", channel.as_deref().unwrap_or(""))
         } else {
             scope.to_string()
         };

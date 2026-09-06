@@ -689,7 +689,8 @@ enabled = false
 # Env overrides: JCODE_AUTOJUDGE_MODEL, JCODE_AUTOJUDGE_EFFORT
 
 [advisor]
-# Internal second-model review after a primary turn. Enabled by default.
+# Independent advisors observe visible primary steps and investigate with read-only tools.
+# Enabled by default; choose a model and effort with /advisor.
 enabled = true
 # interactive | selfdev-guardian | final-review
 mode = "interactive"
@@ -710,13 +711,27 @@ max_notes_per_turn = 1
 review_every_n_turns = 1
 # Lifetime provider review budget, preserved across restart and history resets.
 max_reviews_per_session = 100
-# Skip this many completed turns after ack/dismiss (0 disables, capped at 100).
+# Suppress the same handled concern for this many turns; observation continues.
 handled_note_immunity_turns = 2
-# Minimum severity allowed to mark a future risky operation as blocked.
+# After delivered steering, downgrade further concerns to asides for N turns.
+# Blockers bypass this cooldown; 0 disables it (capped at 100).
+interrupt_immunity_turns = 3
+# Guardian modes only: severity that can block a future effectful operation.
 block_on_severity = "blocker"
 # Redact recognized credentials and secret-like values before advisor context
 # is retained or sent.
 redact = true
+# Optional shared specialization and exact authenticated model route:
+# instructions = "Check correctness and verify acceptance criteria."
+# route = { model = "catalog-model", api_method = "openai-oauth", provider_label = "OpenAI" }
+# effort = "high"
+# Empty roster retains one default advisor. Name up to eight independent advisors:
+# [[advisor.roster]]
+# name = "security"
+# instructions = "Inspect authorization and data boundaries."
+# enabled = true
+# Use /advisor model security to choose its model and effort for this session.
+# Project .jcode/advisor.toml accepts instructions and [[roster]] overrides by name.
 
 [ambient]
 # Ambient mode: background agent that maintains your codebase

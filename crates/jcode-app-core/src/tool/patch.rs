@@ -45,7 +45,6 @@ struct PatchInput {
 struct PreparedPatch {
     path: String,
     resolved_path: std::path::PathBuf,
-    old_content: String,
     new_content: Option<String>,
     message: String,
     diff: String,
@@ -136,7 +135,6 @@ impl Tool for PatchTool {
             prepared.push(PreparedPatch {
                 path: patch.path.clone(),
                 resolved_path,
-                old_content,
                 new_content,
                 message,
                 diff,
@@ -191,7 +189,6 @@ impl Tool for PatchTool {
                 guarded.append_warnings(&mut result);
             }
             results.push(result);
-            let _ = prepared.old_content;
         }
 
         let mut body = results.join("\n\n");

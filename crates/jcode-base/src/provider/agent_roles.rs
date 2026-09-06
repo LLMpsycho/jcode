@@ -46,11 +46,10 @@ pub fn fork_for_agent_role(
         !model.is_empty()
             && !model.eq_ignore_ascii_case("inherit")
             && !model.eq_ignore_ascii_case("coordinator")
-    }) {
-        if fork.model() != model {
-            fork.set_model(model)
-                .context("Could not select the configured agent model")?;
-        }
+    }) && fork.model() != model
+    {
+        fork.set_model(model)
+            .context("Could not select the configured agent model")?;
     }
 
     if let Some(effort) = effort.map(str::trim).filter(|effort| !effort.is_empty()) {

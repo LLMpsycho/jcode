@@ -53,7 +53,17 @@ fn advisor_wire_controls_match_the_production_protocol() {
             reasoning_effort: Some("high".into()),
         },
         daemon::AdvisorRequest::UsePrimary,
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|request| {
+        [
+            request.clone(),
+            daemon::AdvisorRequest::ForAdvisor {
+                name: "security".into(),
+                request: Box::new(request),
+            },
+        ]
+    }) {
         let wire = serde_json::to_value(&request).unwrap();
         let public: AdvisorRequest = serde_json::from_value(wire.clone()).unwrap();
         let frame = ClientFrame::new(
@@ -230,6 +240,29 @@ fn advisor_controls_reject_wrong_sessions_and_malformed_requests_locally() {
         (attached(), absent),
         (attached(), control(4, json!({"action": "dismiss"}))),
         (attached(), control(4, json!({"action": "anything"}))),
+        (
+            attached(),
+            control(
+                4,
+                json!({
+                    "action": "for_advisor", "name": "security",
+                    "request": {"action": "select_model", "selection": bad_runtime},
+                }),
+            ),
+        ),
+        (
+            attached(),
+            control(
+                4,
+                json!({
+                    "action": "for_advisor", "name": "security",
+                    "request": {
+                        "action": "for_advisor", "name": "performance",
+                        "request": {"action": "status"},
+                    },
+                }),
+            ),
+        ),
         (
             attached(),
             control(
