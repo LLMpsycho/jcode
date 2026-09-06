@@ -309,7 +309,9 @@ impl AntigravityProvider {
             None => {
                 let project_id = antigravity_auth::fetch_project_id(&tokens.access_token).await?;
                 tokens.project_id = Some(project_id.clone());
-                let _ = antigravity_auth::save_tokens(&tokens);
+                if antigravity_auth::save_tokens(&tokens).is_err() {
+                    jcode_base::logging::warn("Antigravity project selection could not be cached");
+                }
                 project_id
             }
         };
@@ -370,12 +372,16 @@ impl AntigravityProvider {
             .request
             .system_instruction
             .as_ref()
-            .and_then(|system| serde_json::to_value(system).ok());
+            .map(serde_json::to_value)
+            .transpose()
+            .context("Antigravity system instruction serialization failed")?;
         let tools_value = request
             .request
             .tools
             .as_ref()
-            .and_then(|tools| serde_json::to_value(tools).ok());
+            .map(serde_json::to_value)
+            .transpose()
+            .context("Antigravity tool serialization failed")?;
         let payload = json!({
             "model": &request.model,
             "contents": contents_value,

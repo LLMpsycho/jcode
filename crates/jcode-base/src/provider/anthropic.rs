@@ -87,10 +87,7 @@ pub const AVAILABLE_MODELS: &[&str] = &[
 ];
 
 pub fn load_anthropic_api_key() -> Result<String> {
-    if std::env::var("JCODE_ANTHROPIC_AUTH")
-        .ok()
-        .is_some_and(|value| value.eq_ignore_ascii_case("none"))
-    {
+    if std::env::var("JCODE_ANTHROPIC_AUTH").is_ok_and(|value| value.eq_ignore_ascii_case("none")) {
         return Ok(String::new());
     }
     if let Ok(env_name) = std::env::var("JCODE_ANTHROPIC_API_KEY_NAME") {
