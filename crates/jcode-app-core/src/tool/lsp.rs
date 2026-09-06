@@ -151,7 +151,6 @@ impl Tool for LspTool {
 
     async fn execute(&self, input: Value, ctx: ToolContext) -> Result<ToolOutput> {
         let params: LspInput = serde_json::from_value(input)?;
-        let _ = &params.intent;
         let config = self.config();
         let root = workspace_root(&ctx)?;
 
@@ -241,8 +240,9 @@ impl Tool for LspTool {
                     .capabilities()
                     .get("capabilities")
                     .and_then(Value::as_object)
-                    .map(|capabilities| capabilities.keys().cloned().collect::<Vec<_>>())
-                    .unwrap_or_default();
+                    .map_or_else(Vec::new, |capabilities| {
+                        capabilities.keys().cloned().collect::<Vec<_>>()
+                    });
                 let text = if keys.is_empty() {
                     "No capabilities reported.".to_owned()
                 } else {
@@ -259,7 +259,7 @@ impl Tool for LspTool {
                 ))
             }
             LspAction::WorkspaceSymbols => {
-                let query = params.query.as_deref().unwrap_or_default();
+                let query = params.query.as_deref().unwrap_or("");
                 let value = workspace.workspace_symbols(query).await?;
                 let (text, count) = render_symbols(&value, &root);
                 Ok(shaped_output(
@@ -300,8 +300,7 @@ impl Tool for LspTool {
                         };
                         let items = snapshot
                             .as_ref()
-                            .map(|snapshot| snapshot.items.as_slice())
-                            .unwrap_or_default();
+                            .map_or(&[][..], |snapshot| snapshot.items.as_slice());
                         let text = render_diagnostics(items, &root, file);
                         Ok(shaped_output(
                             action,
@@ -533,9 +532,15 @@ impl Tool for LspTool {
                             let applied = match applied {
                                 Ok(applied) => applied,
                                 Err(error) => {
-                                    let _ = workspace
+                                    if workspace
                                         .sync_document_from_disk(file, document_language_id)
-                                        .await;
+                                        .await
+                                        .is_err()
+                                    {
+                                        crate::logging::warn(
+                                            "LSP document resync failed after rejected rename; diagnostics may be stale",
+                                        );
+                                    }
                                     return Err(error);
                                 }
                             };
@@ -628,14 +633,17 @@ async fn render_status(
     let mut lines = Vec::new();
     for (id, server) in &config.servers {
         let discovered = discover_executable(&server.command, path.as_deref(), root);
-        let runtime = pool
-            .status(root, identity.clone(), id, config)
-            .await
-            .ok()
-            .flatten();
+        let (runtime, status_error) = match pool.status(root, identity.clone(), id, config).await {
+            Ok(runtime) => (runtime, false),
+            Err(_) => {
+                crate::logging::warn("LSP runtime status unavailable");
+                (None, true)
+            }
+        };
         let (status, exit_code) = match runtime.as_ref().map(|runtime| &runtime.process_status) {
             Some(jcode_lsp::ProcessStatus::Running) => ("running", None),
             Some(jcode_lsp::ProcessStatus::Exited { code }) => ("exited", *code),
+            None if status_error => ("unavailable", None),
             None if discovered.is_ok() => ("available", None),
             None => ("missing", None),
         };
@@ -650,15 +658,16 @@ async fn render_status(
             .filter(|stderr| !stderr.trim().is_empty());
         lines.push(format!(
             "{id}: {status}{}{}",
-            discovered
-                .as_ref()
-                .ok()
-                .map(|path| format!(" ({})", path.display()))
-                .unwrap_or_default(),
+            match discovered.as_ref() {
+                Ok(path) => format!(" ({})", path.display()),
+                Err(error) => format!(" ({})", crate::message::redact_secrets(&error.to_string())),
+            },
             recent_stderr
                 .as_ref()
-                .map(|stderr| format!("\n  recent stderr: {}", stderr.replace('\n', "\n  ")))
-                .unwrap_or_default()
+                .map_or_else(String::new, |stderr| format!(
+                    "\n  recent stderr: {}",
+                    stderr.replace('\n', "\n  ")
+                ))
         ));
         statuses.push(json!({
             "id": id,
@@ -824,8 +833,7 @@ fn render_signature_help(value: &Value) -> (String, usize) {
     let signatures = value
         .get("signatures")
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
+        .map_or(&[][..], Vec::as_slice);
     let lines = signatures
         .iter()
         .filter_map(|signature| signature.get("label").and_then(Value::as_str))
@@ -840,7 +848,7 @@ fn render_signature_help(value: &Value) -> (String, usize) {
 }
 
 fn render_call_hierarchy(value: &Value, root: &Path, action: LspAction) -> (String, usize) {
-    let entries = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let entries = value.as_array().map_or(&[][..], Vec::as_slice);
     let key = if matches!(action, LspAction::IncomingCalls) {
         "from"
     } else {
@@ -864,7 +872,7 @@ fn render_call_hierarchy(value: &Value, root: &Path, action: LspAction) -> (Stri
 }
 
 fn render_code_actions(value: &Value) -> (String, Vec<Value>) {
-    let actions = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    let actions = value.as_array().map_or(&[][..], Vec::as_slice);
     let summaries = actions
         .iter()
         .enumerate()
@@ -887,12 +895,12 @@ fn render_code_actions(value: &Value) -> (String, Vec<Value>) {
                 .get("kind")
                 .and_then(Value::as_str)
                 .map(|kind| format!(" [{kind}]"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             let disabled = action
                 .get("disabled_reason")
                 .and_then(Value::as_str)
                 .map(|reason| format!(" (disabled: {reason})"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             Some(format!("{index}. {title}{kind}{disabled}"))
         })
         .collect::<Vec<_>>();
@@ -908,14 +916,19 @@ fn select_code_action(value: &Value, selector: &str) -> Result<Value> {
         .as_array()
         .ok_or_else(|| anyhow!("language server returned an invalid code-action list"))?;
     let selector = selector.trim();
-    let selected = selector
+    // A non-numeric selector is an exact title, not a malformed index.
+    let by_index = match selector
         .strip_prefix('#')
         .unwrap_or(selector)
         .parse::<usize>()
-        .ok()
-        .and_then(|index| index.checked_sub(1))
-        .and_then(|index| actions.get(index))
-        .cloned()
+    {
+        Ok(index) => index
+            .checked_sub(1)
+            .and_then(|index| actions.get(index))
+            .cloned(),
+        Err(_) => None,
+    };
+    let selected = by_index
         .or_else(|| {
             let matches = actions
                 .iter()
@@ -1026,7 +1039,7 @@ fn collect_symbols(value: &Value, root: &Path, lines: &mut Vec<String>, depth: u
                 .and_then(|location| location.get("uri"))
                 .and_then(Value::as_str)
                 .map(|uri| format!(" — {}", display_uri(uri, root)))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             lines.push(format!("{}{}{location}", "  ".repeat(depth), name));
         }
         if let Some(children) = item.get("children") {
@@ -1036,16 +1049,17 @@ fn collect_symbols(value: &Value, root: &Path, lines: &mut Vec<String>, depth: u
 }
 
 fn display_uri(uri: &str, root: &Path) -> String {
-    url::Url::parse(uri)
-        .ok()
-        .and_then(|uri| uri.to_file_path().ok())
-        .map(|path| {
-            path.strip_prefix(root)
+    match url::Url::parse(uri) {
+        Ok(parsed) => match parsed.to_file_path() {
+            Ok(path) => path
+                .strip_prefix(root)
                 .unwrap_or(&path)
                 .display()
-                .to_string()
-        })
-        .unwrap_or_else(|| uri.to_owned())
+                .to_string(),
+            Err(()) => uri.to_owned(), // Virtual documents retain their original non-file URI.
+        },
+        Err(_) => uri.to_owned(), // Preserve malformed server content visibly for diagnosis.
+    }
 }
 
 pub(crate) async fn attach_post_edit_feedback(
@@ -1064,7 +1078,15 @@ pub(crate) async fn attach_post_edit_feedback(
     let Some(root) = ctx
         .working_dir
         .as_deref()
-        .and_then(|root| root.canonicalize().ok())
+        .and_then(|root| match root.canonicalize() {
+            Ok(root) => Some(root),
+            Err(_) => {
+                crate::logging::warn(
+                    "Post-edit LSP verification unavailable: workspace cannot be resolved",
+                );
+                None
+            }
+        })
     else {
         return;
     };

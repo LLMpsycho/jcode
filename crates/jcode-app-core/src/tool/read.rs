@@ -358,9 +358,24 @@ impl ReadTool {
     ) -> Option<String> {
         let ledger = self.file_snapshots.as_ref()?;
         let workspace_root = ctx.working_dir.as_deref()?;
-        let canonical_root = std::fs::canonicalize(workspace_root).ok()?;
-        let canonical_path = std::fs::canonicalize(path).ok()?;
-        let relative_path = canonical_path.strip_prefix(&canonical_root).ok()?;
+        let canonical_root = match std::fs::canonicalize(workspace_root) {
+            Ok(root) => root,
+            Err(_) => {
+                crate::logging::warn("Read snapshot unavailable: workspace cannot be resolved");
+                return None;
+            }
+        };
+        let canonical_path = match std::fs::canonicalize(path) {
+            Ok(path) => path,
+            Err(_) => {
+                crate::logging::warn("Read snapshot unavailable: file cannot be resolved");
+                return None;
+            }
+        };
+        let relative_path = match canonical_path.strip_prefix(&canonical_root) {
+            Ok(path) => path,
+            Err(_) => return None, // Reads outside the workspace are intentionally excluded from its ledger.
+        };
         let relative_path = relative_path
             .components()
             .map(|component| component.as_os_str().to_string_lossy())
@@ -370,11 +385,20 @@ impl ReadTool {
             return None;
         }
 
-        let mtime_ns = std::fs::metadata(&canonical_path)
-            .ok()
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_nanos());
+        let mtime_ns = match std::fs::metadata(&canonical_path)
+            .and_then(|metadata| metadata.modified())
+        {
+            Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+                Ok(duration) => Some(duration.as_nanos()),
+                Err(_) => None, // Content fingerprints remain authoritative for pre-epoch files.
+            },
+            Err(_) => {
+                crate::logging::debug(
+                    "Read snapshot modification time unavailable; retaining content fingerprint",
+                );
+                None
+            }
+        };
         let snapshot = match ledger
             .record_read(
                 &ctx.session_id,

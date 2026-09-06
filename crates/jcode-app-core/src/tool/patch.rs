@@ -191,7 +191,6 @@ impl Tool for PatchTool {
                 guarded.append_warnings(&mut result);
             }
             results.push(result);
-            let _ = prepared.old_content;
         }
 
         let mut body = results.join("\n\n");

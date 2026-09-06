@@ -148,9 +148,15 @@ impl FileWriteTransaction {
         path: &Path,
         contents: &[u8],
     ) -> Result<RecordedWrite> {
-        let mtime_ns = std::fs::metadata(path)
-            .ok()
-            .and_then(|metadata| modified_ns(&metadata));
+        let mtime_ns = match std::fs::metadata(path) {
+            Ok(metadata) => modified_ns(&metadata),
+            Err(_) => {
+                crate::logging::warn(
+                    "Written file metadata unavailable; recording content revision only",
+                );
+                None
+            }
+        };
         let record = self
             .guard
             .ledger
@@ -278,7 +284,7 @@ fn guard_violations(
             }
             None
         }
-        SessionReadFreshness::MissingCurrent { read } => {
+        SessionReadFreshness::MissingCurrent { .. } => {
             if policy.require_same_revision {
                 violations.push(format!("{path} has no current ledger revision"));
             }
@@ -287,7 +293,6 @@ fn guard_violations(
                     "{path} read coverage is not tied to a current revision"
                 ));
             }
-            let _ = read;
             None
         }
         SessionReadFreshness::Current { read } => Some(read),
@@ -297,7 +302,7 @@ fn guard_violations(
                     .writer_session_id
                     .as_deref()
                     .map(|session| format!(", peer {session}"))
-                    .unwrap_or_default();
+                    .unwrap_or_else(String::new);
                 violations.push(format!(
                     "{path} changed after your read (rev {} -> {}{writer})",
                     read.revision.revision, current.revision.revision
@@ -372,9 +377,16 @@ fn normalized_line_count(contents: &[u8]) -> u64 {
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> Option<u128> {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+    match metadata.modified() {
+        Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => Some(duration.as_nanos()),
+            Err(_) => None, // Pre-epoch timestamps cannot be represented; content revisions still guard writes.
+        },
+        Err(_) => {
+            crate::logging::debug(
+                "File modification time unavailable; using content revision only",
+            );
+            None
+        }
+    }
 }

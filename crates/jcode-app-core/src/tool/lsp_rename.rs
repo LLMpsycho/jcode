@@ -127,9 +127,15 @@ pub(crate) async fn apply_workspace_edit_for_operation(
             relative_path: target.relative_path.clone(),
             expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
-            mtime_ns: std::fs::metadata(&target.path)
-                .ok()
-                .and_then(|metadata| modified_ns(&metadata)),
+            mtime_ns: std::fs::metadata(&target.path).map_or_else(
+                |_| {
+                    crate::logging::warn(
+                        "Renamed file metadata unavailable; retaining content revision",
+                    );
+                    None
+                },
+                |metadata| modified_ns(&metadata),
+            ),
         })
         .collect();
     let records = match ledger.record_writes(&ctx.session_id, root, writes).await {
@@ -140,7 +146,7 @@ pub(crate) async fn apply_workspace_edit_for_operation(
             let suffix = rollback
                 .err()
                 .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             bail!("semantic rename ledger update failed: {error}{suffix}");
         }
     };
@@ -310,7 +316,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         let suffix = rollback
             .err()
             .map(|rollback| format!("; rollback also failed: {rollback}"))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         bail!("failed to rename file: {error}{suffix}");
     }
 
@@ -324,9 +330,15 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
             relative_path: target.relative_path.clone(),
             expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
-            mtime_ns: std::fs::metadata(&target.path)
-                .ok()
-                .and_then(|metadata| modified_ns(&metadata)),
+            mtime_ns: std::fs::metadata(&target.path).map_or_else(
+                |_| {
+                    crate::logging::warn(
+                        "Renamed file metadata unavailable; retaining content revision",
+                    );
+                    None
+                },
+                |metadata| modified_ns(&metadata),
+            ),
         })
         .collect();
     let movement = SnapshotMove {
@@ -334,9 +346,15 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         expected_revision: source_revision,
         destination_relative_path: destination_guard.relative_path.clone(),
         contents: source_replacement,
-        mtime_ns: std::fs::metadata(destination_path)
-            .ok()
-            .and_then(|metadata| modified_ns(&metadata)),
+        mtime_ns: std::fs::metadata(destination_path).map_or_else(
+            |_| {
+                crate::logging::warn(
+                    "Rename destination metadata unavailable; retaining content revision",
+                );
+                None
+            },
+            |metadata| modified_ns(&metadata),
+        ),
     };
     let (destination_record, write_records) = match ledger
         .record_move_with_writes(&ctx.session_id, root, movement, writes)
@@ -357,7 +375,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
             let suffix = rollback
                 .err()
                 .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             bail!("file rename ledger update failed: {error}{suffix}");
         }
     };
@@ -415,7 +433,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
             .iter()
             .find(|target| target.path == source_path)
             .map(|target| target.edit_count)
-            .unwrap_or_default(),
+            .unwrap_or(0),
     })];
     files.extend(related_files);
     let edit_count = targets.iter().map(|target| target.edit_count).sum();
@@ -508,7 +526,7 @@ fn publish_all(targets: &mut [RenameTarget]) -> Result<()> {
             let suffix = rollback
                 .err()
                 .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             bail!(
                 "failed to publish semantic rename for {}: {}{}",
                 targets[index].relative_path,
@@ -539,11 +557,18 @@ fn rollback_prefix(targets: &mut [RenameTarget], published: usize) -> Result<()>
 }
 
 fn modified_ns(metadata: &std::fs::Metadata) -> Option<u128> {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
+    match metadata.modified() {
+        Ok(modified) => match modified.duration_since(UNIX_EPOCH) {
+            Ok(duration) => Some(duration.as_nanos()),
+            Err(_) => None, // Pre-epoch timestamps cannot be represented; content revisions still guard writes.
+        },
+        Err(_) => {
+            crate::logging::debug(
+                "File modification time unavailable; using content revision only",
+            );
+            None
+        }
+    }
 }
 
 fn path_entry_exists(path: &Path) -> Result<bool> {
@@ -616,7 +641,14 @@ fn path_cstring(path: &Path) -> std::io::Result<CString> {
 fn rename_no_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::hard_link(source, destination)?;
     if let Err(error) = std::fs::remove_file(source) {
-        let _ = std::fs::remove_file(destination);
+        if let Err(rollback_error) = std::fs::remove_file(destination) {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "file rename failed: {error}; destination rollback also failed: {rollback_error}"
+                ),
+            ));
+        }
         return Err(error);
     }
     Ok(())

@@ -37,7 +37,10 @@ pub fn parse_display_tag(value: &str) -> Option<DisplayTag> {
         return None;
     }
     let mut bytes = [0u8; 2];
-    hex::decode_to_slice(value, &mut bytes).ok()?;
+    if hex::decode_to_slice(value, &mut bytes).is_err() {
+        // A malformed display tag is absent, never a partial digest.
+        return None;
+    }
     Some(DisplayTag { bytes })
 }
 
