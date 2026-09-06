@@ -25,7 +25,7 @@ pub fn diagnostic_delta(
                 .map(|diagnostic| (diagnostic_identity(diagnostic), severity_rank(diagnostic)))
                 .collect::<HashMap<_, _>>()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(HashMap::new);
     let mut delta = after
         .items
         .iter()

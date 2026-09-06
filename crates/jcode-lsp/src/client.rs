@@ -87,9 +87,10 @@ impl LspClient {
             Ok(Err(_)) => Err(LspError::TransportClosed),
             Err(_) => {
                 self.pending.lock().await.remove(&id);
-                let _ = self
-                    .notify("$/cancelRequest", Some(json!({ "id": id })))
-                    .await;
+                // Preserve a transport failure while attempting cancellation;
+                // callers must know when the timed-out request could not be canceled.
+                self.notify("$/cancelRequest", Some(json!({ "id": id })))
+                    .await?;
                 Err(LspError::RequestTimeout { method })
             }
         }
@@ -144,11 +145,17 @@ async fn read_loop<R>(
                             }),
                             None => Ok(response.result.unwrap_or(Value::Null)),
                         };
-                        let _ = sender.send(result);
+                        if sender.send(result).is_err() {
+                            // A timed-out/canceled caller no longer needs this reply.
+                            continue;
+                        }
                     }
                 }
                 IncomingMessage::Notification(notification) => {
-                    let _ = notifications.send(notification);
+                    if notifications.send(notification).is_err() {
+                        // Broadcast send fails only when there are no subscribers.
+                        continue;
+                    }
                 }
                 IncomingMessage::Request(request) => {
                     let (result, error) = match safe_server_request_result(
@@ -186,7 +193,10 @@ async fn read_loop<R>(
         .map(|(_, sender)| sender)
         .collect::<Vec<_>>();
     for sender in senders {
-        let _ = sender.send(Err(LspError::TransportClosed));
+        if sender.send(Err(LspError::TransportClosed)).is_err() {
+            // The caller was already canceled while the transport closed.
+            continue;
+        }
     }
 }
 

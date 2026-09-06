@@ -397,7 +397,7 @@ impl LspWorkspace {
                 .get(&document.uri)
                 .await
                 .map(|snapshot| snapshot.items)
-                .unwrap_or_default(),
+                .unwrap_or_else(Vec::new),
             _ => serde_json::from_value(
                 value
                     .get("items")
@@ -642,10 +642,11 @@ fn restart_backoff(failures: u32) -> Duration {
 }
 
 fn epoch_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_secs(),
+        // A wall clock before the epoch has no positive timestamp.
+        Err(_) => 0,
+    }
 }
 
 fn text_sync_kind(initialize_result: &Value) -> u64 {
