@@ -1,3 +1,12 @@
+mod request_watchdog;
+
+mod request_admission;
+use request_admission::initial_subscribe_terminal_env;
+use request_admission::initial_subscribe_working_dir;
+use request_admission::reject_if_agent_busy_for_request;
+use request_admission::required_subscribe_working_dir;
+use request_admission::send_agent_busy_error;
+
 use super::available_models_dedup::available_models_dedup_key;
 #[path = "processing_completion.rs"]
 mod processing_completion;
@@ -80,35 +89,6 @@ type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<S
 const RELOAD_STARTING_GUARD_MAX_AGE: Duration = Duration::from_secs(30);
 const REQUEST_HANDLER_STALL_THRESHOLDS_MS: [u64; 3] = [2_000, 10_000, 60_000];
 
-fn required_subscribe_working_dir(working_dir: Option<&str>) -> std::result::Result<&str, String> {
-    let working_dir = working_dir
-        .map(str::trim)
-        .filter(|dir| !dir.is_empty())
-        .ok_or_else(|| "Subscribe requires the client's working directory".to_string())?;
-    if !Path::new(working_dir).is_absolute() {
-        return Err("Subscribe working_dir must be an absolute path".to_string());
-    }
-    Ok(working_dir)
-}
-
-fn initial_subscribe_working_dir(request: &Request) -> std::result::Result<String, String> {
-    match request {
-        Request::Subscribe { working_dir, .. } => {
-            required_subscribe_working_dir(working_dir.as_deref()).map(str::to_string)
-        }
-        _ => Err(
-            "Client must Subscribe with a working_dir before sending stateful requests".to_string(),
-        ),
-    }
-}
-
-fn initial_subscribe_terminal_env(request: &Request) -> Vec<(String, String)> {
-    match request {
-        Request::Subscribe { terminal_env, .. } => terminal_env.clone(),
-        _ => Vec::new(),
-    }
-}
-
 struct ProcessingMessage {
     id: u64,
     content: String,
@@ -149,57 +129,7 @@ struct RequestHandlerWatchdogContext {
     lifecycle_logged: bool,
 }
 
-impl RequestHandlerWatchdog {
-    fn spawn(ctx: RequestHandlerWatchdogContext) -> Self {
-        let done = Arc::new(AtomicBool::new(false));
-        let done_for_task = Arc::clone(&done);
-        tokio::spawn(async move {
-            let started = Instant::now();
-            let mut previous_threshold = Duration::ZERO;
-            for threshold_ms in REQUEST_HANDLER_STALL_THRESHOLDS_MS {
-                let threshold = Duration::from_millis(threshold_ms);
-                tokio::time::sleep(threshold.saturating_sub(previous_threshold)).await;
-                previous_threshold = threshold;
-                if done_for_task.load(Ordering::Acquire) {
-                    return;
-                }
-                crate::logging::event_warn(
-                    "SERVER_REQUEST_HANDLER_STALLED",
-                    vec![
-                        ("request_id", ctx.request_id.to_string()),
-                        ("request_kind", ctx.request_kind.clone()),
-                        ("session_id", ctx.client_session_id.clone()),
-                        ("client_connection_id", ctx.client_connection_id.clone()),
-                        (
-                            "client_instance_id",
-                            ctx.client_instance_id
-                                .clone()
-                                .unwrap_or_else(|| "none".to_string()),
-                        ),
-                        ("client_processing", ctx.client_is_processing.to_string()),
-                        (
-                            "message_id",
-                            ctx.message_id
-                                .map(|id| id.to_string())
-                                .unwrap_or_else(|| "none".to_string()),
-                        ),
-                        (
-                            "processing_session_id",
-                            ctx.processing_session_id
-                                .clone()
-                                .unwrap_or_else(|| "none".to_string()),
-                        ),
-                        ("line_bytes", ctx.line_bytes.to_string()),
-                        ("lifecycle_logged", ctx.lifecycle_logged.to_string()),
-                        ("threshold_ms", threshold_ms.to_string()),
-                        ("elapsed_ms", started.elapsed().as_millis().to_string()),
-                    ],
-                );
-            }
-        });
-        Self { done }
-    }
-}
+impl RequestHandlerWatchdog {}
 
 impl Drop for RequestHandlerWatchdog {
     fn drop(&mut self) {
@@ -222,54 +152,6 @@ fn log_request_lifecycle_handled(
         request_decoded_at.elapsed().as_millis().to_string(),
     ));
     crate::logging::event_info("SERVER_REQUEST_LIFECYCLE", fields);
-}
-
-fn reject_if_agent_busy_for_request(
-    request_id: u64,
-    request_kind: &'static str,
-    client_session_id: &str,
-    client_is_processing: bool,
-    agent: &Arc<Mutex<Agent>>,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) -> bool {
-    if agent.try_lock().is_ok() {
-        return false;
-    }
-
-    send_agent_busy_error(
-        request_id,
-        request_kind,
-        client_session_id,
-        client_is_processing,
-        client_event_tx,
-    );
-    true
-}
-
-fn send_agent_busy_error(
-    request_id: u64,
-    request_kind: &'static str,
-    client_session_id: &str,
-    client_is_processing: bool,
-    client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
-) {
-    crate::logging::event_warn(
-        "SERVER_REQUEST_BUSY_AGENT_REJECTED",
-        vec![
-            ("request_id", request_id.to_string()),
-            ("request_kind", request_kind.to_string()),
-            ("session_id", client_session_id.to_string()),
-            ("client_processing", client_is_processing.to_string()),
-            ("reason", "agent_busy".to_string()),
-        ],
-    );
-    let _ = client_event_tx.send(ServerEvent::Error {
-        id: request_id,
-        message: format!(
-            "Cannot handle {request_kind} while the session is busy. Try again after the current turn finishes."
-        ),
-        retry_after_secs: Some(1),
-    });
 }
 
 fn server_reload_starting() -> bool {
@@ -740,7 +622,9 @@ pub(super) async fn handle_client(
             done = processing_done_rx.recv() => {
                 if let Some((done_id, result, completion_report, ready)) = done {
                     if Some(done_id) != processing_message_id {
-                        let _ = ready.send(false);
+                        if ready.send(false).is_err() {
+                            crate::logging::debug("Stale turn completion publisher already disconnected");
+                        }
                         crate::logging::warn(&format!(
                             "Done event id={} doesn't match processing_message_id={:?}, dropping",
                             done_id, processing_message_id
@@ -816,7 +700,9 @@ pub(super) async fn handle_client(
                             }
                         }
                     }
-                    let _ = ready.send(true);
+                    if ready.send(true).is_err() {
+                        crate::logging::debug("Turn completion publisher disconnected before readiness acknowledgement");
+                    }
                 } else {
                     break;
                 }
