@@ -763,9 +763,35 @@ async fn test_model_switch_resets_provider_session() -> Result<()> {
     assert!(saw_done2, "Did not receive Done for second message");
 
     let resume_ids = provider.captured_resume_session_ids.lock().unwrap().clone();
-    assert_eq!(resume_ids.len(), 2);
+    assert_eq!(
+        resume_ids.len(),
+        2,
+        "each user message makes exactly one primary request"
+    );
     assert_eq!(resume_ids[0], None);
-    assert_eq!(resume_ids[1], None);
+    assert_eq!(
+        resume_ids[1], None,
+        "model changes must clear the primary resume ID"
+    );
+    assert_eq!(
+        *provider.captured_models.lock().unwrap(),
+        vec!["model-a", "model-b"]
+    );
+    let private_requests = provider.captured_private_requests.lock().unwrap().clone();
+    for model in ["model-a", "model-b"] {
+        assert!(
+            private_requests
+                .iter()
+                .any(|request| request.model == model),
+            "enabled advisor must observe work using {model}"
+        );
+    }
+    assert!(
+        private_requests
+            .iter()
+            .all(|request| request.resume_session_id.is_none()),
+        "advisor must never inherit the primary provider resume ID"
+    );
 
     abort_server_and_cleanup(&server_handle, &socket_path, &debug_socket_path);
 
