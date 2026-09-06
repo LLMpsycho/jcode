@@ -31,6 +31,7 @@ struct RenameTarget {
     original: Vec<u8>,
     replacement: Vec<u8>,
     guarded: GuardedFile,
+    expected_revision: jcode_edit_types::FileRevision,
     edit_count: usize,
     staged_replacement: Option<TempPath>,
     staged_rollback: Option<TempPath>,
@@ -92,12 +93,17 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         let plan = apply_text_edits(original_text, &edits)?;
         let replacement = plan.updated.into_bytes();
         let permissions = metadata.permissions();
+        let expected_revision = guarded
+            .revision_before
+            .clone()
+            .context("existing rename target has no recorded revision; no bytes were written")?;
         targets.push(RenameTarget {
             relative_path,
             path: path.clone(),
             original: original.clone(),
             replacement: replacement.clone(),
             guarded,
+            expected_revision,
             edit_count: plan.edit_count,
             staged_replacement: Some(stage_file(&path, &replacement, &permissions)?),
             staged_rollback: Some(stage_file(&path, &original, &permissions)?),
@@ -119,11 +125,7 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         .iter()
         .map(|target| SnapshotWrite {
             relative_path: target.relative_path.clone(),
-            expected_revision: target
-                .guarded
-                .revision_before
-                .clone()
-                .expect("existing rename target must have a revision"),
+            expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
             mtime_ns: std::fs::metadata(&target.path)
                 .ok()
@@ -232,6 +234,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
     let source_guard = transaction
         .preflight_existing(source_path, &source_original, RequiredCoverage::FullFile)
         .await?;
+    let source_revision = source_guard
+        .revision_before
+        .clone()
+        .context("existing file rename source has no recorded revision; no bytes were written")?;
     let destination_guard = transaction.prepare_new(destination_path)?;
 
     let mut targets = Vec::new();
@@ -260,12 +266,17 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         };
         let plan = apply_text_edits(original_text, &edits)?;
         let replacement = plan.updated.into_bytes();
+        let expected_revision = guarded
+            .revision_before
+            .clone()
+            .context("existing rename target has no recorded revision; no bytes were written")?;
         targets.push(RenameTarget {
             relative_path,
             path: path.clone(),
             original: original.clone(),
             replacement: replacement.clone(),
             guarded,
+            expected_revision,
             edit_count: plan.edit_count,
             staged_replacement: Some(stage_file(&path, &replacement, &metadata.permissions())?),
             staged_rollback: Some(stage_file(&path, &original, &metadata.permissions())?),
@@ -311,11 +322,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         .iter()
         .map(|target| SnapshotWrite {
             relative_path: target.relative_path.clone(),
-            expected_revision: target
-                .guarded
-                .revision_before
-                .clone()
-                .expect("existing file rename edit target must have a revision"),
+            expected_revision: target.expected_revision.clone(),
             contents: target.replacement.clone(),
             mtime_ns: std::fs::metadata(&target.path)
                 .ok()
@@ -324,10 +331,7 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
         .collect();
     let movement = SnapshotMove {
         source_relative_path: source_guard.relative_path.clone(),
-        expected_revision: source_guard
-            .revision_before
-            .clone()
-            .expect("existing file rename source must have a revision"),
+        expected_revision: source_revision,
         destination_relative_path: destination_guard.relative_path.clone(),
         contents: source_replacement,
         mtime_ns: std::fs::metadata(destination_path)
