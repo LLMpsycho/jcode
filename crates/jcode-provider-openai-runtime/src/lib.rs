@@ -8,6 +8,8 @@
 //! (it is shared vocabulary for routing), as does the pure request shaping in
 //! `jcode_base::provider::openai_request`.
 
+mod model_prefetch;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use futures::{FutureExt, SinkExt, StreamExt as FuturesStreamExt};

@@ -1,3 +1,13 @@
+mod compatible_model_selection;
+
+mod compatible_catalog;
+pub(crate) use compatible_catalog::cached_live_models_for_openai_compatible_profile;
+use compatible_catalog::configured_standard_openrouter_profile_routes;
+use compatible_catalog::direct_openai_compatible_profile_routes;
+#[cfg(test)]
+use compatible_catalog::openai_compatible_profile_catalog_cache_is_stale;
+use compatible_catalog::standard_openrouter_profile_configured;
+
 mod accessors;
 mod account_failover;
 pub mod activation;
@@ -144,133 +154,6 @@ pub fn stores_reasoning_content_for_context(provider_name: &str) -> bool {
 // the active OpenRouter/OpenAI-compatible runtime. We continue serving the
 // cached routes immediately while a background refresh updates the catalog.
 pub(crate) const OPENAI_COMPATIBLE_PROFILE_CATALOG_SOFT_REFRESH_SECS: u64 = 15 * 60;
-
-fn openai_compatible_profile_catalog_cache_is_stale(cached_at: u64, now: u64) -> bool {
-    now.saturating_sub(cached_at) >= OPENAI_COMPATIBLE_PROFILE_CATALOG_SOFT_REFRESH_SECS
-}
-
-pub(crate) fn cached_live_models_for_openai_compatible_profile(
-    resolved: &crate::provider_catalog::ResolvedOpenAiCompatibleProfile,
-) -> Option<(Vec<String>, bool)> {
-    let cache = jcode_provider_openrouter::load_disk_cache_entry_for_namespace(&resolved.id)?;
-    let cache_is_stale = jcode_provider_openrouter::current_unix_secs()
-        .map(|now| openai_compatible_profile_catalog_cache_is_stale(cache.cached_at, now))
-        .unwrap_or(false);
-    let source_api_base = cache
-        .source_api_base
-        .as_deref()
-        .and_then(crate::provider_catalog::normalize_api_base)?;
-    let expected_api_base = crate::provider_catalog::normalize_api_base(&resolved.api_base)?;
-    if source_api_base != expected_api_base {
-        return None;
-    }
-
-    let models = cache
-        .models
-        .into_iter()
-        .map(|model| model.id.trim().to_string())
-        .filter(|model| !model.is_empty())
-        .collect::<Vec<_>>();
-    if models.is_empty() {
-        None
-    } else {
-        Some((models, cache_is_stale))
-    }
-}
-
-fn direct_openai_compatible_profile_routes(
-    profile: crate::provider_catalog::OpenAiCompatibleProfile,
-) -> Vec<ModelRoute> {
-    let resolved = crate::provider_catalog::resolve_openai_compatible_profile(profile);
-    let static_models = crate::provider_catalog::openai_compatible_profile_static_models(profile);
-    // Pure read: the catalog scheduler owns refresh cadence, so rendering
-    // routes cannot fan out HTTP requests.
-    let (mut models, from_live_catalog) = if let Some((models, _cache_is_stale)) =
-        cached_live_models_for_openai_compatible_profile(&resolved)
-    {
-        (models, true)
-    } else {
-        let mut models = static_models;
-        if models.is_empty()
-            && let Some(default_model) = resolved.default_model.as_ref()
-            && !default_model.trim().is_empty()
-        {
-            models.push(default_model.trim().to_string());
-        }
-        (models, false)
-    };
-
-    let provider = resolved.display_name.clone();
-    let api_method = format!("openai-compatible:{}", resolved.id);
-    let detail = if from_live_catalog {
-        resolved.api_base.clone()
-    } else if resolved.api_base.trim().is_empty() {
-        "fallback: static provider model list".to_string()
-    } else {
-        format!(
-            "{}; fallback: static provider model list",
-            resolved.api_base
-        )
-    };
-
-    let mut routes = Vec::new();
-    for model in models.drain(..) {
-        if !is_listable_model_name(&model)
-            || !crate::provider_catalog::openai_compatible_profile_model_supports_chat(
-                &resolved.id,
-                &model,
-            )
-            || routes.iter().any(|route: &ModelRoute| route.model == model)
-        {
-            continue;
-        }
-
-        routes.push(ModelRoute {
-            model,
-            provider: provider.clone(),
-            api_method: api_method.clone(),
-            available: true,
-            detail: detail.clone(),
-            cheapness: None,
-        });
-    }
-
-    routes
-}
-
-fn standard_openrouter_profile_configured() -> bool {
-    crate::provider_catalog::load_env_value_from_env_or_config(
-        "OPENROUTER_API_KEY",
-        "openrouter.env",
-    )
-    .is_some()
-}
-
-fn configured_standard_openrouter_profile_routes() -> Vec<ModelRoute> {
-    let Some(cache) = jcode_provider_openrouter::load_disk_cache_entry_for_namespace("openrouter")
-    else {
-        return Vec::new();
-    };
-
-    let source_matches_openrouter = cache
-        .source_api_base
-        .as_deref()
-        .and_then(crate::provider_catalog::normalize_api_base)
-        .map(|base| base.contains("openrouter.ai"))
-        .unwrap_or(false);
-    if !source_matches_openrouter {
-        return Vec::new();
-    }
-
-    let available = standard_openrouter_profile_configured();
-    cache
-        .models
-        .into_iter()
-        .map(|model| model.id.trim().to_string())
-        .filter(|model| is_listable_model_name(model))
-        .map(|model| build_openrouter_auto_route(&model, available, String::new()))
-        .collect()
-}
 
 pub fn set_model_with_auth_refresh(provider: &dyn Provider, model: &str) -> Result<()> {
     match provider.set_model(model) {
@@ -864,107 +747,6 @@ impl MultiProvider {
             }
             other => Self::provider_key(other).to_string(),
         }
-    }
-
-    fn openai_compatible_model_prefix(
-        model: &str,
-    ) -> Option<(crate::provider_catalog::OpenAiCompatibleProfile, &str)> {
-        let (prefix, rest) = model.split_once(':')?;
-        if explicit_model_provider_prefix(model).is_some() {
-            return None;
-        }
-        let rest = rest.trim();
-        if rest.is_empty() {
-            return None;
-        }
-
-        let profile = crate::provider_catalog::openai_compatible_profile_by_id(prefix)?;
-        Some((profile, rest))
-    }
-
-    /// Find the configured OpenAI-compatible profile that serves a bare model
-    /// id, using the live route catalog as the source of truth.
-    ///
-    /// Route specs from the picker carry a `<profile>:<model>` prefix, but
-    /// hand-typed `/model <id>` and saved sessions can carry the bare id. The
-    /// active profile wins when several profiles serve the same id, so a
-    /// re-select of the current model never silently hops endpoints.
-    fn openai_compatible_profile_owning_model(
-        &self,
-        model: &str,
-    ) -> Option<crate::provider_catalog::OpenAiCompatibleProfile> {
-        let model = model.trim();
-        if model.is_empty() {
-            return None;
-        }
-
-        let active_profile_id = ProviderRegistry::new(self).active_compatible_profile_id();
-        let mut fallback: Option<String> = None;
-        for route in self.fresh_routes_memo_entry().routes {
-            if !route.available || route.model != model {
-                continue;
-            }
-            let Some(profile_id) = route
-                .api_method
-                .strip_prefix("openai-compatible:")
-                .map(str::trim)
-                .filter(|profile_id| !profile_id.is_empty())
-            else {
-                continue;
-            };
-            if active_profile_id.as_deref() == Some(profile_id) {
-                fallback = Some(profile_id.to_string());
-                break;
-            }
-            if fallback.is_none() {
-                fallback = Some(profile_id.to_string());
-            }
-        }
-
-        crate::provider_catalog::openai_compatible_profile_by_id(&fallback?)
-    }
-
-    /// Return the active direct OpenAI-compatible runtime when its own catalog
-    /// serves `model`. Bare model switches must stay on that runtime rather than
-    /// rebinding the shared slot to native OpenRouter.
-    fn active_openai_compatible_profile_serving_model(
-        &self,
-        model: &str,
-    ) -> Option<Arc<dyn Provider>> {
-        if self.active_provider() != ActiveProvider::OpenRouter {
-            return None;
-        }
-        let provider = self.active_openrouter_execution_provider()?;
-        if provider.supports_provider_routing_features() {
-            return None;
-        }
-        let (_, api_method, _) = provider.direct_openai_compatible_route_parts()?;
-        self.fresh_routes_memo_entry()
-            .routes
-            .iter()
-            .any(|route| route.available && route.model == model && route.api_method == api_method)
-            .then_some(provider)
-    }
-
-    /// Parse a `<name>:<model>` spec whose prefix is a user-defined named
-    /// provider profile from config (`[providers.<name>]`). Built-in provider
-    /// prefixes and catalog profile ids take precedence and never reach here.
-    fn named_provider_profile_model_prefix(model: &str) -> Option<(String, String)> {
-        let (prefix, rest) = model.split_once(':')?;
-        if explicit_model_provider_prefix(model).is_some()
-            || Self::openai_compatible_model_prefix(model).is_some()
-        {
-            return None;
-        }
-        let prefix = prefix.trim();
-        let rest = rest.trim();
-        if prefix.is_empty() || rest.is_empty() {
-            return None;
-        }
-        crate::config::config()
-            .providers
-            .contains_key(prefix)
-            .then(|| (prefix.to_string(), rest.to_string()))
     }
 
     /// Bind (or reuse) the runtime for a named config provider profile and
