@@ -758,7 +758,7 @@ impl BridgeState {
                         api_id,
                         ApiEvent::Error {
                             code,
-                            message: event["message"].as_str().unwrap_or_default().to_string(),
+                            message: event["message"].as_str().unwrap_or("").to_string(),
                         },
                     )];
                 }
@@ -860,7 +860,7 @@ impl BridgeState {
 
     fn runtime_info(&self) -> ApiEvent {
         ApiEvent::RuntimeInfo {
-            session_id: self.session_id.clone().unwrap_or_default(),
+            session_id: self.session_id.as_deref().unwrap_or("").to_owned(),
             provider: self.current_provider.clone(),
             model: self.current_model.clone(),
             reasoning_effort: self.current_effort.clone(),

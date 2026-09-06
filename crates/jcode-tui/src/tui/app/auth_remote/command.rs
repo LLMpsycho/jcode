@@ -7,6 +7,14 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
+fn optional_env(key: &str) -> Result<Option<String>, &'static str> {
+    match std::env::var(key) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err("Invalid Unicode in SSH login configuration"),
+    }
+}
+
 const OUTPUT_LIMIT: usize = 64 * 1024;
 pub(super) const INPUT_LIMIT: usize = 16 * 1024;
 
@@ -28,8 +36,8 @@ impl Target {
         let target = Self {
             host,
             binary: std::env::var("JCODE_SSH_BINARY").unwrap_or_else(|_| "jcode".into()),
-            cwd: std::env::var("JCODE_SSH_WORKING_DIR").ok(),
-            socket: std::env::var("JCODE_SSH_SERVER_SOCKET").ok(),
+            cwd: optional_env("JCODE_SSH_WORKING_DIR")?,
+            socket: optional_env("JCODE_SSH_SERVER_SOCKET")?,
         };
         if target.host.starts_with('-')
             || target.host.chars().any(char::is_whitespace)
@@ -50,12 +58,12 @@ impl Target {
             .socket
             .as_deref()
             .map(|v| format!(" --socket {}", quote(v)))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         let cwd = self
             .cwd
             .as_deref()
             .map(|v| format!(" --cwd {}", quote(v)))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         let mut command = tokio::process::Command::new("ssh");
         command.args([
             "-T",
@@ -291,7 +299,9 @@ async fn execute(
     };
     // Includes cancellation, limits and timeout: kill AND reap, not just drop a PID.
     if result.is_err() {
-        let _ = child.kill().await;
+        if child.kill().await.is_err() {
+            crate::logging::warn("SSH login child cleanup failed");
+        }
     }
     result
 }
@@ -305,7 +315,7 @@ pub(super) fn cleanup_detached(target: Target, provider: String, flow: String) {
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         runtime.spawn(async move {
             let (_keepalive, mut never_cancel) = oneshot::channel();
-            let _ = execute(
+            if execute(
                 &target,
                 &provider,
                 &flow,
@@ -313,7 +323,11 @@ pub(super) fn cleanup_detached(target: Target, provider: String, flow: String) {
                 None,
                 &mut never_cancel,
             )
-            .await;
+            .await
+            .is_err()
+            {
+                crate::logging::warn("Detached SSH login cancellation failed");
+            }
         });
     }
 }
@@ -344,15 +358,14 @@ impl Task {
                     cancel_rx.try_recv(),
                     Err(oneshot::error::TryRecvError::Empty)
                 ) {
-                    let _ = reply_tx.send(Err("cancelled"));
+                    if reply_tx.send(Err("cancelled")).is_err() {
+                        crate::logging::debug("SSH login cancelled after receiver closed");
+                    }
                     return;
                 }
-                let exported = provider
-                    .parse::<TransferProvider>()
-                    .ok()
-                    .and_then(|provider| export_local(provider).ok());
-                let Some(exported) = exported else {
-                    let _ = reply_tx.send(Err("Could not export the selected local account. No credentials were sent. Check the local provider login and retry with explicit confirmation."));
+                let exported = provider.parse::<TransferProvider>().and_then(export_local);
+                let Ok(exported) = exported else {
+                    if reply_tx.send(Err("Could not export the selected local account. No credentials were sent. Check the local provider login and retry with explicit confirmation.")).is_err() { crate::logging::debug("SSH import error recipient disconnected"); }
                     return;
                 };
                 Some(Payload::Import(exported))
@@ -380,7 +393,9 @@ impl Task {
                 )
                 .await;
             }
-            let _ = reply_tx.send(result);
+            if reply_tx.send(result).is_err() {
+                crate::logging::debug("SSH login reply recipient disconnected");
+            }
         });
         Self {
             cancel: Some(cancel_tx),
@@ -389,7 +404,9 @@ impl Task {
     }
     pub(super) fn cancel(&mut self) {
         if let Some(cancel) = self.cancel.take() {
-            let _ = cancel.send(());
+            if cancel.send(()).is_err() {
+                crate::logging::debug("SSH login task already completed at cancellation");
+            }
         }
     }
 }

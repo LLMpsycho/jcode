@@ -142,7 +142,11 @@ impl PrewarmSlot {
                             ("protocol", WEBSOCKET_V2_BETA.to_string()),
                         ],
                     );
-                    let _ = tx.send(state);
+                    if tx.send(state).is_err() {
+                        jcode_base::logging::debug(
+                            "OpenAI prewarm consumer no longer needs the connection",
+                        );
+                    }
                 }
                 _ => {
                     // Warmup is optional. Do not surface its output/errors or
@@ -184,7 +188,13 @@ impl PrewarmSlot {
         let compatible =
             job.request == prewarm_request(request) && job.started_at.elapsed() < PREWARM_TTL;
         let state = compatible
-            .then(|| job.ready.try_recv().ok())
+            .then(|| match job.ready.try_recv() {
+                Ok(state) => Some(state),
+                Err(error) => {
+                    jcode_base::logging::debug(&format!("OpenAI prewarm not ready: {error}"));
+                    None
+                }
+            })
             .flatten()
             .filter(|state| state.identity == prewarm_identity(credentials));
         log_openai_stream_lifecycle(

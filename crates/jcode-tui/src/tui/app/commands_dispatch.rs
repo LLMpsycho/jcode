@@ -14,7 +14,7 @@ use super::App;
 /// against the laptop. Wire-backed commands are handled before local dispatch.
 pub(super) fn ssh_unsupported_command(input: &str) -> bool {
     let mut words = input.split_whitespace();
-    let command = words.next().unwrap_or_default();
+    let command = words.next().unwrap_or("");
     if command.starts_with('!') {
         return true;
     }

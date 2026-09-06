@@ -54,7 +54,13 @@ pub(super) async fn resolve_target_subscribe_working_dir(
     let resolved = if let Some(live) = live {
         let idle_cwd = live
             .try_lock()
-            .ok()
+            .map_or_else(
+                |_| {
+                    crate::logging::debug("Attach resolves busy session cwd from swarm metadata");
+                    None
+                },
+                Some,
+            )
             .and_then(|agent| agent.working_dir().map(str::to_string));
         if idle_cwd.is_some() {
             idle_cwd
@@ -70,7 +76,13 @@ pub(super) async fn resolve_target_subscribe_working_dir(
         }
     } else {
         crate::session::Session::load_startup_stub(target)
-            .ok()
+            .map_or_else(
+                |error| {
+                    crate::logging::debug(&format!("Attach session stub unavailable: {error}"));
+                    None
+                },
+                Some,
+            )
             .and_then(|session| session.working_dir)
     };
     *working_dir = Some(resolved.ok_or_else(|| {

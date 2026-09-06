@@ -119,8 +119,11 @@ impl App {
             quit_after_cancel: false,
         });
         if importing {
-            let provider = provider.unwrap();
-            let login = self.remote_login.as_mut().unwrap();
+            let (Some(provider), Some(login)) = (provider, self.remote_login.as_mut()) else {
+                self.cancel_ssh_login();
+                self.set_status_notice("SSH import requires a selected provider");
+                return true;
+            };
             login.provider = provider.into();
             login.phase = Phase::ImportConsent;
             login.operation = Some(Operation::Import);
@@ -271,7 +274,9 @@ impl App {
                 self.cancel_ssh_login()
             }
             KeyCode::Char('u') if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.remote_login.as_mut().unwrap().input.clear();
+                if let Some(login) = self.remote_login.as_mut() {
+                    login.input.clear();
+                }
                 self.sync_ssh_login_input_mask();
             }
             KeyCode::Char('v')
@@ -286,7 +291,9 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                self.remote_login.as_mut().unwrap().input.pop();
+                if let Some(login) = self.remote_login.as_mut() {
+                    login.input.pop();
+                }
                 self.sync_ssh_login_input_mask();
             }
             KeyCode::Enter => self.submit_ssh_login_input(),
@@ -339,7 +346,15 @@ impl App {
         if login.phase == Phase::Choosing {
             let provider = input
                 .parse::<usize>()
-                .ok()
+                .map_or_else(
+                    |_| {
+                        crate::logging::debug(
+                            "SSH login choice is not numeric; checking provider names",
+                        );
+                        None
+                    },
+                    Some,
+                )
                 .and_then(|n| n.checked_sub(1))
                 .and_then(|n| PROVIDERS.get(n))
                 .copied()

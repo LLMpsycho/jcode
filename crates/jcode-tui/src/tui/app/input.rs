@@ -1466,13 +1466,21 @@ impl App {
             if self.deliver_deferred_gate_digest_if_needed() {
                 return true;
             }
-            let goals = crate::todo::load_goals(&todo_session_id).unwrap_or_default();
+            let goals = match crate::todo::load_goals(&todo_session_id) { Ok(goals) => goals, Err(error) => { crate::logging::warn(&format!("Todo ownership check could not load goals: {error}")); return false; } };
             let ownership_needs_followup =
                 !crate::todo::completed_groups_have_sufficient_delivery(&todos, &goals);
             let gate_budget_left =
                 self.todo_completion_gate_attempts < Self::TODO_COMPLETION_GATE_MAX_ATTEMPTS;
-            let ownership_fingerprint =
-                serde_json::to_string(&(&todo_session_id, &todos, &goals)).ok();
+            let ownership_fingerprint = serde_json::to_string(&(&todo_session_id, &todos, &goals))
+                .map_or_else(
+                    |error| {
+                        crate::logging::warn(&format!(
+                            "Todo ownership fingerprint unavailable: {error}"
+                        ));
+                        None
+                    },
+                    Some,
+                );
             if ownership_needs_followup
                 && ownership_fingerprint.is_some()
                 && self.last_todo_ownership_fingerprint == ownership_fingerprint

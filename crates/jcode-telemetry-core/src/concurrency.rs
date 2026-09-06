@@ -59,10 +59,12 @@ struct Record {
 impl Record {
     fn read(value: &Value) -> io::Result<Self> {
         let number = |key| {
-            value[key]
-                .as_u64()
-                .and_then(|v| u32::try_from(v).ok())
-                .ok_or_else(|| io::Error::other("invalid concurrency record"))
+            u32::try_from(
+                value[key]
+                    .as_u64()
+                    .ok_or_else(|| io::Error::other("invalid concurrency record"))?,
+            )
+            .map_err(|_| io::Error::other("concurrency record exceeds counter range"))
         };
         let child = value["child"]
             .as_bool()
@@ -140,7 +142,9 @@ pub(super) struct FileLock(File);
 
 impl Drop for FileLock {
     fn drop(&mut self) {
-        let _ = self.0.unlock();
+        if let Err(error) = self.0.unlock() {
+            logging::warn(&format!("Concurrency registry unlock failed: {error}"));
+        }
     }
 }
 
@@ -178,8 +182,7 @@ fn live_records(dir: &Path, exclude: Option<&Path>) -> io::Result<Vec<(String, R
             || path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .is_none()
+                .is_none_or(|s| uuid::Uuid::parse_str(s).is_err())
         {
             continue;
         }
@@ -207,7 +210,8 @@ fn live_records(dir: &Path, exclude: Option<&Path>) -> io::Result<Vec<(String, R
     };
     if !live.is_empty()
         && stale.iter().any(|path| {
-            !snapshot.contains_key(path.file_name().unwrap().to_string_lossy().as_ref())
+            path.file_name()
+                .is_none_or(|name| !snapshot.contains_key(name.to_string_lossy().as_ref()))
         })
     {
         return Err(io::Error::other(
@@ -280,7 +284,13 @@ impl Lease {
                 path,
                 file: Some(file),
             },
-            result.ok(),
+            match result {
+                Ok(counts) => Some(counts),
+                Err(error) => {
+                    logging::warn(&format!("Concurrency registration unavailable: {error}"));
+                    None
+                }
+            },
         ))
     }
 
@@ -289,14 +299,22 @@ impl Lease {
         // Even an unavailable registry must not retain a live lease after the
         // Agent finishes. Its unlocked marker will be pruned by the next join.
         if let Err(error) = registry {
-            let _ = self.release();
+            if let Err(release_error) = self.release() {
+                logging::warn(&format!(
+                    "Concurrency lease release failed: {release_error}"
+                ));
+            }
             return Err(error);
         }
         let _registry = registry?;
         let peak = (|| {
             live_records(&self.dir, None)?;
             let mut snapshot = read_snapshot(&self.dir)?;
-            let key = self.path.file_name().unwrap().to_string_lossy();
+            let key = self
+                .path
+                .file_name()
+                .ok_or_else(|| io::Error::other("concurrency lease filename missing"))?
+                .to_string_lossy();
             let value = snapshot
                 .remove(key.as_ref())
                 .ok_or_else(|| io::Error::other("concurrency record missing at finish"))?;
@@ -306,7 +324,9 @@ impl Lease {
         })();
         let released = self.release();
         if peak.is_ok() && released.is_ok() {
-            let _ = std::fs::remove_file(&self.path);
+            if let Err(error) = std::fs::remove_file(&self.path) {
+                logging::warn(&format!("Concurrency lease file cleanup failed: {error}"));
+            }
         }
         released?;
         peak
@@ -316,7 +336,9 @@ impl Lease {
 impl Drop for Lease {
     fn drop(&mut self) {
         if self.file.is_some() {
-            let _ = self.finish();
+            if let Err(error) = self.finish() {
+                logging::warn(&format!("Concurrency lease cleanup failed: {error}"));
+            }
         }
     }
 }
@@ -361,7 +383,11 @@ pub fn begin_concurrency_session(
     });
     if let Ok((lease, counts)) = result {
         guard.lease = Some(lease);
-        guard.at_start = counts.unwrap_or_default();
+        guard.at_start = counts.unwrap_or(Counts {
+            total: 0,
+            root: 0,
+            child: 0,
+        });
     }
     guard.emit(
         "start",
@@ -395,7 +421,15 @@ impl ConcurrencySession {
         let peak = self
             .lease
             .take()
-            .and_then(|mut lease| lease.finish().ok())
+            .and_then(|mut lease| match lease.finish() {
+                Ok(peak) => Some(peak),
+                Err(error) => {
+                    logging::warn(&format!(
+                        "Concurrency final observation unavailable: {error}"
+                    ));
+                    None
+                }
+            })
             .filter(|peak| {
                 self.at_start.total > 0
                     && peak.total >= self.at_start.total
@@ -434,7 +468,9 @@ impl ConcurrencySession {
             payload["max_concurrent_child_sessions"] = peak.child.into();
             payload["multi_sessioned"] = (peak.total > 1).into();
         }
-        let _ = send_payload(payload, mode);
+        if !send_payload(payload, mode) {
+            logging::debug("Concurrency telemetry delivery was not accepted");
+        }
     }
 }
 

@@ -2838,7 +2838,11 @@ pub(super) async fn handle_client(
         // Input prompts belong to this transport and cannot safely be replayed
         // to a new client. Close response channels instead of waiting forever.
         stdin_forwarder.abort();
-        let _ = stdin_forwarder.await;
+        if let Err(error) = stdin_forwarder.await {
+            if !error.is_cancelled() {
+                crate::logging::warn(&format!("SSH stdin forwarder failed: {error}"));
+            }
+        }
         stdin_responses.lock().await.clear();
         if let Some(mut handle) = processing_task.take() {
             crate::logging::info(&format!(

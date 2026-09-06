@@ -172,7 +172,7 @@ fn launch_shell_command(
                 "if [ \"$(niri msg -j focused-window 2>/dev/null | jq -r '.app_id // empty' 2>/dev/null)\" = 'jcode-desktop' ]; then exec wtype {keys}; fi; "
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_else(String::new);
     // cd with $HOME fallback, then exec the terminal running jcode.
     format!(
         "{desktop_route}if [ -d {dir_q} ]; then cd {dir_q}; else cd \"$HOME\"; fi; exec {term_q} {exe_q} --spawn-hotkey {chord_q}{subcmd}",

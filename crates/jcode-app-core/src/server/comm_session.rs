@@ -843,7 +843,7 @@ pub(super) async fn handle_comm_spawn(
                 .map(|mode| format!("{mode:?}"))
                 .unwrap_or_default(),
             effort.clone().unwrap_or_default(),
-            model.clone().unwrap_or_default(),
+            model.as_deref().unwrap_or("").to_owned(),
             label.clone().unwrap_or_default(),
             profile.clone().unwrap_or_default(),
         ],

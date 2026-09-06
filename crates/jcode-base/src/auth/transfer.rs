@@ -596,7 +596,9 @@ fn secure_publish(home: &Path, name: &str, bytes: &[u8]) -> Result<(), TransferE
     drop(staged);
     // Publication has already committed. A directory sync failure must not imply
     // the credential was not installed, encouraging a retry or exposing a token.
-    let _ = directory.sync_all();
+    if directory.sync_all().is_err() {
+        crate::logging::warn("Credentials installed, but directory durability sync failed");
+    }
     Ok(())
 }
 

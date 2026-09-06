@@ -767,7 +767,13 @@ pub(super) async fn handle_split(
     // Splitting must remain available during a streaming turn. Never await the
     // Agent lock: busy sessions can still fork their last persisted snapshot.
     let result = {
-        let idle_agent = agent.try_lock().ok();
+        let idle_agent = match agent.try_lock() {
+            Ok(agent) => Some(agent),
+            Err(_) => {
+                crate::logging::debug("Split is using saved state while the parent is busy");
+                None
+            }
+        };
         clone_split_session(
             client_session_id,
             idle_agent.as_ref().map(|agent| agent.session_for_split()),

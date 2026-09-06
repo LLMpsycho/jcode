@@ -212,8 +212,12 @@ pub async fn run_bridge_stdio(legacy_socket: PathBuf) -> Result<()> {
     std::thread::Builder::new()
         .name("api-stdin".into())
         .spawn(move || {
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut writer);
-            let _ = writer.shutdown(std::net::Shutdown::Write);
+            if let Err(error) = std::io::copy(&mut std::io::stdin().lock(), &mut writer) {
+                eprintln!("jcode API stdin relay ended: {error}");
+            }
+            if let Err(error) = writer.shutdown(std::net::Shutdown::Write) {
+                eprintln!("jcode API stdin shutdown failed: {error}");
+            }
         })?;
     run_bridge_stream(input, tokio::io::stdout(), legacy_socket).await
 }

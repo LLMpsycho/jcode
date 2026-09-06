@@ -107,7 +107,10 @@ pub async fn run_tui_client(
     }
 
     if native_ssh {
-        let host = std::env::var("JCODE_SSH_REMOTE").unwrap_or_default();
+        let host = std::env::var("JCODE_SSH_REMOTE").unwrap_or_else(|_| {
+            crate::logging::warn("SSH resume hint has no configured host");
+            String::new()
+        });
         let label = resume_session.as_deref().unwrap_or("new session");
         crate::process_title::set_client_remote_display_title(
             &host,
@@ -140,7 +143,7 @@ pub async fn run_tui_client(
         );
     } else {
         crate::process_title::set_client_generic_title(super::selfdev::client_selfdev_requested());
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("jcode"));
+        if let Err(error) = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("jcode")) { crate::logging::debug(&format!("Terminal title reset failed: {error}")); }
     }
     startup_profile::mark("terminal_title");
 
@@ -181,11 +184,8 @@ pub async fn run_tui_client(
                 "local reload/update actions are unavailable during SSH attach; reconnect after updating explicitly"
             );
         }
-        if run_result.exit_code.is_some_and(|code| code != 0) {
-            anyhow::bail!(
-                "SSH client exited with code {}",
-                run_result.exit_code.unwrap()
-            );
+        if let Some(code) = run_result.exit_code.filter(|code| *code != 0) {
+            anyhow::bail!("SSH client exited with code {}", code);
         }
         if let Some(ref session_id) = run_result.session_id {
             print_session_resume_hint(session_id);

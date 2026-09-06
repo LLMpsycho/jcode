@@ -121,8 +121,14 @@ impl NativeSsh {
     /// Close and reap owned SSH children before the Tokio runtime shuts down.
     /// Keep the guard outside a signal/TUI select and await this on either exit.
     pub async fn close(&mut self) -> Result<()> {
-        let _ = self.stop.send(true);
-        let _ = std::fs::remove_file(&self.socket);
+        if self.stop.send(true).is_err() {
+            crate::logging::debug("SSH manager already stopped");
+        }
+        if let Err(error) = std::fs::remove_file(&self.socket) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
+            }
+        }
         let Some(mut manager) = self.manager.take() else {
             return Ok(());
         };
@@ -131,7 +137,11 @@ impl NativeSsh {
             Err(_) => {
                 // Dropping the manager's JoinSet drops every owned-child guard.
                 manager.abort();
-                let _ = manager.await;
+                if let Err(error) = manager.await {
+                    if !error.is_cancelled() {
+                        crate::logging::warn(&format!("SSH manager failed: {error}"));
+                    }
+                }
                 bail!("native SSH cleanup timed out; owned child tasks were aborted")
             }
         }
@@ -140,9 +150,15 @@ impl NativeSsh {
 
 impl Drop for NativeSsh {
     fn drop(&mut self) {
-        let _ = self.stop.send(true);
+        if self.stop.send(true).is_err() {
+            crate::logging::debug("SSH manager already stopped");
+        }
         // Remove the address immediately so nobody can dial after guard drop.
-        let _ = std::fs::remove_file(&self.socket);
+        if let Err(error) = std::fs::remove_file(&self.socket) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
+            }
+        }
     }
 }
 
@@ -229,12 +245,12 @@ impl SshOptions {
             .daemon_socket
             .as_ref()
             .map(|socket| format!(" --socket '{}'", socket.replace('\'', "'\\''")))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         let cwd = self
             .working_dir
             .as_ref()
             .map(|path| format!(" --cwd '{}'", path.replace('\'', "'\\''")))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         let remote = format!(
             "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; export PATH; exec {binary} --no-update --no-selfdev{socket}{cwd} server stdio"
         );
@@ -251,7 +267,9 @@ impl OwnedChild {
             unsafe {
                 libc::kill(-(pid as i32), libc::SIGKILL);
             }
-            let _ = self.0.start_kill();
+            if let Err(error) = self.0.start_kill() {
+                crate::logging::warn(&format!("SSH child termination failed: {error}"));
+            }
         }
     }
 }
@@ -359,7 +377,11 @@ impl SshConnection {
             .stderr
             .lock()
             .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_owned())
-            .unwrap_or_default();
+            .unwrap_or_else(|poisoned| {
+                String::from_utf8_lossy(&poisoned.into_inner())
+                    .trim()
+                    .to_owned()
+            });
         format!(
             "Native SSH connection closed. Verify SSH credentials/known_hosts and remote `jcode server stdio` support. {stderr}"
         )
@@ -367,7 +389,11 @@ impl SshConnection {
 
     async fn shutdown(&mut self) {
         self.child.kill();
-        let _ = tokio::time::timeout(Duration::from_secs(2), self.child.0.wait()).await;
+        match tokio::time::timeout(Duration::from_secs(2), self.child.0.wait()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => crate::logging::warn(&format!("SSH child wait failed: {error}")),
+            Err(_) => crate::logging::warn("SSH child cleanup timed out"),
+        }
         if tokio::time::timeout(Duration::from_millis(100), &mut self.stderr_task)
             .await
             .is_err()
@@ -506,9 +532,15 @@ pub(crate) async fn run_stdio(socket: PathBuf) -> Result<()> {
     std::thread::Builder::new()
         .name("native-ssh-stdin".into())
         .spawn(move || {
-            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut writer);
-            let _ = writer.flush();
-            let _ = writer.shutdown(std::net::Shutdown::Write);
+            if let Err(error) = std::io::copy(&mut std::io::stdin().lock(), &mut writer) {
+                crate::logging::debug(&format!("SSH stdin relay ended: {error}"));
+            }
+            if let Err(error) = writer.flush() {
+                crate::logging::debug(&format!("SSH stdin flush failed: {error}"));
+            }
+            if let Err(error) = writer.shutdown(std::net::Shutdown::Write) {
+                crate::logging::debug(&format!("SSH stdin shutdown failed: {error}"));
+            }
         })?;
     bridge_stream(input, tokio::io::stdout(), socket).await
 }

@@ -49,7 +49,8 @@ static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
 static TELEMETRY_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
 static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
-static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+static TELEMETRY_HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, reqwest::Error>> =
+    OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
@@ -1035,8 +1036,14 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
         reqwest::blocking::Client::builder()
             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
             .build()
-            .expect("telemetry HTTP client should build")
     });
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            logging::warn(&format!("Telemetry HTTP client unavailable: {error}"));
+            return false;
+        }
+    };
     match client
         .post(TELEMETRY_ENDPOINT)
         .timeout(timeout)
@@ -1087,8 +1094,14 @@ fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> boo
         reqwest::blocking::Client::builder()
             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
             .build()
-            .expect("telemetry HTTP client should build")
     });
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            logging::warn(&format!("Telemetry HTTP client unavailable: {error}"));
+            return false;
+        }
+    };
     match client
         .post(TRANSCRIPT_ENDPOINT)
         .timeout(timeout)

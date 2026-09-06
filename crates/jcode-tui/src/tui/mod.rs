@@ -1607,7 +1607,15 @@ pub struct PickerOption {
 /// distinct from `App::is_remote`, which also describes ordinary local clients.
 pub(crate) fn ssh_remote_host() -> Option<String> {
     std::env::var("JCODE_SSH_REMOTE")
-        .ok()
+        .map_or_else(
+            |error| {
+                if matches!(error, std::env::VarError::NotUnicode(_)) {
+                    crate::logging::warn("SSH host configuration is not valid Unicode");
+                }
+                None
+            },
+            Some,
+        )
         .filter(|host| !host.trim().is_empty())
 }
 

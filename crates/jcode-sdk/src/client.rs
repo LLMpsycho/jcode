@@ -398,8 +398,13 @@ impl JcodeClient {
             false,
             Some((options, Arc::clone(&process))),
         );
-        let _ = deadline.send(());
-        let _ = watchdog.join();
+        if deadline.send(()).is_err() { /* Startup watchdog already completed. */ }
+        if watchdog.join().is_err() {
+            return Err(Error::new(
+                ErrorKind::Transport,
+                "SSH startup watchdog panicked",
+            ));
+        }
         let result = if process.timed_out.load(Ordering::Acquire) {
             Err(Error::new(
                 ErrorKind::StartupTimeout,

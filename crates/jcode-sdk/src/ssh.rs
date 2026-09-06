@@ -73,7 +73,7 @@ impl SshConnectOptions {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
         };
-        let (user, host) = match self.host.split_once('@') {
+        let (_user, host) = match self.host.split_once('@') {
             Some((user, host)) if valid_user(user) && self.user.is_none() => (Some(user), host),
             Some(_) => {
                 return Err(invalid(
@@ -82,7 +82,6 @@ impl SshConnectOptions {
             }
             None => (None, self.host.as_str()),
         };
-        let _ = user;
         if host.is_empty()
             || host.starts_with('-')
             || !host
@@ -220,7 +219,11 @@ impl SshProcess {
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
-                let _ = child.kill();
+                if let Err(error) = child.kill() {
+                    if error.kind() != std::io::ErrorKind::InvalidInput {
+                        eprintln!("jcode SDK: failed to stop SSH child");
+                    }
+                }
                 if let Ok(status) = child.wait() {
                     if let Ok(mut saved) = self.status.lock() {
                         *saved = Some(status);
@@ -232,24 +235,29 @@ impl SshProcess {
         // stderr handle held by a configured external SSH helper.
         if let Ok(mut done) = self.stderr_done.lock() {
             if let Some(done) = done.take() {
-                let _ = done.recv_timeout(Duration::from_millis(100));
+                if matches!(
+                    done.recv_timeout(Duration::from_millis(100)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                ) {
+                    eprintln!("jcode SDK: SSH stderr cleanup timed out");
+                }
             }
         }
     }
 
     pub(crate) fn diagnostic(&self) -> String {
-        let detail = self
+        let bytes = self
             .stderr
             .lock()
-            .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
-            .unwrap_or_default();
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let detail = String::from_utf8_lossy(&bytes).trim().to_string();
         let status = self
             .status
             .lock()
-            .ok()
-            .and_then(|s| *s)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
             .map(|s| format!(" ({s})"))
-            .unwrap_or_default();
+            .unwrap_or_else(String::new);
         format!(
             "SSH harness connection closed{status}. Check SSH authentication and known_hosts, and that remote jcode supports `api --stdio`.{}",
             if detail.is_empty() {
@@ -297,7 +305,10 @@ impl SshTransport {
             })?;
         let reader = child.stdout.take();
         let writer = child.stdin.take();
-        let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+        let mut stderr_pipe = child
+            .stderr
+            .take()
+            .ok_or_else(|| Error::new(ErrorKind::Transport, "SSH stderr pipe unavailable"))?;
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let buffer = Arc::clone(&stderr);
         let (done_tx, done_rx) = std::sync::mpsc::channel();
@@ -319,7 +330,8 @@ impl SshTransport {
                     Err(_) => break,
                 }
             }
-            let _ = done_tx.send(());
+            if done_tx.send(()).is_err() { /* Receiver closed after the bounded cleanup deadline. */
+            }
         });
         let process = Arc::new(SshProcess {
             timed_out: AtomicBool::new(false),
@@ -344,8 +356,14 @@ impl Transport for SshTransport {
 
     fn split(mut self: Box<Self>) -> Result<(Box<dyn BufRead + Send>, Box<dyn Write + Send>)> {
         Ok((
-            Box::new(BufReader::new(self.reader.take().expect("SSH stdout"))),
-            Box::new(self.writer.take().expect("SSH stdin")),
+            Box::new(BufReader::new(self.reader.take().ok_or_else(|| {
+                Error::new(ErrorKind::Transport, "SSH stdout pipe unavailable")
+            })?)),
+            Box::new(
+                self.writer.take().ok_or_else(|| {
+                    Error::new(ErrorKind::Transport, "SSH stdin pipe unavailable")
+                })?,
+            ),
         ))
     }
 }
