@@ -129,7 +129,10 @@ async fn advisor_deferred_selection_cannot_reenable_after_later_disable() {
 #[test]
 fn advisor_legacy_status_and_error_responses_keep_the_message_contract() {
     let manager = AdvisorManager::default();
-    let config = AdvisorConfig::default();
+    let config = AdvisorConfig {
+        enabled: false,
+        ..AdvisorConfig::default()
+    };
     let status = control_request(&manager, "status", &config, AdvisorRequest::Status);
     assert!(status.message.starts_with("Advisor: off"));
     assert!(status.message.contains("model and effort follow primary"));

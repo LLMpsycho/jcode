@@ -452,6 +452,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
         spawn_mode: Some("headless".to_string()),
         effort: Some("low".to_string()),
         label: Some("review auth flow".to_string()),
+        profile: Some("reviewer".to_string()),
     };
     let json = serde_json::to_string(&req)?;
     assert!(json.contains("\"type\":\"comm_spawn\""));
@@ -459,6 +460,7 @@ fn test_comm_spawn_roundtrip_with_optional_nonce() -> Result<()> {
     assert!(json.contains("\"spawn_mode\":\"headless\""));
     assert!(json.contains("\"effort\":\"low\""));
     assert!(json.contains("\"label\":\"review auth flow\""));
+    assert!(json.contains("\"profile\":\"reviewer\""));
     let decoded = parse_request_json(&json)?;
     assert_eq!(decoded.id(), 59);
     let Request::CommSpawn {

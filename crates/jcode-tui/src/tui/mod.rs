@@ -1307,6 +1307,7 @@ pub enum PickerAction {
         detail_lines: Vec<String>,
     },
     AgentTarget(AgentModelTarget),
+    AgentProfile(String),
     AgentModelChoice {
         target: AgentModelTarget,
         clear_override: bool,
@@ -1354,6 +1355,7 @@ impl InlineInteractiveState {
 fn estimate_picker_action_bytes(action: &PickerAction) -> usize {
     match action {
         PickerAction::Advisor(request) => advisor_picker_schema::request_bytes(request.as_ref()),
+        PickerAction::AgentProfile(name) => name.capacity(),
         PickerAction::Model
         | PickerAction::AgentTarget(_)
         | PickerAction::AgentModelChoice { .. }

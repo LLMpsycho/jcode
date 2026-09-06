@@ -2153,3 +2153,6 @@ async fn compaction_application_resets_advisor_context() {
     assert_eq!(snapshot.status, crate::advisor::AdvisorStatus::Idle);
     assert_eq!(snapshot.private_context_len, 0);
 }
+
+#[path = "agent_tests/agent_profile.rs"]
+mod agent_profile;

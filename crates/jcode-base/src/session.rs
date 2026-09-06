@@ -47,8 +47,9 @@ pub use crash::{
     find_session_by_name_or_id, recover_crashed_sessions, recover_crashed_sessions_by_ids,
 };
 pub use jcode_session_types::{
-    EnvSnapshot, GitState, SessionImproveMode, SessionStatus, StoredCompactionState,
-    StoredDisplayRole, StoredMemoryInjection, StoredMessage, StoredTokenUsage,
+    EnvSnapshot, GitState, SessionAgentProfile, SessionImproveMode, SessionStatus,
+    StoredCompactionState, StoredDisplayRole, StoredMemoryInjection, StoredMessage,
+    StoredTokenUsage,
 };
 use journal::{PersistVectorMode, SessionJournalMeta, SessionPersistState};
 pub use maintenance::prune_old_session_backups;
@@ -136,6 +137,9 @@ pub struct Session {
     /// so a worker cannot silently resume under a different endpoint or account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role_model_selection: Option<crate::config::ConfigModelRoute>,
+    /// Resolved named-agent profile, retained independently of its source file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_profile: Option<SessionAgentProfile>,
     /// Optional fixed model to use for subagents launched from this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent_model: Option<String>,
@@ -228,6 +232,8 @@ struct SessionStartupStub {
     reasoning_effort: Option<String>,
     #[serde(default)]
     role_model_selection: Option<crate::config::ConfigModelRoute>,
+    #[serde(default)]
+    agent_profile: Option<SessionAgentProfile>,
     #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]
@@ -337,6 +343,7 @@ impl Session {
         session.route_api_method = stub.route_api_method;
         session.reasoning_effort = stub.reasoning_effort;
         session.role_model_selection = stub.role_model_selection;
+        session.agent_profile = stub.agent_profile;
         session.subagent_model = stub.subagent_model;
         session.improve_mode = stub.improve_mode;
         session.autoreview_enabled = stub.autoreview_enabled;
@@ -373,6 +380,7 @@ impl Session {
         session.route_api_method = snapshot.route_api_method;
         session.reasoning_effort = snapshot.reasoning_effort;
         session.role_model_selection = snapshot.role_model_selection;
+        session.agent_profile = snapshot.agent_profile;
         session.subagent_model = snapshot.subagent_model;
         session.improve_mode = snapshot.improve_mode;
         session.autoreview_enabled = snapshot.autoreview_enabled;
@@ -511,6 +519,7 @@ impl Session {
             model: self.model.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             role_model_selection: self.role_model_selection.clone(),
+            agent_profile: self.agent_profile.clone(),
             subagent_model: self.subagent_model.clone(),
             improve_mode: self.improve_mode,
             autoreview_enabled: self.autoreview_enabled,
@@ -713,6 +722,7 @@ impl Session {
         self.model = meta.model;
         self.reasoning_effort = meta.reasoning_effort;
         self.role_model_selection = meta.role_model_selection;
+        self.agent_profile = meta.agent_profile;
         self.subagent_model = meta.subagent_model;
         self.improve_mode = meta.improve_mode;
         self.autoreview_enabled = meta.autoreview_enabled;
@@ -754,6 +764,7 @@ impl Session {
             route_api_method: None,
             reasoning_effort: None,
             role_model_selection: None,
+            agent_profile: None,
             subagent_model: None,
             improve_mode: None,
             autoreview_enabled: None,
@@ -809,6 +820,7 @@ impl Session {
             route_api_method: None,
             reasoning_effort: None,
             role_model_selection: None,
+            agent_profile: None,
             subagent_model: None,
             improve_mode: None,
             autoreview_enabled: None,
@@ -1633,6 +1645,8 @@ struct RemoteStartupSessionSnapshot {
     reasoning_effort: Option<String>,
     #[serde(default)]
     role_model_selection: Option<crate::config::ConfigModelRoute>,
+    #[serde(default)]
+    agent_profile: Option<SessionAgentProfile>,
     #[serde(default)]
     subagent_model: Option<String>,
     #[serde(default)]

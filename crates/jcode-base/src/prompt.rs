@@ -82,15 +82,27 @@ pub fn load_swarm_prompt(working_dir: Option<&Path>) -> String {
             .ok()
             .map(|dir| dir.join("swarm-prompt.md")),
     ];
+    let mut prompt = DEFAULT_SWARM_PROMPT.trim().to_string();
     for path in candidates.into_iter().flatten() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
+        if let Ok(content) = std::fs::read_to_string(path)
+            && !content.trim().is_empty()
+        {
+            prompt = content.trim().to_string();
+            break;
         }
     }
-    DEFAULT_SWARM_PROMPT.trim().to_string()
+    match crate::agent_profile::catalog_prompt(working_dir) {
+        Ok(catalog) if !catalog.is_empty() => {
+            prompt.push_str("\n\n");
+            prompt.push_str(&catalog);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            crate::logging::warn(&format!("Could not load named agent profiles: {error:#}"));
+            prompt.push_str("\n\nNamed agent profiles could not be loaded. Use /agents to inspect the error before selecting a profile.");
+        }
+    }
+    prompt
 }
 
 /// Reasoning-effort sentinel that means "use the strongest reasoning the model

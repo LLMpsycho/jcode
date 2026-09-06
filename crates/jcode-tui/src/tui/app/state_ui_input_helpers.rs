@@ -544,21 +544,32 @@ impl App {
             .into_iter()
             .find(|base| prefix.starts_with(&format!("{base} ")))
         {
-            return self.rank_suggestions(
-                input,
-                [
-                    ("main", "Choose this session's main model and effort"),
-                    ("swarm", "Save the swarm/subagent model and effort"),
-                    ("advisor", "Choose this session's advisor model and effort"),
-                    ("review", "Save the code review model and effort"),
-                    ("judge", "Save the judge model and effort"),
-                    ("memory", "Save the memory sidecar model and effort"),
-                    ("ambient", "Save the ambient model and effort"),
-                ]
-                .into_iter()
-                .map(|(role, description)| (format!("{base} {role}"), description))
-                .collect(),
-            );
+            let mut suggestions: Vec<_> = [
+                ("main", "Choose this session's main model and effort"),
+                ("swarm", "Save the swarm/subagent model and effort"),
+                ("advisor", "Choose this session's advisor model and effort"),
+                ("review", "Save the code review model and effort"),
+                ("judge", "Save the judge model and effort"),
+                ("memory", "Save the memory sidecar model and effort"),
+                ("ambient", "Save the ambient model and effort"),
+            ]
+            .into_iter()
+            .map(|(role, description)| (format!("{base} {role}"), description))
+            .collect();
+            if let Ok(profiles) = crate::agent_profile::load_profiles(
+                self.session
+                    .working_dir
+                    .as_deref()
+                    .map(std::path::Path::new),
+            ) {
+                suggestions.extend(profiles.into_iter().map(|profile| {
+                    (
+                        format!("{base} {}", profile.name),
+                        "Show named swarm agent profile",
+                    )
+                }));
+            }
+            return self.rank_suggestions(input, suggestions);
         }
 
         if prefix.starts_with("/subagent-model ") {

@@ -3547,6 +3547,9 @@ impl App {
                     PickerAction::AgentTarget(target) => {
                         self.open_agent_model_picker(target);
                     }
+                    PickerAction::AgentProfile(ref name) => {
+                        self.show_agent_profile(name);
+                    }
                     PickerAction::AgentModelChoice {
                         target,
                         clear_override,

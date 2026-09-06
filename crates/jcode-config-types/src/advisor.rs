@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdvisorConfig {
-    /// Enable advisor turn capture and review scheduling (default: false).
+    /// Enable advisor turn capture and review scheduling (default: true).
     pub enabled: bool,
     /// Advisor operating mode.
     pub mode: AdvisorMode,
@@ -45,7 +45,7 @@ pub struct AdvisorConfig {
 impl Default for AdvisorConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             mode: AdvisorMode::Interactive,
             model: None,
             route: None,

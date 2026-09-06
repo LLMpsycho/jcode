@@ -21,6 +21,8 @@ pub(super) struct SessionJournalMeta {
     pub(super) reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) role_model_selection: Option<crate::config::ConfigModelRoute>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) agent_profile: Option<jcode_session_types::SessionAgentProfile>,
     pub(super) subagent_model: Option<String>,
     pub(super) improve_mode: Option<SessionImproveMode>,
     pub(super) autoreview_enabled: Option<bool>,
@@ -82,6 +84,7 @@ pub(super) fn metadata_requires_snapshot(
         || prev.provider_key != current.provider_key
         || prev.reasoning_effort != current.reasoning_effort
         || prev.role_model_selection != current.role_model_selection
+        || prev.agent_profile != current.agent_profile
         || prev.subagent_model != current.subagent_model
         || prev.improve_mode != current.improve_mode
         || prev.autoreview_enabled != current.autoreview_enabled
