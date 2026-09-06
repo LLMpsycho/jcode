@@ -159,10 +159,7 @@ impl BridgeState {
                 // prompt when the subscribe says so, and a client that opens
                 // the repo without saying so gets an agent that cannot build
                 // the very app it is running in.
-                if working_dir
-                    .as_deref()
-                    .is_some_and(Self::path_is_inside_jcode_repo)
-                {
+                if Self::path_is_inside_jcode_repo(&working_dir) {
                     subscribe["selfdev"] = json!(true);
                 }
                 if req == "attach_session"
