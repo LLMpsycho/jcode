@@ -77,7 +77,7 @@ fn preview_filter(input: &str) -> Option<(Option<String>, String)> {
         return None;
     }
     let rest = rest.trim_start();
-    let first = rest.split_whitespace().next().unwrap_or_default();
+    let first = rest.split_whitespace().next().unwrap_or("");
     if matches!(
         first,
         "inherit" | "status" | "inspect" | "on" | "off" | "dismiss" | "ack"
@@ -92,9 +92,7 @@ fn preview_filter(input: &str) -> Option<(Option<String>, String)> {
         if target.is_some_and(|target| rest.len() == target.len()) {
             return None;
         }
-        let filter = target
-            .map(|target| rest[target.len()..].trim_start())
-            .unwrap_or_default();
+        let filter = target.map_or("", |target| rest[target.len()..].trim_start());
         return Some((target.map(str::to_owned), filter.to_owned()));
     }
     Some((None, rest.to_string()))
@@ -323,7 +321,7 @@ impl App {
             entries,
             selected,
             column: 0,
-            filter: preview_filter.clone().unwrap_or_default(),
+            filter: preview_filter.as_deref().unwrap_or("").to_owned(),
             preview: preview_filter.is_some(),
         });
         if preview_filter.is_some() {

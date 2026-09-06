@@ -374,11 +374,13 @@ impl App {
     where
         F: FnOnce(&str) -> bool,
     {
-        let text = self.current_copy_selection_text().unwrap_or_default();
-        if text.is_empty() {
+        let Some(text) = self
+            .current_copy_selection_text()
+            .filter(|text| !text.is_empty())
+        else {
             self.set_status_notice("Selection is empty");
             return false;
-        }
+        };
         let success = copy_text(&text);
         if success {
             self.set_status_notice("Copied selection");
@@ -399,11 +401,13 @@ impl App {
     where
         F: FnOnce(&str) -> bool,
     {
-        let text = self.current_copy_selection_text().unwrap_or_default();
-        if text.is_empty() {
+        let Some(text) = self
+            .current_copy_selection_text()
+            .filter(|text| !text.is_empty())
+        else {
             self.set_status_notice("Selection is empty");
             return false;
-        }
+        };
 
         let success = copy_text(&text);
         self.copy_selection_mode = false;
