@@ -347,7 +347,10 @@ async fn disabled_advisor_has_no_runtime_or_provider_cost() {
         }),
         queue,
         AdvisorTurnInput::default(),
-        AdvisorConfig::default(),
+        AdvisorConfig {
+            enabled: false,
+            ..AdvisorConfig::default()
+        },
     );
     assert!(!scheduled);
     assert_eq!(calls.load(Ordering::SeqCst), 0);

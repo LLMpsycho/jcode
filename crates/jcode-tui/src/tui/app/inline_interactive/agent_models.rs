@@ -158,9 +158,30 @@ fn informational_entry(
 }
 
 impl App {
+    pub(crate) fn config_display_with_agent_profiles(&self) -> String {
+        let mut content = crate::config::config().display_string();
+        match crate::agent_profile::catalog_prompt(
+            self.session
+                .working_dir
+                .as_deref()
+                .map(std::path::Path::new),
+        ) {
+            Ok(catalog) if !catalog.is_empty() => {
+                content.push_str("\n\n");
+                content.push_str(&catalog);
+                content.push_str("\n\nUse /agents or /config agents to inspect a profile.");
+            }
+            Ok(_) => {}
+            Err(error) => {
+                content.push_str(&format!("\n\nCould not load agent profiles: {error:#}"))
+            }
+        }
+        content
+    }
+
     pub(crate) fn open_agents_picker(&mut self) {
         self.pending_model_picker_load = None;
-        let entries: Vec<_> = [
+        let mut entries: Vec<_> = [
             AgentModelTarget::Main,
             AgentModelTarget::Swarm,
             AgentModelTarget::Advisor,
@@ -208,6 +229,31 @@ impl App {
             entry
         })
         .collect();
+        match crate::agent_profile::load_profiles(
+            self.session
+                .working_dir
+                .as_deref()
+                .map(std::path::Path::new),
+        ) {
+            Ok(profiles) => {
+                for profile in profiles {
+                    let mut entry = informational_entry(
+                        AgentModelTarget::Swarm,
+                        profile.display_name(),
+                        &profile.description,
+                        true,
+                        false,
+                    );
+                    entry.options[0].provider = "named swarm profile".into();
+                    entry.options[0].api_method = format!("/agents {}", profile.name);
+                    entry.action = PickerAction::AgentProfile(profile.name);
+                    entries.push(entry);
+                }
+            }
+            Err(error) => self.push_display_message(DisplayMessage::error(format!(
+                "Could not load agent profiles: {error:#}"
+            ))),
+        }
         self.inline_view_state = None;
         self.inline_interactive_state = Some(InlineInteractiveState {
             kind: PickerKind::Model,
@@ -220,6 +266,33 @@ impl App {
         });
         self.input.clear();
         self.cursor_pos = 0;
+    }
+
+    pub(crate) fn show_agent_profile(&mut self, name: &str) {
+        self.inline_interactive_state = None;
+        match crate::agent_profile::resolve_profile(
+            name,
+            self.session
+                .working_dir
+                .as_deref()
+                .map(std::path::Path::new),
+        ) {
+            Ok(profile) => {
+                let tools = profile
+                    .allowed_tools
+                    .as_ref()
+                    .map(|tools| tools.join(", "))
+                    .unwrap_or_else(|| "session defaults".into());
+                self.push_display_message(DisplayMessage::system(format!(
+                    "# {}\n\n{}\n\nProfile: `{}`\nTools: {}\nEffort: {}\nModel: configured swarm model (/agents swarm)\nFile: {}\n\nJcode can select this profile with `swarm spawn` or `swarm assign_task` using `profile: \"{}\"` and a task prompt. The worker keeps this role name.\n\n{}",
+                    profile.display_name(), profile.description, profile.name, tools,
+                    profile.effort.as_deref().unwrap_or("swarm default"), profile.path.display(), profile.name, profile.content
+                )));
+            }
+            Err(error) => self.push_display_message(DisplayMessage::error(format!(
+                "Could not load agent profile: {error:#}"
+            ))),
+        }
     }
 
     pub(crate) fn open_agent_model_picker(&mut self, target: AgentModelTarget) {

@@ -86,6 +86,66 @@ concurrently would make the shared plan incoherent.
   spawned. In light and ad hoc swarms, workers cannot spawn. Stopping agents
   outside their own subtree still requires `force=true`.
 
+### Named agent profiles
+
+Store reusable specializations in `~/.jcode/agents/*.md` or the session workspace's
+`.jcode/agents/*.md`. Workspace profiles override global profiles with the same
+name. `/config` lists them, `/agents` and `/config agents` include them beside
+the built-in model roles, and `/agents devops` shows a profile's instructions.
+Selecting a profile in the picker does not change the main session's model.
+
+```markdown
+---
+name: devops
+description: Review CI/CD, containers, and deployment configuration.
+allowed-tools: [read, ls, agentgrep]
+effort: high
+---
+You are an infrastructure reviewer. Inspect configuration without editing it.
+Return findings with file references, validation, and recommended fixes.
+```
+
+Names are lowercase identifiers of up to 64 letters, digits, and hyphens.
+`allowed-tools` and `effort` are optional. Tool lists may be YAML arrays or
+comma-separated strings. For OMP-style files, `tools` and `thinking` are accepted
+as aliases, and `grep`/`find` map to Jcode's `agentgrep`. OMP `@MODEL` aliases and
+prompt-replacement/context-inheritance flags are not applied. The configured
+Jcode swarm model remains authoritative, and profile instructions augment the
+normal system and project instructions. An explicit spawn effort overrides the
+profile effort, which otherwise overrides the swarm default.
+
+The coordinator's swarm tool description includes profile names and descriptions,
+not their full prompts. It can choose a matching profile when delegating:
+
+```json
+{
+  "action": "spawn",
+  "profile": "devops",
+  "label": "review CI configuration",
+  "prompt": "Review the changed CI configuration without modifying files."
+}
+```
+
+The worker is displayed as **devops agent**, not a random animal. Other spawned
+workers use their task label as their name. Session IDs remain unique and should
+be used when multiple workers have the same role name. Profile selection also
+works with `assign_task`, which creates a fresh worker rather than repurposing an
+existing session. To assign further work, use that worker's session ID without
+passing `profile` again. Automatic per-node profile selection in `run_plan` is
+not supported.
+
+The resolved instructions and tool restrictions are saved with the worker session
+and survive resume and reload. A profile can narrow existing tool permissions,
+never widen them. Profiles without the `swarm` tool report through their final
+response, which the server forwards to the coordinator. A tool allowlist is not
+an OS sandbox: granting `bash` still permits shell commands, so read-only profiles
+should omit it when strict tool-level restrictions are needed.
+
+New workers read current profile files. Existing workers keep their saved snapshot.
+Keep personal imported profiles outside the repository unless you intend to share
+their contents. Profile-specific external dependencies, such as a browser-based
+consultation CLI, still need to be installed and configured separately.
+
 ## Agent Lifecycle States
 
 - spawned: session created, not yet ready.

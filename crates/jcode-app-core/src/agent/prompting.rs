@@ -116,6 +116,14 @@ impl Agent {
             self.agents_md_snapshot.clone(),
         );
 
+        if let Some(profile) = &self.session.agent_profile {
+            split.static_part.push_str("\n\n# Agent profile\n\n");
+            split.static_part.push_str(&profile.content);
+            if self.validate_tool_allowed("swarm").is_err() {
+                split.static_part.push_str("\n\nYour tool policy does not permit swarm calls. Do not attempt a swarm completion report or delegation, even if task boilerplate asks for it. Finish with a final response containing findings, validation, and follow-ups. The coordinator receives your final response automatically.");
+            }
+        }
+
         self.append_current_turn_system_reminder(&mut split);
         crate::prompt::append_swarm_effort_directive(
             &mut split,

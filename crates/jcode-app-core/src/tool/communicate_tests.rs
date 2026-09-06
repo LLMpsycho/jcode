@@ -1834,3 +1834,22 @@ fn run_plan_terminal_summary_includes_recorded_failure_reasons() {
 include!("communicate_tests/input_format.rs");
 include!("communicate_tests/end_to_end.rs");
 include!("communicate_tests/assignment.rs");
+
+#[tokio::test]
+async fn agent_profile_rejects_unsupported_actions_and_existing_target() {
+    let working_dir = tempfile::tempdir().unwrap();
+    for input in [
+        json!({"action":"run_plan", "profile":"debug"}),
+        json!({"action":"assign_next", "profile":"debug"}),
+        json!({"action":"assign_task", "profile":"debug", "target_session":"existing"}),
+        json!({"action":"assign_task", "profile":"debug", "to_session":"existing"}),
+    ] {
+        let error = CommunicateTool::new()
+            .execute(input, test_ctx("profile-parent", working_dir.path()))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("'profile'"));
+    }
+    let schema = CommunicateTool::new().parameters_schema();
+    assert_eq!(schema["properties"]["profile"]["type"], "string");
+}

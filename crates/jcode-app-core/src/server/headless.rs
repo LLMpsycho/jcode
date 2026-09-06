@@ -52,6 +52,8 @@ pub(super) async fn create_headless_session(
     route_api_method_override: Option<String>,
     route_override: Option<crate::provider::RouteSelection>,
     effort_override: Option<String>,
+    profile: Option<crate::session::SessionAgentProfile>,
+    worker_name: Option<String>,
     mcp_pool: Option<Arc<crate::mcp::SharedMcpPool>>,
     report_back_to_session_id: Option<String>,
     memory_scope: HeadlessMemoryScope,
@@ -170,6 +172,10 @@ pub(super) async fn create_headless_session(
         new_agent.set_role_model_selection(route)?;
     }
 
+    if profile.is_some() || worker_name.is_some() {
+        new_agent.set_swarm_identity(profile, worker_name)?;
+    }
+
     new_agent.set_debug(true);
 
     if selfdev_requested {
@@ -236,9 +242,12 @@ pub(super) async fn create_headless_session(
     } else {
         None
     };
-    let friendly_name = crate::id::extract_session_name(&client_session_id)
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| client_session_id[..8.min(client_session_id.len())].to_string());
+    let friendly_name = agent
+        .lock()
+        .await
+        .session_short_name()
+        .map(str::to_string)
+        .unwrap_or_else(|| client_session_id.clone());
 
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<ServerEvent>();
     tokio::spawn(async move {

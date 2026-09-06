@@ -3188,10 +3188,7 @@ pub(super) fn handle_agents_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     let Some(target) = parse_agents_target(rest) else {
-        app.push_display_message(DisplayMessage::error(
-            "Usage: /agents or /config models [main|swarm|advisor|review|judge|memory|ambient]"
-                .to_string(),
-        ));
+        app.show_agent_profile(rest);
         return true;
     };
 
@@ -3468,10 +3465,9 @@ pub(super) fn handle_config_command(app: &mut App, trimmed: &str) -> bool {
     }
 
     if trimmed == "/config" {
-        use crate::config::config;
         app.push_display_message(DisplayMessage {
             role: "system".to_string(),
-            content: config().display_string(),
+            content: app.config_display_with_agent_profiles(),
             tool_calls: vec![],
             duration_secs: None,
             title: None,

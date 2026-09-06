@@ -671,15 +671,9 @@ impl InfoWidgetData {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.todos.is_empty()
-            && self.context_info.is_none()
-            && self.queue_mode.is_none()
-            && self.model.is_none()
-            && self.memory_info.is_none()
-            && self.swarm_info.is_none()
-            && self.background_info.is_none()
-            && self.diagrams.is_empty()
-            && self.workspace_rows.is_empty()
+        !WidgetKind::all_by_priority()
+            .iter()
+            .any(|&kind| self.has_data_for(kind))
     }
 
     /// Check if a specific widget kind has data to display
@@ -1675,6 +1669,20 @@ fn render_compaction_widget(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'sta
     ]
 }
 
+/// Reuse the sidebar formatters for the prompt's inline stats strip.
+pub(crate) fn inline_stats(data: &InfoWidgetData, width: u16) -> Vec<Line<'static>> {
+    let area = Rect::new(0, 0, width, 1);
+    let mut lines = render_context_compact(data, area);
+    lines.extend(render_usage_widget(data, area));
+    if let Some(cache) = &data.cache_hit_info {
+        lines.push(render_kv_cache_summary_line(cache));
+    }
+    if let Some(info) = &data.git_info {
+        lines.extend(render_git_compact(info, width));
+    }
+    lines
+}
+
 fn render_kv_cache_widget(data: &InfoWidgetData, _inner: Rect) -> Vec<Line<'static>> {
     let Some(cache) = data.cache_hit_info.as_ref() else {
         return Vec::new();
@@ -2212,17 +2220,16 @@ fn render_context_compact(data: &InfoWidgetData, inner: Rect) -> Vec<Line<'stati
             Span::styled("updating...", Style::default().fg(rgb(220, 180, 80))),
         ])];
     }
-    let Some(info) = &data.context_info else {
+    let used_tokens = if let Some(observed) = data.observed_context_tokens {
+        observed as usize
+    } else if let Some(info) = &data.context_info {
+        if info.total_chars == 0 {
+            return Vec::new();
+        }
+        info.estimated_tokens()
+    } else {
         return Vec::new();
     };
-    if info.total_chars == 0 && data.observed_context_tokens.is_none() {
-        return Vec::new();
-    }
-
-    let used_tokens = data
-        .observed_context_tokens
-        .map(|t| t as usize)
-        .unwrap_or_else(|| info.estimated_tokens());
     let limit_tokens = data.context_limit.unwrap_or(DEFAULT_CONTEXT_LIMIT).max(1);
     let label = if data.is_compacting {
         "Context📦"

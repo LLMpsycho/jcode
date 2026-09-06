@@ -689,9 +689,8 @@ enabled = false
 # Env overrides: JCODE_AUTOJUDGE_MODEL, JCODE_AUTOJUDGE_EFFORT
 
 [advisor]
-# Internal second-model review after a primary turn. Disabled by default, so it
-# has no provider or runtime cost until explicitly enabled.
-enabled = false
+# Internal second-model review after a primary turn. Enabled by default.
+enabled = true
 # interactive | selfdev-guardian | final-review
 mode = "interactive"
 # Optional explicit model route, taking precedence over the role defaults.
@@ -861,7 +860,7 @@ mod tests {
     fn default_config_template_documents_safe_advisor_defaults() {
         let contents = Config::default_config_file_contents();
         let parsed: Config = toml::from_str(&contents).expect("default config should parse");
-        assert!(!parsed.advisor.enabled);
+        assert!(parsed.advisor.enabled);
         assert_eq!(parsed.advisor.mode, AdvisorMode::Interactive);
         assert_eq!(parsed.advisor.max_notes_per_turn, 1);
         assert_eq!(parsed.advisor.review_every_n_turns, 1);

@@ -148,6 +148,103 @@ fn agent_role_picker_lists_all_seven_roles() {
 }
 
 #[test]
+fn agent_role_picker_discovers_named_profiles_and_shows_details_without_changing_model() {
+    with_temp_jcode_home(|| {
+        let project = tempfile::tempdir().unwrap();
+        let global_profiles = crate::storage::jcode_dir().unwrap().join("agents");
+        let project_profiles = project.path().join(".jcode/agents");
+        for (directory, name, description) in [
+            (
+                &global_profiles,
+                "devops",
+                "Review deployment infrastructure",
+            ),
+            (
+                &project_profiles,
+                "debug",
+                "Diagnose a reproducible failure",
+            ),
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join(format!("{name}.md")), format!(
+                "---\nname: {name}\ndescription: {description}\nallowed-tools: [read, agentgrep]\neffort: high\n---\nPrivate {name} role instructions\n"
+            )).unwrap();
+        }
+        let mut app = role_catalog_app();
+        app.session.working_dir = Some(project.path().to_string_lossy().into_owned());
+        app.input = "/config".into();
+        app.submit_input();
+        let config_text = &app.display_messages.last().unwrap().content;
+        assert!(config_text.contains("devops agent") && config_text.contains("debug agent"));
+        assert!(!config_text.contains("Private devops role instructions"));
+
+        let prompt = crate::prompt::load_swarm_prompt(Some(project.path()));
+        assert!(prompt.contains("`devops`") && prompt.contains("`debug`"));
+        assert!(prompt.contains("Review deployment infrastructure"));
+        assert!(!prompt.contains("Private devops role instructions"));
+
+        app.input = "/config agents".into();
+        app.submit_input();
+        let picker = app.inline_interactive_state.as_ref().unwrap();
+        assert!(
+            picker
+                .entries
+                .iter()
+                .any(|entry| entry.name == "devops agent")
+        );
+        assert!(
+            picker
+                .entries
+                .iter()
+                .any(|entry| entry.name == "debug agent")
+        );
+        choose_role_entry(
+            &mut app,
+            |entry| matches!(&entry.action, PickerAction::AgentProfile(name) if name == "devops"),
+        );
+        assert!(app.inline_interactive_state.is_none());
+        assert!(
+            app.display_messages
+                .last()
+                .unwrap()
+                .content
+                .contains("Private devops role instructions")
+        );
+
+        for command in [
+            "/agents debug",
+            "/config agents debug",
+            "/config models debug",
+        ] {
+            assert!(
+                app.get_suggestions_for(command)
+                    .iter()
+                    .any(|(suggestion, _)| suggestion == command)
+            );
+            app.input = command.into();
+            app.submit_input();
+            assert!(
+                app.display_messages
+                    .last()
+                    .unwrap()
+                    .content
+                    .contains("Private debug role instructions")
+            );
+        }
+        assert_eq!(app.remote_provider_model.as_deref(), Some("main-model"));
+        app.input = "/agents missing-profile".into();
+        app.submit_input();
+        assert!(
+            app.display_messages
+                .last()
+                .unwrap()
+                .content
+                .contains("Unknown agent profile")
+        );
+    });
+}
+
+#[test]
 fn agent_role_picker_enter_persists_exact_connection_and_effort_without_switching_main() {
     with_temp_jcode_home(|| {
         let mut initial = Config::default();

@@ -186,6 +186,8 @@ pub struct Agent {
     session: Session,
     active_skill: Option<String>,
     allowed_tools: Option<HashSet<String>>,
+    /// Baseline policy before the current session profile narrows it.
+    base_allowed_tools: Option<HashSet<String>>,
     disabled_tools: HashSet<String>,
     /// MCP top-level definition exposure policy captured when the session starts.
     mcp_tools_mode: crate::config::McpToolsMode,
@@ -294,12 +296,13 @@ impl Agent {
         let working_dir = session.working_dir.as_deref().map(std::path::Path::new);
         let agents_md_snapshot = crate::prompt::load_agents_md_files_from_dir(working_dir);
         let initial_provider_model = provider.model();
-        let agent = Self {
+        let mut agent = Self {
             provider,
             registry,
             skills,
             session,
             active_skill: None,
+            base_allowed_tools: allowed_tools.clone(),
             allowed_tools,
             disabled_tools,
             mcp_tools_mode: tool_config.mcp_tools,
@@ -330,11 +333,7 @@ impl Agent {
             inline_tail: inline_tail::InlineTailBuffer::default(),
             transcript_telemetry_sent: false,
         };
-        crate::tool::set_session_tool_policy(
-            &agent.session.id,
-            agent.allowed_tools.clone(),
-            agent.disabled_tools.clone(),
-        );
+        agent.refresh_profile_tool_policy();
         agent
     }
 
