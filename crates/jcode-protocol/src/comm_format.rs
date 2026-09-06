@@ -163,7 +163,7 @@ pub fn format_comm_members(current_session_id: &str, members: &[AgentInfo]) -> S
                 .detail
                 .as_deref()
                 .map(|detail| format!(" — {}", detail))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             // Stable task label: what this agent was spawned/assigned for.
             // Skip when the transient detail already says the same thing.
             let task_suffix = match member.task_label.as_deref() {
@@ -239,7 +239,7 @@ pub fn format_comm_members(current_session_id: &str, members: &[AgentInfo]) -> S
                 .map(str::trim)
                 .filter(|effort| !effort.is_empty())
                 .map(|effort| format!(" ({effort})"))
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
             let model_suffix = match (
                 member.provider_name.as_deref(),
                 member.provider_model.as_deref(),
