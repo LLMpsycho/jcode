@@ -431,108 +431,12 @@ static RENDER_CACHE: LazyLock<Mutex<MermaidCache>> =
 /// naturally refreshed on the next redraw.
 static DEFERRED_RENDER_EPOCH: AtomicU64 = AtomicU64::new(1);
 
-/// Mermaid source keyed by the same content hash used by inline image markers.
-/// This lets transcript clicks copy editable Mermaid text instead of PNG pixels.
-static MERMAID_SOURCE_BY_HASH: LazyLock<Mutex<HashMap<u64, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static MERMAID_INLINE_EXPAND_LEVEL: LazyLock<Mutex<HashMap<u64, u8>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-static MERMAID_INLINE_EXPAND_EPOCH: AtomicU64 = AtomicU64::new(0);
-static MERMAID_INLINE_LEVEL_GEOMETRY: LazyLock<Mutex<HashMap<u64, [(u16, u16); 3]>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-pub fn mermaid_source_for_hash(hash: u64) -> Option<String> {
-    MERMAID_SOURCE_BY_HASH
-        .lock()
-        .ok()
-        .and_then(|sources| sources.get(&hash).cloned())
-}
-
-pub fn set_mermaid_inline_expand_level(hash: u64, level: u8) {
-    if let Ok(mut levels) = MERMAID_INLINE_EXPAND_LEVEL.lock() {
-        let previous = levels.get(&hash).copied().unwrap_or(0);
-        let level = level.min(2);
-        if level == 0 {
-            levels.remove(&hash);
-        } else {
-            levels.insert(hash, level);
-        }
-        if previous != level {
-            MERMAID_INLINE_EXPAND_EPOCH.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-}
-
-pub fn mermaid_inline_expand_epoch() -> u64 {
-    MERMAID_INLINE_EXPAND_EPOCH.load(Ordering::Relaxed)
-}
-
-pub fn next_distinct_mermaid_inline_level(hash: u64, current: u8) -> u8 {
-    let Some(geometries) = MERMAID_INLINE_LEVEL_GEOMETRY
-        .lock()
-        .ok()
-        .and_then(|all| all.get(&hash).copied())
-    else {
-        return (current + 1) % 3;
-    };
-    let current = current.min(2);
-    for offset in 1..=3 {
-        let candidate = (current + offset) % 3;
-        if geometries[candidate as usize] != geometries[current as usize] {
-            return candidate;
-        }
-    }
-    0
-}
-
-pub fn register_inline_level_geometries(hash: u64, geometries: [(u16, u16); 3]) {
-    if let Ok(mut all) = MERMAID_INLINE_LEVEL_GEOMETRY.lock() {
-        all.insert(hash, geometries);
-    }
-}
-
-#[cfg(test)]
-mod distinct_level_tests {
-    use super::*;
-
-    #[test]
-    fn skips_duplicate_levels_in_two_size_cycle() {
-        let hash = 0xd157_1ac7;
-        register_inline_level_geometries(hash, [(10, 20), (20, 40), (20, 40)]);
-        assert_eq!(next_distinct_mermaid_inline_level(hash, 0), 1);
-        assert_eq!(next_distinct_mermaid_inline_level(hash, 1), 0);
-    }
-
-    #[test]
-    fn preserves_three_distinct_levels_and_collapses_one_size_cycle() {
-        let three = 0xd157_1ac8;
-        register_inline_level_geometries(three, [(10, 20), (20, 40), (30, 60)]);
-        assert_eq!(next_distinct_mermaid_inline_level(three, 0), 1);
-        assert_eq!(next_distinct_mermaid_inline_level(three, 1), 2);
-        assert_eq!(next_distinct_mermaid_inline_level(three, 2), 0);
-
-        let one = 0xd157_1ac9;
-        register_inline_level_geometries(one, [(10, 20); 3]);
-        assert_eq!(next_distinct_mermaid_inline_level(one, 0), 0);
-    }
-}
-
-pub(crate) fn mermaid_inline_expand_level(hash: u64) -> u8 {
-    MERMAID_INLINE_EXPAND_LEVEL
-        .lock()
-        .ok()
-        .and_then(|levels| levels.get(&hash).copied())
-        .unwrap_or(0)
-}
-
-pub(crate) fn remember_mermaid_source(hash: u64, content: &str) {
-    if let Ok(mut sources) = MERMAID_SOURCE_BY_HASH.lock() {
-        if sources.len() >= RENDER_CACHE_MAX && !sources.contains_key(&hash) {
-            sources.clear();
-        }
-        sources.insert(hash, content.to_string());
-    }
-}
+mod mermaid_expansion;
+pub use mermaid_expansion::{
+    mermaid_inline_expand_epoch, mermaid_source_for_hash, next_distinct_mermaid_inline_level,
+    register_inline_level_geometries, set_mermaid_inline_expand_level,
+};
+use mermaid_expansion::{mermaid_inline_expand_level, remember_mermaid_source};
 
 /// Count of `path.exists()`/`read_dir` filesystem stat syscalls performed by
 /// the render-cache lookup paths. The inline-image scroll hot path used to pay
@@ -1466,28 +1370,8 @@ pub use debug::{
     debug_test_render, debug_test_resize_stability, debug_test_scroll, reset_debug_stats,
 };
 
-fn hash_content(content: &str) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// Get PNG dimensions from file
-fn get_png_dimensions(path: &Path) -> Option<(u32, u32)> {
-    use std::io::Read as _;
-
-    let mut header = [0u8; 24];
-    let mut file = fs::File::open(path).ok()?;
-    file.read_exact(&mut header).ok()?;
-    if &header[0..8] == b"\x89PNG\r\n\x1a\n" {
-        let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
-        let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
-        return Some((width, height));
-    }
-    None
-}
+mod mermaid_cache_metadata;
+use mermaid_cache_metadata::{get_png_dimensions, hash_content};
 
 /// Maximum age for cached files (3 days)
 const CACHE_MAX_AGE_SECS: u64 = 3 * 24 * 60 * 60;
