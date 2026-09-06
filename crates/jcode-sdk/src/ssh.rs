@@ -212,36 +212,35 @@ impl SshProcess {
     }
 
     pub(crate) fn shutdown(&self) {
-        if let Ok(mut child) = self.child.lock() {
-            if let Some(mut child) = child.take() {
-                // A dedicated process group also closes ProxyCommand helpers.
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                if let Err(error) = child.kill() {
-                    if error.kind() != std::io::ErrorKind::InvalidInput {
-                        eprintln!("jcode SDK: failed to stop SSH child");
-                    }
-                }
-                if let Ok(status) = child.wait() {
-                    if let Ok(mut saved) = self.status.lock() {
-                        *saved = Some(status);
-                    }
-                }
+        if let Ok(mut child) = self.child.lock()
+            && let Some(mut child) = child.take()
+        {
+            // A dedicated process group also closes ProxyCommand helpers.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            if let Err(error) = child.kill()
+                && error.kind() != std::io::ErrorKind::InvalidInput
+            {
+                eprintln!("jcode SDK: failed to stop SSH child");
+            }
+            if let Ok(status) = child.wait()
+                && let Ok(mut saved) = self.status.lock()
+            {
+                *saved = Some(status);
             }
         }
         // Usually EOF arrives immediately. Never hang cleanup on an inherited
         // stderr handle held by a configured external SSH helper.
-        if let Ok(mut done) = self.stderr_done.lock() {
-            if let Some(done) = done.take() {
-                if matches!(
-                    done.recv_timeout(Duration::from_millis(100)),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                ) {
-                    eprintln!("jcode SDK: SSH stderr cleanup timed out");
-                }
-            }
+        if let Ok(mut done) = self.stderr_done.lock()
+            && let Some(done) = done.take()
+            && matches!(
+                done.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            )
+        {
+            eprintln!("jcode SDK: SSH stderr cleanup timed out");
         }
     }
 
@@ -256,8 +255,7 @@ impl SshProcess {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .as_ref()
-            .map(|s| format!(" ({s})"))
-            .unwrap_or_else(String::new);
+            .map_or_else(String::new, |s| format!(" ({s})"));
         format!(
             "SSH harness connection closed{status}. Check SSH authentication and known_hosts, and that remote jcode supports `api --stdio`.{}",
             if detail.is_empty() {

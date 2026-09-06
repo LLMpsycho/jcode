@@ -323,10 +323,11 @@ impl Lease {
             Ok(peak)
         })();
         let released = self.release();
-        if peak.is_ok() && released.is_ok() {
-            if let Err(error) = std::fs::remove_file(&self.path) {
-                logging::warn(&format!("Concurrency lease file cleanup failed: {error}"));
-            }
+        if peak.is_ok()
+            && released.is_ok()
+            && let Err(error) = std::fs::remove_file(&self.path)
+        {
+            logging::warn(&format!("Concurrency lease file cleanup failed: {error}"));
         }
         released?;
         peak
@@ -335,10 +336,10 @@ impl Lease {
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        if self.file.is_some() {
-            if let Err(error) = self.finish() {
-                logging::warn(&format!("Concurrency lease cleanup failed: {error}"));
-            }
+        if self.file.is_some()
+            && let Err(error) = self.finish()
+        {
+            logging::warn(&format!("Concurrency lease cleanup failed: {error}"));
         }
     }
 }

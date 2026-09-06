@@ -256,8 +256,7 @@ pub(super) async fn start_scriptable_login(
         &pending_path,
         user_code.as_deref(),
         expires_at_ms,
-        options.json,
-        options.flow_id.as_deref(),
+        options,
     )?;
     // Browserless CLI login routes here rather than through the interactive
     // provider functions. Keep stdout machine-readable and never add a QR to
@@ -869,10 +868,10 @@ pub(super) fn emit_scriptable_auth_prompt(
     pending_path: &Path,
     user_code: Option<&str>,
     expires_at_ms: i64,
-    json: bool,
-    flow_id: Option<&str>,
+    options: &LoginOptions,
 ) -> Result<()> {
-    let resume_command = scriptable_resume_command(provider, input_kind, flow_id);
+    let resume_command =
+        scriptable_resume_command(provider, input_kind, options.flow_id.as_deref());
     let prompt = ScriptableAuthPrompt {
         status: "pending",
         provider: provider.to_string(),
@@ -883,7 +882,7 @@ pub(super) fn emit_scriptable_auth_prompt(
         expires_at_ms,
         resume_command: resume_command.clone(),
     };
-    if json {
+    if options.json {
         println!("{}", serde_json::to_string(&prompt)?);
     } else {
         println!("{}", auth_url);

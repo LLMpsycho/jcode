@@ -1466,7 +1466,15 @@ impl App {
             if self.deliver_deferred_gate_digest_if_needed() {
                 return true;
             }
-            let goals = match crate::todo::load_goals(&todo_session_id) { Ok(goals) => goals, Err(error) => { crate::logging::warn(&format!("Todo ownership check could not load goals: {error}")); return false; } };
+            let goals = match crate::todo::load_goals(&todo_session_id) {
+                Ok(goals) => goals,
+                Err(error) => {
+                    crate::logging::warn(&format!(
+                        "Todo ownership check could not load goals: {error}"
+                    ));
+                    return false;
+                }
+            };
             let ownership_needs_followup =
                 !crate::todo::completed_groups_have_sufficient_delivery(&todos, &goals);
             let gate_budget_left =

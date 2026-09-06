@@ -57,13 +57,11 @@ impl Target {
         let socket = self
             .socket
             .as_deref()
-            .map(|v| format!(" --socket {}", quote(v)))
-            .unwrap_or_else(String::new);
+            .map_or_else(String::new, |v| format!(" --socket {}", quote(v)));
         let cwd = self
             .cwd
             .as_deref()
-            .map(|v| format!(" --cwd {}", quote(v)))
-            .unwrap_or_else(String::new);
+            .map_or_else(String::new, |v| format!(" --cwd {}", quote(v)));
         let mut command = tokio::process::Command::new("ssh");
         command.args([
             "-T",
@@ -298,10 +296,8 @@ async fn execute(
         result = tokio::time::timeout(timeout, exchange) => result.unwrap_or(Err("Remote login timed out")),
     };
     // Includes cancellation, limits and timeout: kill AND reap, not just drop a PID.
-    if result.is_err() {
-        if child.kill().await.is_err() {
-            crate::logging::warn("SSH login child cleanup failed");
-        }
+    if result.is_err() && child.kill().await.is_err() {
+        crate::logging::warn("SSH login child cleanup failed");
     }
     result
 }
@@ -403,10 +399,10 @@ impl Task {
         }
     }
     pub(super) fn cancel(&mut self) {
-        if let Some(cancel) = self.cancel.take() {
-            if cancel.send(()).is_err() {
-                crate::logging::debug("SSH login task already completed at cancellation");
-            }
+        if let Some(cancel) = self.cancel.take()
+            && cancel.send(()).is_err()
+        {
+            crate::logging::debug("SSH login task already completed at cancellation");
         }
     }
 }

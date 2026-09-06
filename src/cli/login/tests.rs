@@ -238,6 +238,10 @@ impl Drop for ScopedLoginTestHome {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "Serialize process environment changes for this current-thread test; login futures never acquire this test-only lock"
+)]
 async fn scoped_concurrent_begin_completion_and_cancel_are_isolated() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().unwrap();

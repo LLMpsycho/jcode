@@ -28,6 +28,10 @@ enum Disposition {
     ClientInternal,
     /// A real gap. Worth exposing, not yet done. Every entry needs a reason
     /// that says what a client cannot build without it.
+    #[expect(
+        dead_code,
+        reason = "All currently inventoried requests are classified; retain the explicit gap category for future additions"
+    )]
     Gap(&'static str),
 }
 
@@ -82,7 +86,8 @@ const LEDGER: &[(&str, Disposition)] = &[
 /// Requests the reference clients (TUI) send to the daemon.
 fn reference_client_requests() -> BTreeSet<String> {
     let mut found = BTreeSet::new();
-    for dir in ["../jcode-tui/src"] {
+    {
+        let dir = "../jcode-tui/src";
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
         collect_requests(&root, &mut found);
     }

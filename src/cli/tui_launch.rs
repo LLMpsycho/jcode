@@ -143,7 +143,11 @@ pub async fn run_tui_client(
         );
     } else {
         crate::process_title::set_client_generic_title(super::selfdev::client_selfdev_requested());
-        if let Err(error) = crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("jcode")) { crate::logging::debug(&format!("Terminal title reset failed: {error}")); }
+        if let Err(error) =
+            crossterm::execute!(std::io::stdout(), crossterm::terminal::SetTitle("jcode"))
+        {
+            crate::logging::debug(&format!("Terminal title reset failed: {error}"));
+        }
     }
     startup_profile::mark("terminal_title");
 

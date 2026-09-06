@@ -124,10 +124,10 @@ impl NativeSsh {
         if self.stop.send(true).is_err() {
             crate::logging::debug("SSH manager already stopped");
         }
-        if let Err(error) = std::fs::remove_file(&self.socket) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
-            }
+        if let Err(error) = std::fs::remove_file(&self.socket)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
         }
         let Some(mut manager) = self.manager.take() else {
             return Ok(());
@@ -137,10 +137,10 @@ impl NativeSsh {
             Err(_) => {
                 // Dropping the manager's JoinSet drops every owned-child guard.
                 manager.abort();
-                if let Err(error) = manager.await {
-                    if !error.is_cancelled() {
-                        crate::logging::warn(&format!("SSH manager failed: {error}"));
-                    }
+                if let Err(error) = manager.await
+                    && !error.is_cancelled()
+                {
+                    crate::logging::warn(&format!("SSH manager failed: {error}"));
                 }
                 bail!("native SSH cleanup timed out; owned child tasks were aborted")
             }
@@ -154,10 +154,10 @@ impl Drop for NativeSsh {
             crate::logging::debug("SSH manager already stopped");
         }
         // Remove the address immediately so nobody can dial after guard drop.
-        if let Err(error) = std::fs::remove_file(&self.socket) {
-            if error.kind() != std::io::ErrorKind::NotFound {
-                crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
-            }
+        if let Err(error) = std::fs::remove_file(&self.socket)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::logging::warn(&format!("SSH socket cleanup failed: {error}"));
         }
     }
 }
@@ -244,13 +244,12 @@ impl SshOptions {
         let socket = self
             .daemon_socket
             .as_ref()
-            .map(|socket| format!(" --socket '{}'", socket.replace('\'', "'\\''")))
-            .unwrap_or_else(String::new);
-        let cwd = self
-            .working_dir
-            .as_ref()
-            .map(|path| format!(" --cwd '{}'", path.replace('\'', "'\\''")))
-            .unwrap_or_else(String::new);
+            .map_or_else(String::new, |socket| {
+                format!(" --socket '{}'", socket.replace('\'', "'\\''"))
+            });
+        let cwd = self.working_dir.as_ref().map_or_else(String::new, |path| {
+            format!(" --cwd '{}'", path.replace('\'', "'\\''"))
+        });
         let remote = format!(
             "PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"; export PATH; exec {binary} --no-update --no-selfdev{socket}{cwd} server stdio"
         );
