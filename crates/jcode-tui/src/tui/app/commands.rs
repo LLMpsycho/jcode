@@ -246,6 +246,7 @@ pub(super) fn activate_auto_poke(app: &mut App) -> PokeActivation {
     app.auto_poke_incomplete_todos = true;
     // Explicitly turning poke on also restores default-on re-arming.
     app.auto_poke_default_on = true;
+    app.todo_final_response_requested = false;
     app.todo_confidence_spike_challenged = false;
     app.todo_completion_gate_attempts = 0;
     app.last_auto_poke_fingerprint = None;

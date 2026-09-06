@@ -339,14 +339,9 @@ fn remote_ownership_gate_reads_the_remote_goal_assessment() {
         assert_eq!(app.todo_completion_gate_attempts, 0);
         app.queued_messages.clear();
         app.pending_queued_dispatch = false;
-        assert!(app.schedule_auto_poke_followup_if_needed());
-        assert_eq!(
-            app.queued_messages,
-            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
-        );
-        app.queued_messages.clear();
-        app.pending_queued_dispatch = false;
+        // Completion hands off exactly once for unchanged completed work.
         assert!(!app.schedule_auto_poke_followup_if_needed());
+        assert!(app.queued_messages.is_empty());
     });
 }
 
@@ -448,7 +443,7 @@ fn ownership_gate_rearms_after_reopened_work_or_explicit_poke() {
         dispatch_ownership_followup(&mut app);
         assert!(!app.schedule_auto_poke_followup_if_needed());
         super::commands::disable_auto_poke(&mut app);
-        app.auto_poke_incomplete_todos = true;
+        super::commands::activate_auto_poke(&mut app);
         dispatch_ownership_followup(&mut app);
     });
 }
@@ -908,13 +903,6 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
         .expect("save passing goal");
         app.auto_poke_incomplete_todos = true; // pretend a stale arm survived
         app.todo_final_response_requested = true; // final handoff already delivered
-        assert!(app.schedule_auto_poke_followup_if_needed());
-        assert_eq!(
-            app.queued_messages,
-            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
-        );
-        app.queued_messages.clear();
-        app.pending_queued_dispatch = false;
         assert!(!app.schedule_auto_poke_followup_if_needed());
         assert!(
             !app.auto_poke_incomplete_todos,
