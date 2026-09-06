@@ -138,18 +138,9 @@ pub(super) async fn handle_clear_session(
             ("client_selfdev", client_selfdev.to_string()),
         ],
     );
-    let (preserve_debug, working_dir) = {
-        let agent_guard = agent.lock().await;
-        (
-            agent_guard.is_debug(),
-            agent_guard.working_dir().map(str::to_string),
-        )
-    };
-
-    {
-        let mut agent_guard = agent.lock().await;
-        agent_guard.mark_closed();
-    }
+    let mut agent_guard = agent.lock().await;
+    let preserve_debug = agent_guard.is_debug();
+    let working_dir = agent_guard.working_dir().map(str::to_string);
 
     let mut new_agent = Agent::new_with_initial_working_dir(
         Arc::clone(provider),
@@ -164,8 +155,24 @@ pub(super) async fn handle_clear_session(
     if preserve_debug {
         new_agent.set_debug(true);
     }
+    if (preserve_debug || client_selfdev)
+        && let Err(error) = new_agent.persist_session_for_handoff()
+    {
+        new_agent.mark_closed();
+        if client_event_tx
+            .send(ServerEvent::Error {
+                id,
+                message: format!("Cannot clear session: failed to persist replacement: {error}"),
+                retry_after_secs: None,
+            })
+            .is_err()
+        {
+            crate::logging::debug("Clear persistence error recipient disconnected");
+        }
+        return;
+    }
 
-    let mut agent_guard = agent.lock().await;
+    agent_guard.mark_closed();
     *agent_guard = new_agent;
     super::session_provider::register(agent, &agent_guard.provider_handle());
     drop(agent_guard);

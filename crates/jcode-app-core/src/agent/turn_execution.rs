@@ -409,6 +409,10 @@ impl Agent {
         }
     }
 
+    pub(crate) fn persist_session_for_handoff(&mut self) -> Result<()> {
+        self.session.save_for_handoff()
+    }
+
     /// Enable or disable memory features for this session.
     pub fn set_memory_enabled(&mut self, enabled: bool) {
         self.memory_enabled = enabled;

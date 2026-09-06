@@ -1,10 +1,60 @@
 use super::*;
 use anyhow::{Result, anyhow};
 
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        crate::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(value) = &self.previous {
+            crate::env::set_var(self.key, value);
+        } else {
+            crate::env::remove_var(self.key);
+        }
+    }
+}
+
 #[tokio::test]
 async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_registration()
 -> Result<()> {
+    check_clear_session(false, false, false).await
+}
+
+#[tokio::test]
+async fn handle_clear_session_persists_debug_replacement_before_done() -> Result<()> {
+    check_clear_session(true, false, false).await
+}
+
+#[tokio::test]
+async fn handle_clear_session_persists_selfdev_replacement_before_done() -> Result<()> {
+    check_clear_session(false, true, false).await
+}
+
+#[tokio::test]
+async fn handle_clear_session_preserves_old_session_when_handoff_fails() -> Result<()> {
+    check_clear_session(true, false, true).await
+}
+
+async fn check_clear_session(
+    debug_session: bool,
+    selfdev_client: bool,
+    fail_persistence: bool,
+) -> Result<()> {
     let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir()?;
+    let _home = EnvVarGuard::set("JCODE_HOME", home.path());
+    let _runtime = EnvVarGuard::set("JCODE_RUNTIME_DIR", home.path().join("runtime"));
+    let _test_session = EnvVarGuard::set("JCODE_TEST_SESSION", "0");
 
     let old_session_id = "session_before_clear";
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -15,6 +65,7 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
         old_session_id,
         Vec::new(),
     )));
+    agent.lock().await.set_debug(debug_session);
 
     let old_queue = {
         let guard = agent.lock().await;
@@ -90,10 +141,17 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
     let (swarm_event_tx, _swarm_event_rx) = broadcast::channel::<SwarmEvent>(8);
     let (client_event_tx, mut client_event_rx) = mpsc::unbounded_channel::<ServerEvent>();
 
+    if fail_persistence {
+        let sessions_path = home.path().join("sessions");
+        if sessions_path.exists() {
+            std::fs::remove_dir(&sessions_path)?;
+        }
+        std::fs::write(sessions_path, "a file cannot contain session snapshots")?;
+    }
     let mut client_session_id = old_session_id.to_string();
     handle_clear_session(
         7,
-        false,
+        selfdev_client,
         &mut client_session_id,
         "conn_clear",
         &agent,
@@ -116,7 +174,49 @@ async fn handle_clear_session_replaces_runtime_handles_and_updates_shutdown_regi
     )
     .await;
 
+    if fail_persistence {
+        assert_eq!(client_session_id, old_session_id);
+        assert_eq!(agent.lock().await.session_id(), old_session_id);
+        assert!(crate::session::active_session_ids().contains(&client_session_id));
+        let sessions = sessions.read().await;
+        assert_eq!(sessions.len(), 1);
+        assert!(Arc::ptr_eq(&sessions[old_session_id], &agent));
+        assert!(Arc::ptr_eq(
+            &soft_interrupt_queues.read().await[old_session_id],
+            &old_queue,
+        ));
+        assert_eq!(
+            client_connections.read().await["conn_clear"].session_id,
+            old_session_id
+        );
+        assert!(swarm_members.read().await.contains_key(old_session_id));
+        assert!(
+            swarm_plans.read().await["swarm-test"]
+                .participants
+                .contains(old_session_id)
+        );
+        assert!(
+            matches!(client_event_rx.try_recv()?, ServerEvent::Error { id: 7, message, .. }
+            if message.contains("failed to persist replacement"))
+        );
+        assert!(
+            client_event_rx.try_recv().is_err(),
+            "a failed clear must not publish SessionId or Done"
+        );
+        return Ok(());
+    }
+
     assert_ne!(client_session_id, old_session_id);
+    if debug_session || selfdev_client {
+        let stored = crate::session::Session::load(&client_session_id)?;
+        assert_eq!(stored.is_debug, debug_session);
+        assert_eq!(stored.is_canary, selfdev_client);
+        assert!(!stored.saved);
+        assert!(stored.title.is_none());
+        assert!(stored.parent_id.is_none());
+    } else {
+        assert!(!crate::session::session_path(&client_session_id)?.exists());
+    }
     let members = swarm_members.read().await;
     assert!(members.get(old_session_id).is_none());
     let replacement_member = members

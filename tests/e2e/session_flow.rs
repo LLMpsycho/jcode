@@ -189,7 +189,8 @@ async fn test_debug_create_session_marks_debug() -> Result<()> {
     wait_for_server_ready(&socket_path, &debug_socket_path).await?;
 
     let session_id = debug_create_headless_session(debug_socket_path.clone()).await?;
-    let session = Session::load(&session_id)?;
+    let session = Session::load(&session_id)
+        .with_context(|| format!("loading debug session {session_id} after creation response"))?;
     assert!(session.is_debug);
 
     abort_server_and_cleanup(&server_handle, &socket_path, &debug_socket_path);
@@ -224,7 +225,8 @@ async fn test_debug_create_selfdev_session_marks_canary() -> Result<()> {
         "create_session:selfdev:/tmp",
     )
     .await?;
-    let session = Session::load(&session_id)?;
+    let session = Session::load(&session_id)
+        .with_context(|| format!("loading selfdev session {session_id} after creation response"))?;
     assert!(session.is_debug);
     assert!(session.is_canary);
 
@@ -300,7 +302,9 @@ async fn test_clear_preserves_debug_for_resumed_debug_session() -> Result<()> {
     let new_session_id = new_session_id
         .ok_or_else(|| anyhow::anyhow!("Did not receive new session id after clear"))?;
     assert_ne!(new_session_id, debug_session_id);
-    let session = Session::load(&new_session_id)?;
+    let session = Session::load(&new_session_id).with_context(|| {
+        format!("loading debug replacement {new_session_id} after clear completion")
+    })?;
     assert!(session.is_debug);
 
     abort_server_and_cleanup(&server_handle, &socket_path, &debug_socket_path);

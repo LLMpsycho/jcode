@@ -372,6 +372,16 @@ impl Session {
     }
 
     pub fn save(&mut self) -> Result<()> {
+        self.save_with_empty_root(false)
+    }
+
+    /// Persist an explicitly created session before handing its ID to a caller.
+    /// This preserves an empty session's identity without bookmarking or titling it.
+    pub fn save_for_handoff(&mut self) -> Result<()> {
+        self.save_with_empty_root(true)
+    }
+
+    fn save_with_empty_root(&mut self, persist_empty_root: bool) -> Result<()> {
         self.updated_at = Utc::now();
         let path = session_path(&self.id)?;
         let journal_path = session_journal_path_from_snapshot(&path);
@@ -388,7 +398,8 @@ impl Session {
         // An explicit child also needs a durable identity before its first
         // visible message: fork/transfer callers hand its id to another client.
         // Untouched root panels remain ephemeral; children are not bookmarked.
-        if !self.persist_state.snapshot_exists
+        if !persist_empty_root
+            && !self.persist_state.snapshot_exists
             && !self
                 .messages
                 .iter()
