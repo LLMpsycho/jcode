@@ -1,5 +1,4 @@
 use super::*;
-use std::fmt::Write as _;
 use unicode_width::UnicodeWidthStr;
 
 #[cfg(target_os = "macos")]
@@ -20,10 +19,10 @@ fn handterm_native_latex_cell_symbol(source: &str, rows: u16, cols: u16) -> Opti
     let mut symbol = String::with_capacity(apc.len() + 32);
     symbol.push_str("\x1b[s");
     if rows > 1 {
-        write!(symbol, "\x1b[{}A", rows - 1).ok()?;
+        symbol.push_str(&format!("\x1b[{}A", rows - 1));
     }
     if cols > 1 {
-        write!(symbol, "\x1b[{}D", cols - 1).ok()?;
+        symbol.push_str(&format!("\x1b[{}D", cols - 1));
     }
     symbol.push_str(&apc);
     // Crossterm's backend records this as one printed cell. Restore the actual
@@ -1362,157 +1361,12 @@ fn windowed_min(widths: &[u16], window: usize) -> Vec<u16> {
     out
 }
 
-/// Lines for the pinned status band: optional todos followed by exactly one
-/// compact row per relevant background task. Completed tasks are shown briefly
-/// as confirmation, while running and failed tasks remain actionable.
-fn pinned_todo_band_lines(
-    app: &dyn TuiState,
-    width: u16,
-    viewport_height: u16,
-) -> (Vec<Line<'static>>, Option<usize>) {
-    if width < 16 || viewport_height < 3 {
-        return (Vec::new(), None);
-    }
-
-    let task_lines: Vec<_> = app
-        .background_task_rows()
-        .iter()
-        .map(|task| active_background_task_line(task, width))
-        .collect();
-    let card_lines = if crate::config::config().display.pin_todos {
-        app.pinned_todos_payload()
-            .map(|payload| {
-                let msg = crate::tui::DisplayMessage::todos(payload.to_string());
-                super::messages::get_cached_message_lines(
-                    &msg,
-                    width,
-                    app.diff_mode(),
-                    super::messages::render_todos_message,
-                )
-            })
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    if card_lines.is_empty() && task_lines.is_empty() {
-        return (Vec::new(), None);
-    }
-
-    // Band budget: about a third of the viewport.
-    let budget = ((viewport_height as usize) / 3).clamp(2, 12);
-    let content_budget = budget.saturating_sub(task_lines.len()).max(2);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let has_more = card_lines.len() > content_budget && !app.pinned_todos_expanded();
-    let mut more_line = None;
-    if has_more {
-        let shown = content_budget.saturating_sub(1);
-        let hidden = card_lines.len() - shown;
-        lines.extend(card_lines.into_iter().take(shown));
-        more_line = Some(lines.len());
-        lines.push(Line::from(Span::styled(
-            format!("  … +{} more (todo)", hidden),
-            Style::default().fg(dim_color()),
-        )));
-    } else {
-        lines.extend(card_lines);
-    }
-    lines.extend(task_lines);
-    (lines, more_line)
-}
-
-fn active_background_task_line(task: &crate::tui::BackgroundTaskRow, width: u16) -> Line<'static> {
-    const BAR_WIDTH: usize = 6;
-    let (icon, task_color, percent) = match task.status {
-        crate::tui::BackgroundTaskRowStatus::Running => (
-            "◌",
-            accent_color(),
-            task.percent.unwrap_or(0.0).clamp(0.0, 100.0),
-        ),
-        crate::tui::BackgroundTaskRowStatus::Completed => ("✓", Color::Green, 100.0),
-        crate::tui::BackgroundTaskRowStatus::Failed => (
-            "×",
-            Color::Red,
-            task.percent.unwrap_or(0.0).clamp(0.0, 100.0),
-        ),
-    };
-    let rounded_percent = percent.round() as u8;
-    let status_label = if task.status == crate::tui::BackgroundTaskRowStatus::Failed {
-        "failed".to_string()
-    } else {
-        format!("{}%", rounded_percent)
-    };
-    let filled = ((percent / 100.0) * BAR_WIDTH as f32).round() as usize;
-    let (active_bar, remaining_bar) = if task.status == crate::tui::BackgroundTaskRowStatus::Failed
-    {
-        (
-            "━".repeat(filled.min(BAR_WIDTH)),
-            "─".repeat(BAR_WIDTH.saturating_sub(filled)),
-        )
-    } else if filled >= BAR_WIDTH {
-        ("━".repeat(BAR_WIDTH), String::new())
-    } else {
-        (
-            format!("{}╺", "━".repeat(filled)),
-            "─".repeat(BAR_WIDTH.saturating_sub(filled + 1)),
-        )
-    };
-
-    let fixed_width = UnicodeWidthStr::width(
-        format!("◌ bg   {} {}{}", active_bar, remaining_bar, status_label).as_str(),
-    );
-    let max_label_width = (width as usize).saturating_sub(fixed_width).max(1);
-    let label = truncate_background_task_label(&task.label, max_label_width);
-
-    Line::from(vec![
-        Span::styled(icon, Style::default().fg(task_color)),
-        Span::styled(" bg ", Style::default().fg(dim_color())),
-        Span::raw(label),
-        Span::raw("  "),
-        Span::styled(active_bar, Style::default().fg(task_color)),
-        Span::styled(remaining_bar, Style::default().fg(dim_color())),
-        Span::styled(
-            format!(" {}", status_label),
-            Style::default().fg(dim_color()),
-        ),
-    ])
-}
-
-fn truncate_background_task_label(label: &str, max_width: usize) -> String {
-    let label = label.replace(['\r', '\n'], " ");
-    if UnicodeWidthStr::width(label.as_str()) <= max_width {
-        return label;
-    }
-    if max_width <= 1 {
-        return "…".to_string();
-    }
-    let mut truncated = String::new();
-    for ch in label.chars() {
-        let candidate = format!("{}{}…", truncated, ch);
-        if UnicodeWidthStr::width(candidate.as_str()) > max_width {
-            break;
-        }
-        truncated.push(ch);
-    }
-    truncated.push('…');
-    truncated
-}
-
-static PINNED_TODO_MORE_AREA: std::sync::Mutex<Option<Rect>> = std::sync::Mutex::new(None);
-
-fn set_pinned_todo_more_area(area: Option<Rect>) {
-    if let Ok(mut current) = PINNED_TODO_MORE_AREA.lock() {
-        *current = area;
-    }
-}
-
+#[path = "ui_viewport/pinned_status.rs"]
+mod pinned_status;
+pub(crate) use pinned_status::pinned_todo_more_area;
 #[cfg(test)]
-pub(crate) fn set_pinned_todo_more_area_for_test(area: Option<Rect>) {
-    set_pinned_todo_more_area(area);
-}
-
-pub(crate) fn pinned_todo_more_area() -> Option<Rect> {
-    PINNED_TODO_MORE_AREA.lock().ok().and_then(|area| *area)
-}
+pub(crate) use pinned_status::set_pinned_todo_more_area_for_test;
+use pinned_status::{pinned_todo_band_lines, set_pinned_todo_more_area};
 
 fn compute_prompt_preview_line_count(
     wrapped_user_prompt_starts: &[usize],
@@ -1577,100 +1431,5 @@ fn compute_max_scroll_with_prompt_preview(
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn handterm_native_latex_cell_symbol_moves_invokes_and_restores_cursor() {
-        assert_eq!(
-            super::handterm_native_latex_cell_symbol(r"\frac{a}{b}", 3, 2).as_deref(),
-            Some("\x1b[s\x1b[2A\x1b[1D\x1b_L;\\frac{a}{b}\x1b\\\x1b[u\x1b[1C")
-        );
-        assert_eq!(
-            super::handterm_native_latex_cell_symbol("x", 1, 1).as_deref(),
-            Some("\x1b[s\x1b_L;x\x1b\\\x1b[u\x1b[1C")
-        );
-        assert!(super::handterm_native_latex_cell_symbol("x\x1by", 1, 1).is_none());
-    }
-
-    #[test]
-    fn tail_follow_small_appends_snap_to_bottom() {
-        // Streaming-sized appends (<= min jump) snap directly; no animation.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(103, 30);
-        assert_eq!(scroll, 103);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_large_append_slides_in_bounded_steps() {
-        // A 12-row jump advances by at most TAIL_CATCHUP_MAX_STEP per frame
-        // and reports an active catch-up until it reaches the bottom.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let first = super::resolve_tail_follow_scroll(112, 30);
-        assert!(first < 112, "must not snap: {first}");
-        assert!(
-            first - 100 <= super::TAIL_CATCHUP_MAX_STEP,
-            "step bounded: {first}"
-        );
-        assert!(crate::tui::ui::tail_catchup_active());
-
-        // Subsequent frames converge to the bottom and clear the flag.
-        let mut scroll = first;
-        let mut guard = 0;
-        while scroll < 112 {
-            crate::tui::ui::set_last_resolved_chat_scroll(scroll);
-            scroll = super::resolve_tail_follow_scroll(112, 30);
-            guard += 1;
-            assert!(guard < 50, "catch-up must converge");
-        }
-        assert_eq!(scroll, 112);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn explicit_tail_follow_request_skips_content_catch_up_animation() {
-        crate::tui::ui::set_last_resolved_chat_scroll(40);
-        crate::tui::ui::request_tail_follow_snap();
-
-        let scroll = super::resolve_tail_follow_scroll(80, 30);
-
-        assert_eq!(scroll, 80);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_caps_lag_to_one_viewport() {
-        // A huge append (way beyond a screen) starts at most one viewport
-        // behind the bottom so the catch-up never replays pages of content.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(400, 30);
-        assert!(scroll >= 400 - 30, "lag capped to viewport: {scroll}");
-        assert!(crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn tail_follow_backward_motion_snaps() {
-        // Content shrank (commit collapsed reasoning): snap, don't animate.
-        crate::tui::ui::set_last_resolved_chat_scroll(100);
-        let scroll = super::resolve_tail_follow_scroll(80, 30);
-        assert_eq!(scroll, 80);
-        assert!(!crate::tui::ui::tail_catchup_active());
-    }
-
-    #[test]
-    fn default_copy_badge_alt_label_matches_platform() {
-        #[cfg(target_os = "macos")]
-        assert_eq!(super::copy_badge_alt_label_from_config(""), "⌥");
-
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(super::copy_badge_alt_label_from_config(""), "Alt");
-    }
-
-    #[test]
-    fn copy_badge_alt_label_uses_trimmed_config_override() {
-        assert_eq!(
-            super::copy_badge_alt_label_from_config(" Option "),
-            "Option"
-        );
-        assert_eq!(super::copy_badge_alt_label_from_config("⌥"), "⌥");
-    }
-}
+#[path = "ui_viewport_tests.rs"]
+mod tests;
