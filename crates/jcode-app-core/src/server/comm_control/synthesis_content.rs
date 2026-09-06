@@ -1,7 +1,5 @@
 //! Synthesis content.
 
-use super::*;
-
 /// Assignment content for a (re-)dispatched node.
 ///
 /// For a re-woken composite (`is_composite_synthesis`), the node's original

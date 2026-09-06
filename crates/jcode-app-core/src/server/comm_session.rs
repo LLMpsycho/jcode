@@ -1,10 +1,7 @@
 mod model_selection;
-use model_selection::explicit_route_for_configured_model;
-use model_selection::inherit_coordinator_selection;
 use model_selection::is_inherit_sentinel;
 use model_selection::provider_key_for_spawn_model;
 use model_selection::resolve_swarm_spawn_selection;
-use model_selection::selection_for_concrete_model;
 
 use super::ClientConnectionInfo;
 use super::client_lifecycle::process_message_streaming_mpsc;

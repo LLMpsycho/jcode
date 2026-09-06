@@ -3,8 +3,7 @@
 #[path = "dispatch_mappings.rs"]
 mod mappings;
 use mappings::{
-    map_ambient_subcommand, map_cloud_sessions_subcommand, map_cloud_subcommand,
-    map_memory_subcommand, map_transcript_mode,
+    map_ambient_subcommand, map_cloud_subcommand, map_memory_subcommand, map_transcript_mode,
 };
 
 use anyhow::Result;
