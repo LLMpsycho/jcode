@@ -34,8 +34,8 @@ const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
-static TELEMETRY_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
-static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<SyncSender<Value>> = OnceLock::new();
+static TELEMETRY_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
+static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
 static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
@@ -1393,22 +1393,26 @@ where
     Ok(sender)
 }
 
-fn background_sender() -> &'static SyncSender<Value> {
-    TELEMETRY_BACKGROUND_SENDER.get_or_init(|| {
-        spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
-            let _ = post_payload_with_retry(payload, ASYNC_SEND_TIMEOUT);
+fn background_sender() -> std::io::Result<&'static SyncSender<Value>> {
+    TELEMETRY_BACKGROUND_SENDER
+        .get_or_init(|| {
+            spawn_background_worker(BACKGROUND_QUEUE_CAPACITY, |payload| {
+                let _ = post_payload_with_retry(payload, ASYNC_SEND_TIMEOUT);
+            })
         })
-        .expect("telemetry background worker should start")
-    })
+        .as_ref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
-fn transcript_background_sender() -> &'static SyncSender<Value> {
-    TRANSCRIPT_BACKGROUND_SENDER.get_or_init(|| {
-        spawn_background_worker(64, |payload| {
-            let _ = post_transcript_payload(payload, ASYNC_SEND_TIMEOUT);
+fn transcript_background_sender() -> std::io::Result<&'static SyncSender<Value>> {
+    TRANSCRIPT_BACKGROUND_SENDER
+        .get_or_init(|| {
+            spawn_background_worker(64, |payload| {
+                let _ = post_transcript_payload(payload, ASYNC_SEND_TIMEOUT);
+            })
         })
-        .expect("transcript telemetry background worker should start")
-    })
+        .as_ref()
+        .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
 fn send_transcript_payload(payload: Value) -> bool {
@@ -1420,7 +1424,17 @@ fn send_transcript_payload(payload: Value) -> bool {
         return true;
     }
     #[cfg(not(test))]
-    match transcript_background_sender().try_send(payload) {
+    let sender = match transcript_background_sender() {
+        Ok(sender) => sender,
+        Err(error) => {
+            logging::warn(&format!(
+                "Failed to start transcript upload worker: {error}"
+            ));
+            return false;
+        }
+    };
+    #[cfg(not(test))]
+    match sender.try_send(payload) {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             logging::warn("transcript upload queue is full; dropping transcript");
@@ -1449,7 +1463,14 @@ fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
                 return false;
             }
             logging::debug("queueing telemetry payload for background delivery");
-            match background_sender().try_send(payload) {
+            let sender = match background_sender() {
+                Ok(sender) => sender,
+                Err(error) => {
+                    logging::warn(&format!("Failed to start telemetry worker: {error}"));
+                    return false;
+                }
+            };
+            match sender.try_send(payload) {
                 Ok(()) => {
                     TELEMETRY_QUEUE_OVERFLOW_WARNED.store(false, Ordering::Relaxed);
                     true
