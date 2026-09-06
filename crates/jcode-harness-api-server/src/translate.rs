@@ -899,13 +899,25 @@ impl BridgeState {
             .windows(needle.len())
             .enumerate()
             .filter_map(|(at, window)| (window == needle.as_bytes()).then_some(at + needle.len()));
-        let start = if last { starts.last()? } else { starts.next()? };
+        let start = if last {
+            starts.next_back()?
+        } else {
+            starts.next()?
+        };
         match Option::<String>::deserialize(&mut serde_json::Deserializer::from_slice(
             &bytes[start..],
         )) {
             Ok(value) => value,
-            // The bounded window may end before this optional field is complete.
-            Err(_) => None,
+            // A bounded window can end mid-field; malformed complete fields
+            // remain optional but produce a diagnostic without logging content.
+            Err(error) if error.is_eof() => None,
+            Err(error) => {
+                eprintln!(
+                    "harness API bridge: invalid session metadata field {field} ({:?})",
+                    error.classify()
+                );
+                None
+            }
         }
     }
 
@@ -920,10 +932,19 @@ impl BridgeState {
         } else {
             starts.next()?
         };
-        match bool::deserialize(&mut serde_json::Deserializer::from_slice(&bytes[start..])) {
-            Ok(value) => Some(value),
-            // Missing, partial, or legacy field values are not a known boolean.
-            Err(_) => None,
+        match Option::<bool>::deserialize(&mut serde_json::Deserializer::from_slice(
+            &bytes[start..],
+        )) {
+            Ok(value) => value,
+            // Null is a supported legacy absence; incomplete windows are unknown.
+            Err(error) if error.is_eof() => None,
+            Err(error) => {
+                eprintln!(
+                    "harness API bridge: invalid session metadata field {field} ({:?})",
+                    error.classify()
+                );
+                None
+            }
         }
     }
 
@@ -1159,7 +1180,7 @@ impl BridgeState {
                 })
                 .collect::<Vec<_>>()
         });
-        ids.sort_unstable_by(|left, right| right.0.cmp(&left.0));
+        ids.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
         Self::write_bootstrap_recent_session_index(&ids);
         if let Some(limit) = limit {
             ids.truncate(limit);

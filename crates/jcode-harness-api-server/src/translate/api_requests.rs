@@ -401,7 +401,7 @@ impl BridgeState {
                 vec![Outbound::Reply(ServerFrame::reply(
                     api_id,
                     ApiEvent::Models {
-                        session_id: self.session_id.clone().unwrap_or_else(String::new),
+                        session_id: self.session_id.as_deref().unwrap_or("").to_owned(),
                         models: self.available_models.clone(),
                         current: self.current_model.clone(),
                     },
@@ -410,7 +410,7 @@ impl BridgeState {
             "get_runtime_info" => vec![Outbound::Reply(ServerFrame::reply(
                 api_id,
                 ApiEvent::RuntimeInfo {
-                    session_id: self.session_id.clone().unwrap_or_else(String::new),
+                    session_id: self.session_id.as_deref().unwrap_or("").to_owned(),
                     provider: self.current_provider.clone(),
                     model: self.current_model.clone(),
                     reasoning_effort: self.current_effort.clone(),
