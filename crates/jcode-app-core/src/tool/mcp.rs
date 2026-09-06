@@ -96,7 +96,7 @@ impl Tool for McpSearchTool {
                     return None;
                 }
                 if let Some(query) = &query {
-                    let description = tool.description.as_deref().unwrap_or_default();
+                    let description = tool.description.as_deref().unwrap_or("");
                     if !name.to_ascii_lowercase().contains(query)
                         && !server.to_ascii_lowercase().contains(query)
                         && !tool.name.to_ascii_lowercase().contains(query)

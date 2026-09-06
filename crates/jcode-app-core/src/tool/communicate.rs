@@ -1,5 +1,18 @@
 #![cfg_attr(test, allow(clippy::await_holding_lock))]
 
+mod output_formatting;
+use output_formatting::format_channels;
+use output_formatting::format_context_entries;
+use output_formatting::format_context_history;
+use output_formatting::format_members;
+use output_formatting::format_status_snapshot;
+use output_formatting::format_tool_summary;
+
+mod seed_remap;
+use seed_remap::format_seed_remaps;
+use seed_remap::remap_conflicting_seed_nodes;
+use seed_remap::seed_retry_scope;
+
 use super::{Tool, ToolContext, ToolOutput};
 use crate::background::TaskResult;
 use crate::plan::PlanItem;
@@ -75,74 +88,6 @@ fn plan_graph_node_ids(summary: &PlanGraphStatus) -> HashSet<String> {
         .chain(&summary.unresolved_dependency_ids)
         .cloned()
         .collect()
-}
-
-fn seed_retry_scope(ctx: &ToolContext) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    ctx.session_id.hash(&mut hasher);
-    ctx.message_id.hash(&mut hasher);
-    format!("seed-{:08x}", hasher.finish() as u32)
-}
-
-/// Rename only seed ids that collide with the existing durable plan, then rewrite
-/// intra-batch dependency edges to follow them. The scope is stable for a tool
-/// turn, so retrying the same call produces the same ids and is itself idempotent.
-fn remap_conflicting_seed_nodes(
-    nodes: &[TaskGraphNodeSpec],
-    occupied: &HashSet<String>,
-    conflicting_id: &str,
-    scope: &str,
-) -> (Vec<TaskGraphNodeSpec>, Vec<(String, String)>) {
-    let original_ids: HashSet<&str> = nodes.iter().map(|node| node.id.as_str()).collect();
-    let mut reserved = occupied.clone();
-    reserved.extend(original_ids.iter().map(|id| (*id).to_string()));
-    let mut mapping = HashMap::<String, String>::new();
-
-    if occupied.contains(conflicting_id) && nodes.iter().any(|node| node.id == conflicting_id) {
-        let node_id = conflicting_id.to_string();
-        let base = format!("{conflicting_id}::{scope}");
-        let mut candidate = base.clone();
-        let mut discriminator = 2usize;
-        while reserved.contains(&candidate) {
-            candidate = format!("{base}-{discriminator}");
-            discriminator += 1;
-        }
-        reserved.insert(candidate.clone());
-        mapping.insert(node_id, candidate);
-    }
-
-    let remapped = nodes
-        .iter()
-        .cloned()
-        .map(|mut node| {
-            if let Some(id) = mapping.get(&node.id) {
-                node.id = id.clone();
-            }
-            for dependency in &mut node.depends_on {
-                if let Some(id) = mapping.get(dependency) {
-                    *dependency = id.clone();
-                }
-            }
-            node
-        })
-        .collect();
-    let changes = nodes
-        .iter()
-        .filter_map(|node| {
-            mapping
-                .get(&node.id)
-                .map(|mapped| (node.id.clone(), mapped.clone()))
-        })
-        .collect();
-    (remapped, changes)
-}
-
-fn format_seed_remaps(changes: &[(String, String)]) -> String {
-    changes
-        .iter()
-        .map(|(from, to)| format!("{from} -> {to}"))
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 async fn fetch_plan_status(session_id: &str) -> Result<PlanGraphStatus> {
@@ -1589,22 +1534,6 @@ async fn assign_task_to_session(
     }
 }
 
-fn format_context_entries(entries: &[ContextEntry]) -> ToolOutput {
-    ToolOutput::new(format_comm_context_entries(entries))
-}
-
-fn format_members(ctx: &ToolContext, members: &[AgentInfo]) -> ToolOutput {
-    ToolOutput::new(format_comm_members(&ctx.session_id, members))
-}
-
-fn format_tool_summary(target: &str, calls: &[ToolCallSummary]) -> ToolOutput {
-    ToolOutput::new(format_comm_tool_summary(target, calls))
-}
-
-fn format_status_snapshot(snapshot: &AgentStatusSnapshot) -> ToolOutput {
-    ToolOutput::new(format_comm_status_snapshot(snapshot))
-}
-
 fn format_plan_status(summary: &PlanGraphStatus) -> ToolOutput {
     let mut output = format_comm_plan_status(summary);
     if let Some(budget_line) = plan_status_budget_line(
@@ -1657,10 +1586,6 @@ fn plan_status_budget_line(summary: &PlanGraphStatus, deep_cap: usize) -> Option
         );
     }
     Some(line)
-}
-
-fn format_context_history(target: &str, messages: &[HistoryMessage]) -> ToolOutput {
-    ToolOutput::new(format_comm_context_history(target, messages))
 }
 
 #[cfg(test)]
@@ -1721,10 +1646,6 @@ async fn fetch_awaited_member_reports(
 
 fn default_await_target_statuses() -> Vec<String> {
     default_comm_await_target_statuses()
-}
-
-fn format_channels(channels: &[SwarmChannelInfo]) -> ToolOutput {
-    ToolOutput::new(format_comm_channels(channels))
 }
 
 /// Render the swarm model catalog for the `list_models` action: the current

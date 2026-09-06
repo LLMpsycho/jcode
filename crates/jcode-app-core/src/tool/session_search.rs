@@ -6,6 +6,10 @@
 //! - snapshot + journal persistence is searched so recent messages are visible
 //! - results are grouped by session by default to avoid duplicate floods
 
+mod result_ordering;
+use result_ordering::compare_results;
+use result_ordering::group_and_limit_results;
+
 use super::session_search_index::{self, IndexFileSpec};
 use super::{Tool, ToolContext, ToolOutput};
 use crate::message::ContentBlock;
@@ -1839,37 +1843,6 @@ fn role_label(msg: &StoredMessage) -> &'static str {
         crate::message::Role::User => "user",
         crate::message::Role::Assistant => "assistant",
     }
-}
-
-fn compare_results(a: &SearchResult, b: &SearchResult) -> std::cmp::Ordering {
-    b.score
-        .partial_cmp(&a.score)
-        .unwrap_or(std::cmp::Ordering::Equal)
-        .then_with(|| b.updated_at.cmp(&a.updated_at))
-        .then_with(|| a.session_id.cmp(&b.session_id))
-        .then_with(|| a.message_index.cmp(&b.message_index))
-}
-
-fn group_and_limit_results(
-    results: Vec<SearchResult>,
-    options: &SearchOptions,
-) -> Vec<SearchResult> {
-    let mut grouped = Vec::new();
-    let mut per_session: HashMap<String, usize> = HashMap::new();
-
-    for result in results {
-        let count = per_session.entry(result.session_id.clone()).or_default();
-        if *count >= options.max_per_session {
-            continue;
-        }
-        *count += 1;
-        grouped.push(result);
-        if grouped.len() >= options.limit {
-            break;
-        }
-    }
-
-    grouped
 }
 
 fn render_options(options: &SearchOptions) -> SessionSearchRenderOptions {

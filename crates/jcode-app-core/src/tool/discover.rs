@@ -1117,7 +1117,7 @@ fn validate_details(params: &DiscoverToolsInput) -> Result<ValidatedDetails> {
         "investigation_goal",
         GOALS,
     )?;
-    let supplied_requirements = params.requirements.as_deref().unwrap_or_default();
+    let supplied_requirements = params.requirements.as_deref().unwrap_or(&[]);
     if supplied_requirements.len() > 8 {
         return Err(anyhow::anyhow!(
             "integration details accept at most 8 public requirements"
@@ -1131,7 +1131,7 @@ fn validate_details(params: &DiscoverToolsInput) -> Result<ValidatedDetails> {
             Ok(value.to_string())
         })
         .collect::<Result<Vec<_>>>()?;
-    let supplied_topics = params.topics.as_deref().unwrap_or_default();
+    let supplied_topics = params.topics.as_deref().unwrap_or(&[]);
     if supplied_topics.len() > TOPICS.len() {
         return Err(anyhow::anyhow!(
             "integration details accept at most 7 topics"
@@ -1403,7 +1403,7 @@ fn validate_suggestion(params: &DiscoverToolsInput) -> Result<ValidatedSuggestio
         validate_suggestion_text(evidence, "gap_evidence", 10, 500, true)?;
     }
 
-    let supplied_requirements = params.requirements.as_deref().unwrap_or_default();
+    let supplied_requirements = params.requirements.as_deref().unwrap_or(&[]);
     if supplied_requirements.len() > 8 {
         return Err(anyhow::anyhow!(
             "catalog suggestions accept at most 8 public requirements"
