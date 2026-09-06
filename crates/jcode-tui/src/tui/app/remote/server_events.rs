@@ -751,10 +751,18 @@ pub(in crate::tui::app) fn handle_server_event(
             name,
             output,
             title,
-            metadata,
+            metadata: _,
             error,
         } => super::server_event_handlers::handle_tool_done(
-            app, remote, id, name, output, title, metadata, error,
+            app,
+            remote,
+            super::server_event_handlers::ToolCompletion {
+                id,
+                name,
+                output,
+                title,
+                error,
+            },
         ),
         ServerEvent::GeneratedImage {
             id,

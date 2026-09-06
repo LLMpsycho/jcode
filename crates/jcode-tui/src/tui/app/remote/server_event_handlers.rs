@@ -1,15 +1,26 @@
 use super::*;
 
+/// Tool completion fields consumed by the remote transcript renderer.
+pub(super) struct ToolCompletion {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) output: String,
+    pub(super) title: Option<String>,
+    pub(super) error: Option<String>,
+}
+
 pub(super) fn handle_tool_done(
     app: &mut App,
     remote: &mut impl RemoteEventState,
-    id: String,
-    name: String,
-    output: String,
-    title: Option<String>,
-    _metadata: Option<serde_json::Value>,
-    error: Option<String>,
+    completion: ToolCompletion,
 ) -> bool {
+    let ToolCompletion {
+        id,
+        name,
+        output,
+        title,
+        error,
+    } = completion;
     let display_output = remote.handle_tool_done(&id, &name, &output);
     let display_output = if error.is_some()
         && !display_output.starts_with("Error:")
