@@ -46,7 +46,7 @@ pub enum ApiEvent {
     /// Reply to an advisor control; never a primary turn completion.
     AdvisorResult {
         session_id: String,
-        result: crate::AdvisorControlResult,
+        result: Box<crate::AdvisorControlResult>,
     },
 
     // --- Streaming events (carry session_id, not tied to a request id) ---

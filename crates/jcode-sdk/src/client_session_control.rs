@@ -222,7 +222,7 @@ impl JcodeClient {
             })?
             .event
         {
-            ApiEvent::AdvisorResult { result, .. } => Ok(result),
+            ApiEvent::AdvisorResult { result, .. } => Ok(*result),
             other => Err(unexpected("advisor_result", &other)),
         }
     }

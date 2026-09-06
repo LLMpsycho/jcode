@@ -73,7 +73,10 @@ impl BridgeState {
             return Vec::new();
         };
         let event = match serde_json::from_value::<AdvisorControlResult>(frame["result"].clone()) {
-            Ok(result) => ApiEvent::AdvisorResult { session_id, result },
+            Ok(result) => ApiEvent::AdvisorResult {
+                session_id,
+                result: Box::new(result),
+            },
             Err(_) => ApiEvent::Error {
                 code: ErrorCode::Internal,
                 message: "daemon returned an invalid advisor result".into(),
