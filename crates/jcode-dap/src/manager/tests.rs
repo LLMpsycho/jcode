@@ -775,3 +775,39 @@ async fn reservation_drop_retains_cleanup_failure_for_owner_inspection() {
     assert!(manager.reserve(spec("cleanup-failure")).is_ok());
     assert!(manager.snapshot("different-owner", id).is_err());
 }
+
+#[tokio::test]
+async fn successful_reservation_drop_does_not_evict_retained_terminal_history() {
+    let manager = DebugSessionManager::new(DebugSessionManagerConfig {
+        max_retained_ended_sessions: 1,
+        ..Default::default()
+    })
+    .unwrap();
+    let (previous, _previous_adapter) = attached(&manager, "history-owner");
+    manager.terminate("history-owner", previous).await.unwrap();
+    let (client, mut adapter) = FakeAdapter::pair(1024);
+    let mut reservation = manager.reserve(spec("history-owner")).unwrap();
+    reservation.attach_client(client).unwrap();
+    let canceled = reservation.id();
+    drop(reservation);
+    assert!(matches!(
+        timeout(Duration::from_secs(1), adapter.recv())
+            .await
+            .unwrap(),
+        Err(DapError::TransportClosed)
+    ));
+    timeout(Duration::from_secs(2), async {
+        while manager.snapshot("history-owner", canceled).is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        manager
+            .snapshot("history-owner", previous)
+            .unwrap()
+            .state
+            .is_terminal()
+    );
+}
