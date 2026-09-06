@@ -32,6 +32,11 @@ It is not an allowlist. It is a triage record so advisories are visible and acti
 
 ## Notes
 
+- On 2026-09-06, `h2` was updated from 0.4.13 to 0.4.16 for
+  [RUSTSEC-2026-0258](https://github.com/hyperium/hyper/security/advisories/GHSA-q83h-524g-xf6h).
+  The vulnerability allowed empty HTTP/2 DATA frames to accumulate without a
+  bound. The compatible patch changes only the locked `h2` version and checksum.
+
 - None of the advisories above were introduced by the provider-auth refactor.
 - The provider/auth hardening work should continue independently of these dependency upgrades.
 - `RUSTSEC-2026-0217` (`tract-nnef` 0.21.10, integer overflow in the NNEF tensor
