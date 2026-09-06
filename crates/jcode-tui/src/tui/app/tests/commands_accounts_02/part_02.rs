@@ -2,6 +2,15 @@
 fn test_improve_mode_persists_in_session_file() {
     with_temp_jcode_home(|| {
         let mut session = crate::session::Session::create(None, None);
+        // Improve mode runs in a visible conversation; untouched empty panels
+        // intentionally have no session file.
+        session.add_message(
+            crate::message::Role::User,
+            vec![ContentBlock::Text {
+                text: "Plan improvements to this project".to_string(),
+                cache_control: None,
+            }],
+        );
         session.improve_mode = Some(crate::session::SessionImproveMode::ImprovePlan);
         let session_id = session.id.clone();
         session.save().expect("save session");
