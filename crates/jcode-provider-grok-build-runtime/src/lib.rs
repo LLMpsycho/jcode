@@ -153,12 +153,11 @@ impl Provider for GrokBuildProvider {
                     prompt,
                     tx.clone(),
                     cancel_rx,
-                ) {
-                    if tx.blocking_send(Err(error)).is_err() {
-                        jcode_logging::debug(
-                            "Grok request failed after its stream consumer disconnected",
-                        );
-                    }
+                ) && tx.blocking_send(Err(error)).is_err()
+                {
+                    jcode_logging::debug(
+                        "Grok request failed after its stream consumer disconnected",
+                    );
                 }
             })
             .context("Failed to start Grok Build ACP runtime thread")?;
@@ -294,10 +293,10 @@ impl Stream for GrokEventStream {
 
 impl Drop for GrokEventStream {
     fn drop(&mut self) {
-        if let Some(cancel) = self.cancel.take() {
-            if cancel.send(()).is_err() {
-                jcode_logging::debug("Grok cancellation receiver already completed");
-            }
+        if let Some(cancel) = self.cancel.take()
+            && cancel.send(()).is_err()
+        {
+            jcode_logging::debug("Grok cancellation receiver already completed");
         }
         // Joining can block while the child handles cancellation. Detach here;
         // dropping the child in the ACP thread has kill_on_drop enabled.
@@ -709,10 +708,10 @@ impl acp::Client for GrokAcpClient {
                 .map(|detail| StreamEvent::StatusDetail { detail }),
             _ => None,
         };
-        if let Some(event) = event {
-            if self.tx.send(Ok(event)).await.is_err() {
-                jcode_logging::debug("Grok event recipient disconnected");
-            }
+        if let Some(event) = event
+            && self.tx.send(Ok(event)).await.is_err()
+        {
+            jcode_logging::debug("Grok event recipient disconnected");
         }
         Ok(())
     }

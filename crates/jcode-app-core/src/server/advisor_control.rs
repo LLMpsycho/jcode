@@ -81,11 +81,11 @@ fn handle_with_config(
     manager: Arc<AdvisorManager>,
     config: AdvisorConfig,
 ) {
-    if matches!(request, AdvisorRequest::Enable) {
-        if let Err(error) = roster::enable_owner(&manager, owner_session) {
-            send_error(id, events, error.to_string());
-            return;
-        }
+    if matches!(request, AdvisorRequest::Enable)
+        && let Err(error) = roster::enable_owner(&manager, owner_session)
+    {
+        send_error(id, events, error.to_string());
+        return;
     }
     let (session_key, mut config, request) = match target_request(&config, owner_session, request) {
         Ok(target) => target,

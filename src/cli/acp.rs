@@ -399,19 +399,18 @@ impl AcpRuntime {
         let runtime = self.clone();
         tokio::spawn(async move {
             let result = runtime.run_prompt(id.clone(), session, text, images).await;
-            if let Err(err) = result {
-                if let Err(write_error) = runtime
+            if let Err(err) = result
+                && let Err(write_error) = runtime
                     .write_error_value(
                         id,
                         JSONRPC_INTERNAL_ERROR,
                         format!("Prompt failed: {err:#}"),
                     )
                     .await
-                {
-                    crate::logging::warn(&format!(
-                        "Failed to report ACP prompt failure: {write_error}"
-                    ));
-                }
+            {
+                crate::logging::warn(&format!(
+                    "Failed to report ACP prompt failure: {write_error}"
+                ));
             }
         });
         Ok(())
