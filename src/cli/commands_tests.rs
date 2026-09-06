@@ -1354,6 +1354,18 @@ fn list_cli_providers_includes_conifer() {
 }
 
 #[test]
+fn list_cli_providers_includes_orcarouter() {
+    let providers = super::report_info::list_cli_providers();
+    let orcarouter = providers
+        .iter()
+        .find(|provider| provider.id == "orcarouter")
+        .expect("OrcaRouter should be discoverable through `provider list`");
+
+    assert_eq!(orcarouter.display_name, "OrcaRouter");
+    assert_eq!(orcarouter.auth_kind.as_deref(), Some("API key"));
+}
+
+#[test]
 fn version_command_plain_output_includes_core_fields() {
     let report = super::report_info::VersionReport {
         version: "v1.2.3 (abc1234)".to_string(),
