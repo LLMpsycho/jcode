@@ -183,8 +183,16 @@ mod tests {
                 .any(|tool| tool["type"] == "image_generation")
         );
         provider.restrict_to_explicit_tools().unwrap();
-        let warmed = provider.response_request_for_model("gpt-5", &[], &[], "advisor", true);
-        assert!(warmed["tools"].as_array().unwrap().is_empty());
+        let tools = [ToolDefinition {
+            name: "read".into(),
+            description: "Read evidence".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let warmed = provider.response_request_for_model("gpt-5.5", &[], &tools, "advisor", true);
+        let advertised = warmed["tools"].as_array().unwrap();
+        assert_eq!(advertised.len(), 1);
+        assert_eq!(advertised[0]["name"], "read");
+        assert_eq!(advertised[0]["type"], "function");
         let mut advisor = ordinary.clone();
         // Future hosted tool kinds must be excluded too, not just image generation.
         advisor["tools"]
