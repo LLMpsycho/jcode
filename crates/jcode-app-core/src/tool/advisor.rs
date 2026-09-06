@@ -158,12 +158,9 @@ impl Tool for AdvisorSearchTool {
             if input.get("regex") != Some(&Value::Bool(true)) {
                 command.arg("--fixed-strings");
             }
-            command.arg("-e").arg(
-                input
-                    .get("query")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            );
+            command
+                .arg("-e")
+                .arg(input.get("query").and_then(Value::as_str).unwrap_or(""));
         }
         command
             .arg("--")

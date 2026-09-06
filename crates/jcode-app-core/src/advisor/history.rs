@@ -58,7 +58,7 @@ impl AdvisorHistory {
                         _ => None,
                     })
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(String::new);
         }
         self.exchanges.push_back(exchange);
         while self.exchanges.len() > MAX_EXCHANGES || self.bytes() > MAX_HISTORY_BYTES {

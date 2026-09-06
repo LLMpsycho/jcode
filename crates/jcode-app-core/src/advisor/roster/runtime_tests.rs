@@ -287,4 +287,16 @@ fn poisoned_roster_state_reports_disable_failure_instead_of_empty_success() {
     );
     let error = disable_all(&manager, "poisoned", &AdvisorConfig::default()).unwrap_err();
     assert!(error.to_string().contains("state unavailable"));
+    assert!(!manager.is_enabled("poisoned", true));
+    assert!(manager.has_pending_review("poisoned"));
+    assert!(
+        manager
+            .blocks_tool_call("poisoned", "write", crate::tool::ToolCapability::WriteFiles)
+            .is_some_and(|reason| reason.contains("clearance cannot be established"))
+    );
+    assert!(
+        manager
+            .blocks_tool_call("poisoned", "read", crate::tool::ToolCapability::ReadOnly)
+            .is_none()
+    );
 }

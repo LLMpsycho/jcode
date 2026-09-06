@@ -93,7 +93,7 @@ impl AdvisorTurnInput {
     ) -> Self {
         Self {
             objective: objective.to_string(),
-            latest_primary_turn: latest_primary_turn.unwrap_or_default(),
+            latest_primary_turn: latest_primary_turn.unwrap_or_else(String::new),
             tools: tools
                 .into_iter()
                 .take(MAX_TOOLS)
@@ -339,7 +339,13 @@ pub struct AdvisorManager {
 
 impl AdvisorManager {
     pub fn snapshot(&self, owner_session_id: &str) -> Option<AdvisorRuntimeSnapshot> {
-        let sessions = self.sessions.lock().ok()?;
+        let sessions = match self.sessions.lock() {
+            Ok(sessions) => sessions,
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; snapshot unavailable");
+                return None;
+            }
+        };
         let runtime = sessions.get(owner_session_id)?;
         Some(AdvisorRuntimeSnapshot {
             owner_session_id: owner_session_id.to_string(),
@@ -373,15 +379,15 @@ impl AdvisorManager {
     }
 
     pub fn notes(&self, owner_session_id: &str) -> Vec<AdvisorNoteMetadata> {
-        self.sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| {
-                sessions
-                    .get(owner_session_id)
-                    .map(|runtime| runtime.notes.iter().cloned().collect())
-            })
-            .unwrap_or_default()
+        match self.sessions.lock() {
+            Ok(sessions) => sessions
+                .get(owner_session_id)
+                .map_or_else(Vec::new, |runtime| runtime.notes.iter().cloned().collect()),
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; notes unavailable");
+                Vec::new()
+            }
+        }
     }
 
     pub fn set_enabled(&self, owner_session_id: &str, enabled: bool) -> anyhow::Result<()> {
@@ -415,15 +421,16 @@ impl AdvisorManager {
     }
 
     pub fn is_enabled(&self, owner_session_id: &str, configured_default: bool) -> bool {
-        self.sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| {
-                sessions
-                    .get(owner_session_id)
-                    .and_then(|runtime| runtime.enabled_override)
-            })
-            .unwrap_or(configured_default)
+        match self.sessions.lock() {
+            Ok(sessions) => sessions
+                .get(owner_session_id)
+                .and_then(|runtime| runtime.enabled_override)
+                .unwrap_or(configured_default),
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; review scheduling disabled");
+                false
+            }
+        }
     }
 
     pub fn resolve_note(
@@ -471,7 +478,15 @@ impl AdvisorManager {
         if !capability.requires_advisor_clearance() {
             return None;
         }
-        let sessions = self.sessions.lock().ok()?;
+        let sessions = match self.sessions.lock() {
+            Ok(sessions) => sessions,
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; tool clearance unavailable");
+                return Some(
+                    "advisor state unavailable; tool clearance cannot be established".into(),
+                );
+            }
+        };
         for (key, runtime) in sessions.iter() {
             if key != owner_session_id && runtime.owner_session_id != owner_session_id {
                 continue;
@@ -652,7 +667,11 @@ impl AdvisorManager {
                 if runtime.cursor >= max_reviews_per_session {
                     runtime.last_error = Some("advisor review budget exhausted; increase max_reviews_per_session to continue".into());
                 }
-                let _ = self.persist(&owner_session_id, runtime);
+                if self.persist(&owner_session_id, runtime).is_err() {
+                    crate::logging::error(
+                        "Advisor state persistence failed at review budget boundary",
+                    );
+                }
                 return false;
             }
             if runtime.status == AdvisorStatus::Reviewing {
@@ -783,8 +802,12 @@ impl AdvisorManager {
             return;
         }
         let identity = runtime::provider_identity(provider.as_ref());
-        let Some((messages, concern_context)) =
-            self.sessions.lock().ok().and_then(|mut sessions| {
+        let Some((messages, concern_context)) = self.sessions.lock().map_or_else(
+            |_| {
+                crate::logging::error("Advisor state lock poisoned; review cancelled");
+                None
+            },
+            |mut sessions| {
                 let runtime = sessions.get_mut(&session)?;
                 (runtime.active_review_id == review_id).then(|| {
                     if runtime
@@ -807,8 +830,8 @@ impl AdvisorManager {
                         runtime.concerns.context(runtime.turns_observed),
                     )
                 })
-            })
-        else {
+            },
+        ) else {
             return;
         };
         let outcome = match runtime::execute(

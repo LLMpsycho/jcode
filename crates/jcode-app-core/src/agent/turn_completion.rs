@@ -75,17 +75,23 @@ impl Agent {
                         response.stop_reason,
                         response.reasoning.len()
                     ));
-                    let _ = event_tx.send(ServerEvent::ProviderGuardrail {
+                    if (event_tx.send(ServerEvent::ProviderGuardrail {
                         stop_reason: response.stop_reason.map(str::to_string),
                         message: notice,
-                    });
+                    }))
+                    .is_err()
+                    {
+                        crate::logging::debug("Event recipient disconnected before delivery");
+                    }
                 }
                 Ok(false)
             }
             NoToolCallOutcome::ContinueWithoutEvent => Ok(true),
             NoToolCallOutcome::ContinueWithSoftInterrupt { injected, point } => {
                 for event in Self::build_soft_interrupt_events(injected, point, None) {
-                    let _ = event_tx.send(event);
+                    if (event_tx.send(event)).is_err() {
+                        crate::logging::debug("Event recipient disconnected before delivery");
+                    }
                 }
                 Ok(true)
             }

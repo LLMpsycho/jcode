@@ -152,7 +152,15 @@ impl Agent {
         let investigation = self
             .working_dir()
             .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
+            .or_else(|| match std::env::current_dir() {
+                Ok(directory) => Some(directory),
+                Err(_) => {
+                    logging::warn(
+                        "Advisor investigation unavailable: working directory cannot be resolved",
+                    );
+                    None
+                }
+            })
             .and_then(
                 |working_dir| match crate::advisor::investigation::AdvisorInvestigation::new(
                     self.registry.clone(),
@@ -240,10 +248,7 @@ impl Agent {
             primary_turn_id: state.primary_turn_id,
             working_dir: self.session.working_dir.as_ref().map(PathBuf::from),
             investigation: state.investigation.clone(),
-            instructions: excerpt(
-                self.agents_md_snapshot.0.as_deref().unwrap_or_default(),
-                4000,
-            ),
+            instructions: excerpt(self.agents_md_snapshot.0.as_deref().unwrap_or(""), 4000),
             ..Default::default()
         };
         let config = state.config.clone();
@@ -254,7 +259,7 @@ impl Agent {
                 self.session.working_dir.as_deref(),
             )
             .await;
-        let _ = crate::advisor::roster::schedule_updates(
+        let scheduled = crate::advisor::roster::schedule_updates(
             &manager,
             self.session.id.clone(),
             self.provider_fork(),
@@ -263,6 +268,11 @@ impl Agent {
             config,
             context,
         );
+        if !scheduled {
+            logging::debug(
+                "Advisor observation scheduled no updates (disabled, cadence, or budget)",
+            );
+        }
     }
 
     /// Return true only when new eligible advice warrants another primary
@@ -316,7 +326,9 @@ impl Agent {
         }
         if let Some(event_tx) = event_tx {
             for event in Self::build_soft_interrupt_events(injected, "advisor_terminal", None) {
-                let _ = event_tx.send(event);
+                if (event_tx.send(event)).is_err() {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
             }
         }
         true
@@ -329,7 +341,7 @@ impl Agent {
         print_output: bool,
     ) {
         if let Some(event_tx) = event_tx {
-            let _ = event_tx.send(ServerEvent::Notification {
+            if (event_tx.send(ServerEvent::Notification {
                 from_session: format!("advisor:{}", self.session.id),
                 from_name: Some("Advisor".to_string()),
                 notification_type: crate::protocol::NotificationType::Message {
@@ -338,7 +350,11 @@ impl Agent {
                     tldr: None,
                 },
                 message: message.to_string(),
-            });
+            }))
+            .is_err()
+            {
+                crate::logging::debug("Event recipient disconnected before delivery");
+            }
         } else if print_output {
             crate::terminal_println!("\n[ADVISOR] {message}");
         }
@@ -359,7 +375,7 @@ impl Agent {
                 message.push_str(&excerpt(evidence, 512));
             }
             if let Some(event_tx) = event_tx {
-                let _ = event_tx.send(ServerEvent::Notification {
+                if (event_tx.send(ServerEvent::Notification {
                     from_session: format!("advisor:{}", self.session.id),
                     from_name: Some("Advisor".to_string()),
                     notification_type: crate::protocol::NotificationType::Message {
@@ -368,7 +384,11 @@ impl Agent {
                         tldr: Some(note.summary),
                     },
                     message,
-                });
+                }))
+                .is_err()
+                {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
             } else if print_output {
                 crate::terminal_println!("\n{message}");
             }

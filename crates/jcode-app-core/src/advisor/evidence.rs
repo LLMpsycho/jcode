@@ -40,8 +40,8 @@ fn clean(value: &str) -> String {
 fn field(value: &Value, key: &str) -> String {
     value
         .get(key)
-        .map(|v| clean(v.as_str().unwrap_or_else(|| "")))
-        .unwrap_or_default()
+        .and_then(Value::as_str)
+        .map_or_else(String::new, clean)
 }
 
 fn push(items: &mut Vec<String>, value: String) {
@@ -229,16 +229,20 @@ impl AdvisorManager {
         input: &mut AdvisorTurnInput,
         working_dir: Option<&str>,
     ) {
-        let captured = self
-            .sessions
-            .lock()
-            .ok()
-            .and_then(|mut sessions| {
-                sessions
-                    .get_mut(session)
-                    .and_then(|runtime| runtime.capture.as_mut().map(std::mem::take))
-            })
-            .unwrap_or_default();
+        let captured = match self.sessions.lock() {
+            Ok(mut sessions) => sessions
+                .get_mut(session)
+                .and_then(|runtime| runtime.capture.as_mut().map(std::mem::take))
+                .unwrap_or_else(TurnEvidence::default),
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; evidence capture unavailable");
+                input.diagnostics = "Evidence unavailable: advisor state lock poisoned.".into();
+                input
+                    .verification_status
+                    .push_str("; evidence capture failed");
+                return;
+            }
+        };
         input.tools = captured.tools.into_iter().collect();
         input.diff_summary = captured.changes.join("\n");
         let diff = bounded_diff(working_dir.map(Path::new)).await;
@@ -285,13 +289,7 @@ impl AdvisorManager {
         };
         let mut criteria = vec!["Acceptance source: user objective; the following are agent-declared plan/checks, not independently verified outcomes.".to_string()];
         if let Ok(plan) = crate::todo::load_plan(session) {
-            for criterion in plan
-                .acceptance_criteria
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .take(MAX_ITEMS)
-            {
+            for criterion in plan.acceptance_criteria.iter().flatten().take(MAX_ITEMS) {
                 push(
                     &mut criteria,
                     format!("Declared requirement: {}", clean(criterion)),
@@ -399,13 +397,13 @@ async fn bounded_diff(root: Option<&Path>) -> String {
             .stdout(std::process::Stdio::null())
             .status()
             .await
-            .ok()?;
+            .map_err(|_| "Git evidence command failed")?;
         match filters.code() {
             Some(1) => {}
             Some(0) => {
-                return Some("Diff unavailable: configured Git filters require execution.".into());
+                return Ok("Diff unavailable: configured Git filters require execution.".into());
             }
-            _ => return None,
+            _ => return Err("Git filter configuration could not be inspected"),
         }
         let mut child = evidence_git(root)
             .args([
@@ -439,22 +437,31 @@ async fn bounded_diff(root: Option<&Path>) -> String {
             ])
             .stdout(std::process::Stdio::piped())
             .spawn()
-            .ok()?;
+            .map_err(|_| "Git diff process could not be started")?;
         let mut bytes = Vec::new();
         child
             .stdout
-            .take()?
+            .take()
+            .ok_or("Git diff stdout unavailable")?
             .take(8193)
             .read_to_end(&mut bytes)
             .await
-            .ok()?;
+            .map_err(|_| "Git evidence command failed")?;
         if bytes.len() > 8192 {
-            child.kill().await.ok()?;
-        } else if !child.wait().await.ok()?.success() {
-            return None;
+            child
+                .kill()
+                .await
+                .map_err(|_| "Git diff process could not be stopped")?;
+        } else if !child
+            .wait()
+            .await
+            .map_err(|_| "Git diff process could not be reaped")?
+            .success()
+        {
+            return Err("Git diff failed (not a worktree or no HEAD)");
         }
         let text = String::from_utf8_lossy(&bytes);
-        Some(format!(
+        Ok::<String, &str>(format!(
             "Tracked working-tree patch vs HEAD (may include prior edits; untracked files, submodules, and credential stores omitted):\n{}\n{}",
             bounded_excerpt(&text, 8192),
             if bytes.len() > 8192 {
@@ -464,14 +471,11 @@ async fn bounded_diff(root: Option<&Path>) -> String {
             }
         ))
     };
-    tokio::time::timeout(std::time::Duration::from_millis(350), future)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            "Working-tree diff unavailable (not a git worktree, no HEAD, or bounded deadline)."
-                .into()
-        })
+    match tokio::time::timeout(std::time::Duration::from_millis(350), future).await {
+        Ok(Ok(diff)) => diff,
+        Ok(Err(reason)) => format!("Working-tree diff unavailable: {reason}."),
+        Err(_) => "Working-tree diff unavailable: bounded deadline exceeded.".into(),
+    }
 }
 
 #[cfg(test)]

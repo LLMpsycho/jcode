@@ -138,7 +138,10 @@ impl AdvisorManager {
                     .map(|(key, _)| key.clone())
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_else(|_| {
+                crate::logging::error("Advisor state lock poisoned; history reset unavailable");
+                Vec::new()
+            });
         for key in keys {
             self.reset_one_history(&key);
         }

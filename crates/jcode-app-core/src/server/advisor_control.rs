@@ -36,22 +36,32 @@ fn handle_with_manager(
         let outcome = roster::disable_all(&manager, session, &global);
         match outcome {
             Ok(()) => {
-                let _ = events.send(ServerEvent::AdvisorResult {
+                if (events.send(ServerEvent::AdvisorResult {
                     id,
                     result: AdvisorControlResult {
                         message: "All advisors disabled for this session.".into(),
                         ..Default::default()
                     },
-                });
+                }))
+                .is_err()
+                {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
             }
             Err(error) => send_error(id, events, error.to_string()),
         }
         return;
     }
-    let working_dir = agent
-        .try_lock()
-        .ok()
-        .and_then(|agent| agent.working_dir().map(std::path::PathBuf::from));
+    let working_dir = match agent.try_lock() {
+        Ok(agent) => agent.working_dir().map(std::path::PathBuf::from),
+        Err(_) => {
+            // The owner roster cache retains project configuration during an active turn.
+            crate::logging::debug(
+                "Advisor control using cached project roster while session is busy",
+            );
+            None
+        }
+    };
     let config = match roster::config_for_owner(session, &global, working_dir.as_deref()) {
         Ok(config) => config,
         Err(error) => {
@@ -105,7 +115,9 @@ fn handle_with_config(
                 }
             }
         };
-        let _ = events.send(ServerEvent::AdvisorResult { id, result });
+        if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+            crate::logging::debug("Event recipient disconnected before delivery");
+        }
         return;
     }
     if matches!(
@@ -133,7 +145,9 @@ fn handle_with_config(
                 request,
                 selection_id,
             );
-            let _ = events.send(ServerEvent::AdvisorResult { id, result });
+            if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+                crate::logging::debug("Event recipient disconnected before delivery");
+            }
         } else {
             // Waiting for a primary turn must not hold up cancel, acknowledge,
             // dismiss, or disable requests on this connection. Capture the
@@ -152,7 +166,9 @@ fn handle_with_config(
                     request,
                     selection_id,
                 );
-                let _ = events.send(ServerEvent::AdvisorResult { id, result });
+                if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+                    crate::logging::debug("Event recipient disconnected before delivery");
+                }
             });
         }
         return;
@@ -169,19 +185,25 @@ fn handle_with_config(
             Err(_) => manager.saved_model_settings(session, &config),
         });
     }
-    let _ = events.send(ServerEvent::AdvisorResult { id, result });
+    if (events.send(ServerEvent::AdvisorResult { id, result })).is_err() {
+        crate::logging::debug("Event recipient disconnected before delivery");
+    }
 }
 
 fn send_error(id: u64, events: &mpsc::UnboundedSender<ServerEvent>, message: String) {
     let message = crate::message::redact_secrets(&message);
-    let _ = events.send(ServerEvent::AdvisorResult {
+    if (events.send(ServerEvent::AdvisorResult {
         id,
         result: AdvisorControlResult {
             error: Some(message.clone()),
             message,
             ..Default::default()
         },
-    });
+    }))
+    .is_err()
+    {
+        crate::logging::debug("Event recipient disconnected before delivery");
+    }
 }
 
 fn target_request(
@@ -325,7 +347,7 @@ fn model_request(
     result.model_settings = Some(manager.model_settings(session, provider, config));
     if let Err(error) = outcome {
         result.error = Some(crate::message::redact_secrets(&error.to_string()));
-        result.message = result.error.clone().unwrap_or_default();
+        result.message = result.error.clone().unwrap_or_else(String::new);
     }
     result
 }

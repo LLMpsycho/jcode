@@ -103,10 +103,13 @@ impl AdvisorManager {
     }
 
     fn model_override(&self, session: &str) -> Option<AdvisorModelOverride> {
-        self.sessions
-            .lock()
-            .ok()
-            .and_then(|sessions| sessions.get(session)?.model_override.clone())
+        match self.sessions.lock() {
+            Ok(sessions) => sessions.get(session)?.model_override.clone(),
+            Err(_) => {
+                crate::logging::error("Advisor state lock poisoned; saved model unavailable");
+                None
+            }
+        }
     }
 
     pub fn model_settings(
@@ -169,7 +172,15 @@ impl AdvisorManager {
             .filter_map(|mut route| {
                 // Legacy/custom runtime identities that cannot be represented
                 // by RouteSelection must not break the whole catalog response.
-                let selection = routing::catalog_selection(&route).ok()?;
+                let selection = match routing::catalog_selection(&route) {
+                    Ok(selection) => selection,
+                    Err(_) => {
+                        crate::logging::debug(
+                            "Advisor catalog omitted an unrepresentable runtime route",
+                        );
+                        return None;
+                    }
+                };
                 route.detail = truncate_utf8(redact_secrets(&route.detail), 256);
                 Some((route, selection))
             })
@@ -296,7 +307,15 @@ fn current_selection(provider: &dyn Provider, config: &AdvisorConfig) -> Option<
     if routes.next().is_some() {
         return None;
     }
-    routing::catalog_selection(&route).ok()
+    match routing::catalog_selection(&route) {
+        Ok(selection) => Some(selection),
+        Err(_) => {
+            crate::logging::warn(
+                "Advisor current model cannot be represented by a selectable route",
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]

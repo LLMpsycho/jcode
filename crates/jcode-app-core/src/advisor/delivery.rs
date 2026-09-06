@@ -40,7 +40,9 @@ impl AdvisorManager {
             runtime.interruption_immunity_until_turn = runtime
                 .turns_observed
                 .saturating_add(runtime.interruption_immunity_turns);
-            let _ = self.persist(key, runtime);
+            if self.persist(key, runtime).is_err() {
+                crate::logging::error("Advisor delivery state could not be persisted");
+            }
         }
     }
 
@@ -146,12 +148,20 @@ impl AdvisorManager {
     }
 
     pub fn has_pending_review(&self, owner: &str) -> bool {
-        self.sessions.lock().ok().is_some_and(|sessions| {
-            sessions.iter().any(|(key, runtime)| {
-                (key == owner || runtime.owner_session_id == owner)
-                    && (runtime.status == AdvisorStatus::Reviewing || runtime.pending.is_some())
-            })
-        })
+        self.sessions.lock().map_or_else(
+            |_| {
+                crate::logging::error(
+                    "Advisor state lock poisoned; pending review state unavailable",
+                );
+                true // Fail closed: finalization must report an incomplete drain.
+            },
+            |sessions| {
+                sessions.iter().any(|(key, runtime)| {
+                    (key == owner || runtime.owner_session_id == owner)
+                        && (runtime.status == AdvisorStatus::Reviewing || runtime.pending.is_some())
+                })
+            },
+        )
     }
 
     pub async fn wait_for_idle(&self, owner: &str, timeout: std::time::Duration) -> bool {
