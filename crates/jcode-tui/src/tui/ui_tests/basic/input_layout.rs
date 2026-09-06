@@ -43,7 +43,7 @@ fn first_prompt_preserves_welcome_header_spacing() {
 }
 
 #[test]
-fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
+fn first_prompt_stays_visible_with_model_facts_during_processing_at_47x51() {
     let _lock = viewport_snapshot_test_lock();
     pin_full_tier();
     const PROMPT: &str = "PROMPT_SENTINEL";
@@ -78,7 +78,7 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
             state.display_messages.push(DisplayMessage::user(PROMPT));
             state.messages_version += 1;
             request_tail_follow_snap();
-            let mut saw_widget = false;
+            let mut saw_model_fact = false;
 
             for (phase, status, stream) in [
                 ("sending", ProcessingStatus::Sending, ""),
@@ -105,7 +105,9 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
                         .take(area.height as usize)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    saw_widget |= chat.contains(WIDGET);
+                    // At 47 columns, model facts render below the composer.
+                    // Verify they paint without requiring a sidebar in chat.
+                    saw_model_fact |= text.contains(WIDGET);
                     assert!(
                         chat.contains(PROMPT),
                         "prompt disappeared: phase={phase}, centered={centered}, scrollbar={scrollbar}, now={}, area={area:?}, scroll={}, total={}\n{text}",
@@ -125,8 +127,9 @@ fn first_prompt_stays_visible_with_widgets_during_processing_at_47x51() {
             terminal.draw(|frame| draw(frame, &state)).unwrap();
             assert!(buffer_to_text(&terminal).contains(PROMPT));
             assert!(
-                saw_widget,
-                "fixture must actually paint a widget: centered={centered}, scrollbar={scrollbar}"
+                saw_model_fact,
+                "fixture must actually paint model facts: centered={centered}, scrollbar={scrollbar}\n{}",
+                buffer_to_text(&terminal)
             );
         }
     }
