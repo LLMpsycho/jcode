@@ -60,7 +60,9 @@ jobs:
 
       - name: Enforce warning budget
         shell: bash
-        run: scripts/check_warning_budget.sh
+        run: |
+          python3 -m unittest -v scripts.test_warning_budget
+          scripts/check_warning_budget.sh
 
       - name: Enforce oversized-file ratchet
         shell: bash

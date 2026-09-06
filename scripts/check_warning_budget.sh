@@ -26,17 +26,25 @@ if [[ ! -f "$baseline_file" ]]; then
   exit 1
 fi
 
-# Use grep, not rg: ripgrep is not installed on the CI runner, and the
-# `|| printf 0` fallback turned "rg: command not found" into "zero warnings",
-# so this gate passed vacuously in CI for as long as it has existed. grep is
-# guaranteed present, and `grep -c` exits 1 on no matches, which the fallback
-# still handles correctly.
 if ! command -v cargo > /dev/null 2>&1; then
   echo "error: cargo not found" >&2
   exit 1
 fi
-current=$(cd "$repo_root" && CARGO_TERM_COLOR=never cargo check -q 2>&1 | grep -c '^warning:' || true)
-current=$(printf '%s' "${current:-0}" | tr -d '[:space:]')
+
+# Keep the compiler status separate from warning counting. A failed build can
+# emit no warnings, and must never become a successful zero-warning check.
+check_output=$(mktemp)
+trap 'rm -f "$check_output"' EXIT
+check_status=0
+(cd "$repo_root" && CARGO_TERM_COLOR=never cargo check -q) > "$check_output" 2>&1 || check_status=$?
+if (( check_status != 0 )); then
+  cat "$check_output" >&2
+  echo "error: cargo check failed with exit status $check_status" >&2
+  exit "$check_status"
+fi
+# POSIX awk returns a count of zero successfully when there are no warnings;
+# unlike grep -c, it needs no fallback that could conceal a command failure.
+current=$(awk '/^warning:/ { count += 1 } END { print count + 0 }' "$check_output")
 baseline=$(tr -d '[:space:]' < "$baseline_file")
 
 if [[ "${1:-}" == "--update" ]]; then
