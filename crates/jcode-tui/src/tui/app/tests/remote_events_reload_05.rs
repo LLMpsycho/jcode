@@ -156,13 +156,23 @@ fn test_reload_preserves_completed_confidence_spike_challenge() {
         )
         .expect("save passing goal");
 
-        // Pin the default so the clean-cycle finish disarms rather than
-        // re-arming; this test is about the spike-challenge flag, not the
-        // default-on re-arm behavior.
-        reloaded_app.auto_poke_default_on = false;
+        // A completed cycle requests one final response. Keep auto-poke armed
+        // so a second check proves the restored spike challenge cannot reopen
+        // against unchanged evidence during that response.
+        reloaded_app.auto_poke_default_on = true;
+        reloaded_app.auto_poke_incomplete_todos = true;
+        assert!(reloaded_app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(
+            reloaded_app.queued_messages,
+            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
+        );
+        reloaded_app.queued_messages.clear();
+        reloaded_app.pending_queued_dispatch = false;
         assert!(!reloaded_app.schedule_auto_poke_followup_if_needed());
-        assert!(!reloaded_app.auto_poke_incomplete_todos);
-        assert!(!reloaded_app.todo_confidence_spike_challenged);
+        assert!(reloaded_app.auto_poke_incomplete_todos);
+        assert!(reloaded_app.todo_confidence_spike_challenged);
+        assert_eq!(reloaded_app.todo_completion_gate_attempts, 0);
+        assert!(reloaded_app.queued_messages.is_empty());
         assert!(reloaded_app.hidden_queued_system_messages.is_empty());
     });
 }
@@ -541,13 +551,20 @@ fn test_gate_digest_is_delivered_at_turn_end_and_rearms_next_cycle() {
         // Simulate the turn running, then the cycle completing.
         app.queued_messages.clear();
         app.pending_queued_dispatch = false;
-        assert!(
-            !app.schedule_auto_poke_followup_if_needed(),
-            "with nothing left outstanding the cycle should finish"
+        assert!(app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(
+            app.queued_messages,
+            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
         );
         assert!(
             !app.todo_gate_digest_delivered,
             "a finished cycle must re-arm the review for later work"
+        );
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
+        assert!(
+            !app.schedule_auto_poke_followup_if_needed(),
+            "the final response must not repeat the digest or request another turn"
         );
     });
 }
@@ -675,7 +692,15 @@ fn completed_cycle_rearms_auto_poke_only_when_default_on() {
             }],
         )
         .expect("save passing goal");
+        assert!(app.schedule_auto_poke_followup_if_needed());
+        assert_eq!(
+            app.queued_messages,
+            vec![crate::todo::TODO_FINAL_RESPONSE_CONTINUATION_MESSAGE.to_string()]
+        );
+        app.queued_messages.clear();
+        app.pending_queued_dispatch = false;
         assert!(!app.schedule_auto_poke_followup_if_needed());
+        assert!(app.queued_messages.is_empty());
         assert!(
             app.auto_poke_incomplete_todos,
             "default-on auto-poke should cover the next batch of work too"
