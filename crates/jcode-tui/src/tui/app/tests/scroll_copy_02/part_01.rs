@@ -1478,6 +1478,13 @@ fn test_changelog_overlay_mouse_drag_release_copies_text() {
     // in the test environment, but the selection path must have run).
     assert!(matches!(
         app.status_notice().as_deref(),
-        Some("Copied selection") | Some("Failed to copy selection") | Some("Selection is empty")
+        Some("Copied selection · highlight remains visible") | Some("Failed to copy selection")
     ));
+    assert!(!app.copy_selection_mode);
+    assert!(!app.copy_selection_dragging);
+    assert!(
+        app.current_copy_selection_text()
+            .is_some_and(|text| !text.trim().is_empty()),
+        "changelog drag release must retain the selected text's highlight"
+    );
 }
