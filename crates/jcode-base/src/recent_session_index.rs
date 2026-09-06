@@ -59,10 +59,17 @@ fn open() -> Result<Connection> {
     )?;
     // Additive migration for databases created before saved-session ordering
     // became part of the shared session-list contract.
-    let _ = connection.execute(
-        "ALTER TABLE recent_sessions ADD COLUMN saved INTEGER NOT NULL DEFAULT 0",
+    let has_saved: bool = connection.query_row(
+        "SELECT EXISTS (SELECT 1 FROM pragma_table_info('recent_sessions') WHERE name = 'saved')",
         [],
-    );
+        |row| row.get(0),
+    )?;
+    if !has_saved {
+        connection.execute(
+            "ALTER TABLE recent_sessions ADD COLUMN saved INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
     Ok(connection)
 }
 

@@ -431,7 +431,10 @@ impl Config {
         }
         let write_marker = || {
             if let Some(parent) = marker.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                if std::fs::create_dir_all(parent).is_err() {
+                    crate::logging::warn("Config migration marker directory could not be created");
+                    return;
+                }
             }
             let _ = std::fs::write(
                 &marker,
@@ -519,7 +522,10 @@ impl Config {
         }
         let write_marker = || {
             if let Some(parent) = marker.parent() {
-                let _ = std::fs::create_dir_all(parent);
+                if std::fs::create_dir_all(parent).is_err() {
+                    crate::logging::warn("Config migration marker directory could not be created");
+                    return;
+                }
             }
             let _ = std::fs::write(&marker, "idle_animation forced migration: true -> false\n");
         };
