@@ -273,10 +273,10 @@ fn roster_control_request(
             entry.config.enabled &= roster::owner_enabled(manager, owner);
             let key = roster::runtime_session_key(owner, &entry.name);
             manager.resume(&key);
-            if let Some(note_id) = note_id {
-                if !manager.notes(&key).iter().any(|note| note.id == *note_id) {
-                    continue;
-                }
+            if let Some(note_id) = note_id
+                && !manager.notes(&key).iter().any(|note| note.id == *note_id)
+            {
+                continue;
             }
             let result = control_request(manager, &key, &entry.config, request.clone());
             anyhow::ensure!(result.error.is_none(), "{}", result.message);

@@ -315,29 +315,31 @@ fn guard_violations(
         }
     };
 
-    if policy.require_covered_ranges {
-        if let Some(read) = read.as_ref() {
-            match coverage {
-                RequiredCoverage::FullFile => {
-                    if !policy.allow_full_file_write {
-                        violations.push(format!("{path} is a whole-file overwrite"));
-                    } else if !read.full_file {
-                        violations.push(format!("{path} was not read in full"));
-                    }
+    if policy.require_covered_ranges
+        && let Some(read) = read.as_ref()
+    {
+        match coverage {
+            RequiredCoverage::FullFile => {
+                if !policy.allow_full_file_write {
+                    violations.push(format!("{path} is a whole-file overwrite"));
+                } else if !read.full_file {
+                    violations.push(format!("{path} was not read in full"));
                 }
-                RequiredCoverage::Ranges(required) => {
-                    validate_ranges(path, read, &required, normalized_line_count(contents))
-                        .map_err(anyhow::Error::msg)?;
-                    if !read.full_file {
-                        for range in required {
-                            if !read.ranges.iter().any(|covered| {
-                                covered.start <= range.start && covered.end >= range.end
-                            }) {
-                                violations.push(format!(
-                                    "{path} lines {}-{} were not covered by the session read",
-                                    range.start, range.end
-                                ));
-                            }
+            }
+            RequiredCoverage::Ranges(required) => {
+                validate_ranges(path, read, &required, normalized_line_count(contents))
+                    .map_err(anyhow::Error::msg)?;
+                if !read.full_file {
+                    for range in required {
+                        if !read
+                            .ranges
+                            .iter()
+                            .any(|covered| covered.start <= range.start && covered.end >= range.end)
+                        {
+                            violations.push(format!(
+                                "{path} lines {}-{} were not covered by the session read",
+                                range.start, range.end
+                            ));
                         }
                     }
                 }

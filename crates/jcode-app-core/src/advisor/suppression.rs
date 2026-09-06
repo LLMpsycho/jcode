@@ -73,10 +73,10 @@ impl ConcernLedger {
     }
 
     pub(super) fn handle(&mut self, note_id: &str, until: u64) {
-        if let Some(item) = self.entries.iter_mut().find(|item| item.note_id == note_id) {
-            if item.handled_until_turn.is_none() {
-                item.handled_until_turn = Some(until);
-            }
+        if let Some(item) = self.entries.iter_mut().find(|item| item.note_id == note_id)
+            && item.handled_until_turn.is_none()
+        {
+            item.handled_until_turn = Some(until);
         }
     }
 

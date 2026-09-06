@@ -19,10 +19,8 @@ pub(super) async fn publish(
     if (completions.send((id, result, report, ready))).is_err() {
         crate::logging::debug("Event recipient disconnected before delivery");
     }
-    if receiver.await.unwrap_or(true) {
-        if (events.send(terminal)).is_err() {
-            crate::logging::debug("Event recipient disconnected before delivery");
-        }
+    if receiver.await.unwrap_or(true) && events.send(terminal).is_err() {
+        crate::logging::debug("Event recipient disconnected before delivery");
     }
 }
 

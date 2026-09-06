@@ -85,7 +85,12 @@ pub(super) async fn idle_live_agent(
 
     match agent.try_lock_owned() {
         Ok(agent) => Some(agent),
-        Err(_) => None, // A busy session must receive a queued wake, never a concurrent turn.
+        Err(_) => {
+            crate::logging::debug(
+                "Background wake cannot start immediately: the session is already processing a turn",
+            );
+            None
+        }
     }
 }
 

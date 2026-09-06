@@ -143,10 +143,10 @@ pub(crate) async fn apply_workspace_edit_for_operation(
         Err(error) => {
             let published = targets.len();
             let rollback = rollback_prefix(&mut targets, published);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_else(String::new);
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!("semantic rename ledger update failed: {error}{suffix}");
         }
     };
@@ -313,10 +313,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
     if let Err(error) = rename_no_replace(source_path, destination_path) {
         let published = targets.len();
         let rollback = rollback_prefix(&mut targets, published);
-        let suffix = rollback
-            .err()
-            .map(|rollback| format!("; rollback also failed: {rollback}"))
-            .unwrap_or_else(String::new);
+        let suffix = rollback.map_or_else(
+            |rollback| format!("; rollback also failed: {rollback}"),
+            |()| String::new(),
+        );
         bail!("failed to rename file: {error}{suffix}");
     }
 
@@ -372,10 +372,10 @@ pub(crate) async fn apply_workspace_edit_and_file_rename(
                         "failed to restore source path: {rename_error}"
                     ))
                 });
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_else(String::new);
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!("file rename ledger update failed: {error}{suffix}");
         }
     };
@@ -523,10 +523,10 @@ fn publish_all(targets: &mut [RenameTarget]) -> Result<()> {
             .context("missing staged semantic rename")?;
         if let Err(error) = staged.persist(&targets[index].path) {
             let rollback = rollback_prefix(targets, index);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_else(String::new);
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!(
                 "failed to publish semantic rename for {}: {}{}",
                 targets[index].relative_path,

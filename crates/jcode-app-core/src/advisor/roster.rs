@@ -60,7 +60,7 @@ pub fn entries(config: &AdvisorConfig) -> Result<Vec<ResolvedAdvisorEntry>> {
             "duplicate advisor name: {}",
             entry.name
         );
-        let mut instructions = config.instructions.clone().unwrap_or_else(String::new);
+        let mut instructions = config.instructions.as_deref().unwrap_or("").to_owned();
         if let Some(specialization) = &entry.instructions {
             if !instructions.is_empty() {
                 instructions.push_str("\n\n");

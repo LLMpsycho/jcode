@@ -48,17 +48,17 @@ impl AdvisorHistory {
     pub(super) fn retain(&mut self, objective: &str, exchange: Vec<Message>) {
         if self.original_objective.is_empty() {
             self.original_objective = truncate_utf8(redact_secrets(objective), MAX_FIELD_BYTES);
-            self.initial_visible_context = exchange
-                .first()
-                .and_then(|message| {
-                    message.content.iter().find_map(|block| match block {
-                        crate::message::ContentBlock::Text { text, .. } => {
-                            Some(truncate_utf8(redact_secrets(text), 16 * 1024))
-                        }
-                        _ => None,
-                    })
+            self.initial_visible_context.clear();
+            if let Some(context) = exchange.first().and_then(|message| {
+                message.content.iter().find_map(|block| match block {
+                    crate::message::ContentBlock::Text { text, .. } => {
+                        Some(truncate_utf8(redact_secrets(text), 16 * 1024))
+                    }
+                    _ => None,
                 })
-                .unwrap_or_else(String::new);
+            }) {
+                self.initial_visible_context = context;
+            }
         }
         self.exchanges.push_back(exchange);
         while self.exchanges.len() > MAX_EXCHANGES || self.bytes() > MAX_HISTORY_BYTES {

@@ -91,9 +91,8 @@ impl AdvisorTurnInput {
         tools: Vec<ToolCallSummary>,
         turn_succeeded: bool,
     ) -> Self {
-        Self {
+        let mut input = Self {
             objective: objective.to_string(),
-            latest_primary_turn: latest_primary_turn.unwrap_or_else(String::new),
             tools: tools
                 .into_iter()
                 .take(MAX_TOOLS)
@@ -110,7 +109,12 @@ impl AdvisorTurnInput {
             }
             .to_string(),
             ..Self::default()
+        };
+        // A failed turn may not have produced visible text; keep that field empty.
+        if let Some(text) = latest_primary_turn {
+            input.latest_primary_turn = text;
         }
+        input
     }
 
     fn bounded(mut self, redact: bool) -> Self {

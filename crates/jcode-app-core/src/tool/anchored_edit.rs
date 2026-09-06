@@ -187,10 +187,10 @@ impl Tool for AnchoredEditTool {
             Ok(records) => records,
             Err(error) => {
                 let rollback = rollback_published(&mut targets);
-                let suffix = rollback
-                    .err()
-                    .map(|rollback| format!("; rollback also failed: {rollback}"))
-                    .unwrap_or_else(String::new);
+                let suffix = rollback.map_or_else(
+                    |rollback| format!("; rollback also failed: {rollback}"),
+                    |()| String::new(),
+                );
                 bail!("anchored edit ledger update failed: {error}{suffix}");
             }
         };
@@ -318,10 +318,10 @@ fn publish_all(targets: &mut [TargetFile]) -> Result<()> {
             .context("missing staged anchored edit")?;
         if let Err(error) = staged.persist(&targets[index].canonical_path) {
             let rollback = rollback_prefix(targets, index);
-            let suffix = rollback
-                .err()
-                .map(|rollback| format!("; rollback also failed: {rollback}"))
-                .unwrap_or_else(String::new);
+            let suffix = rollback.map_or_else(
+                |rollback| format!("; rollback also failed: {rollback}"),
+                |()| String::new(),
+            );
             bail!(
                 "failed to publish {}: {}{}",
                 targets[index].relative_path,
