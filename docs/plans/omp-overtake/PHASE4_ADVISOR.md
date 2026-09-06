@@ -2,7 +2,7 @@
 
 Status: the ongoing investigative-advisor correction is implemented on
 `feat/advisor-agent-parity`, based on `master`
-`3e747d3722fe6f809500957d7d55350c40a4fec3`. Final-head validation and merge
+`24643c91314fa81f976b60c01894f5b8e7a00860`. Final-head validation and merge
 readiness are tracked in [PR #18](https://github.com/LLMpsycho/jcode/pull/18);
 passing results from earlier PRs do not establish acceptance for this branch.
 The approved behavioral contract is
@@ -381,8 +381,14 @@ PR #14 added role model/effort selection; the remote automatic review/judge
 scheduler previously deferred there was subsequently wired in PR #16. It is
 not an outstanding advisor-parity gap. Prior audit notes also recorded broader
 repository gates (duplicate CI `env` mappings, size-budget debt, and the
-linked-issue check conflicting with disabled Issues). Recheck their current
-status separately; this document does not claim those gates passed.
+linked-issue check conflicting with disabled Issues). The current PR integrates
+master's named agent profiles and default-enabled advisor, fixes OrcaRouter CLI
+selection and the stale TUI scenarios, and splits oversized production/test
+modules to meet the existing ratchets. Error and panic paths now report or
+propagate failures; no budget was raised and no test was disabled. The warning
+gate also rejects failed compilation, with hermetic regression coverage.
+Final-head CI results remain authoritative in PR #18. The linked-issue gate
+still requires repository Issues to be enabled and a real issue to be linked.
 
 A real-model run remains separate from deterministic acceptance. Using an
 already-configured OpenAI API credential, the optional harness command is:
