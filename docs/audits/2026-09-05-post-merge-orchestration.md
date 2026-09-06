@@ -59,7 +59,7 @@ Earlier follow-up attempts exposed an empty-session fixture assumption and a ret
 
 The original audit artifact recorded passing runs of the post-merge review, remote TUI, review-role, advisor, spawned-review preparation, and queued-autojudge filters. The early source-publication run [33979300344](https://github.com/LLMpsycho/jcode/actions/runs/33979300344) passed its functional checks but failed its final publication step. It was not an overall green workflow run. The subsequent focused PR audit [33979823031](https://github.com/LLMpsycho/jcode/actions/runs/33979823031) passed on the earlier PR revision.
 
-The permanent `.github/workflows/post-merge-audit.yml` is read-only and covers workflow YAML, session persistence, server split/transfer regressions, review scheduling and routing, remote TUI behavior, advisor behavior, formatting, module resolution, and dependency boundaries. It is deliberately separate from the broader repository gates.
+The original `.github/workflows/post-merge-audit.yml` covered workflow YAML, session persistence, server split/transfer regressions, review scheduling and routing, remote TUI behavior, advisor behavior, formatting, module resolution, and dependency boundaries. During the subsequent owner-requested CI cleanup, its unique session and fork checks moved into CI’s advisor acceptance job, workflow validation moved into quality checks, and full Linux TUI tests retained the orchestration coverage. The redundant standalone workflow was removed.
 
 ### Remaining validation limits
 

@@ -343,7 +343,8 @@ Paths without a crate prefix are under `crates/jcode-app-core/src/`.
 | Complete feedback cycle over transport | `scripts/test_advisor_acceptance.py`, `scripts/test_advisor_agent_acceptance.py` | Real isolated daemon observes, independently reads source, advises, primary actually edits source, one final `done`; healthy silence and in-flight cancel |
 
 Final-head formatting, Rust/provider/TUI/SDK tests and isolated selfdev/socket
-acceptance are enforced and recorded by the **Advisor acceptance** workflow in
+acceptance are enforced and recorded by the **CI** workflow, including its
+**Advisor and session acceptance** job, in
 [PR #18](https://github.com/LLMpsycho/jcode/pull/18). That workflow must pass
 before merge readiness; its uploaded fixture report records exact binary and
 scenario provenance. Local Unix socket creation/connect is denied with `EPERM`,
@@ -387,8 +388,12 @@ selection and the stale TUI scenarios, and splits oversized production/test
 modules to meet the existing ratchets. Error and panic paths now report or
 propagate failures; no budget was raised and no test was disabled. The warning
 gate also rejects failed compilation, with hermetic regression coverage.
-Final-head CI results remain authoritative in PR #18. The linked-issue gate
-still requires repository Issues to be enabled and a real issue to be linked.
+Final-head CI results remain authoritative in PR #18. At the repository owner’s
+request, automatic PR checks are consolidated into one CI workflow. Unique advisor
+and session audit checks remain; full Linux TUI and SDK suites cover the duplicate
+filters. Native Windows validation includes both PowerShell syntax checks. The
+issue-link gate, obsolete branch-specific live workflow, and upstream-only star
+history workflow are removed. Specialist platform smoke workflows remain manual.
 
 A real-model run remains separate from deterministic acceptance. Using an
 already-configured OpenAI API credential, the optional harness command is:
@@ -403,11 +408,8 @@ quality parity across subscription providers. The report includes provenance,
 requested model, binary SHA-256 and inspected verdicts; it is bounded, redacted
 and owner-only, and an unsuccessful run creates no success report.
 
-`.github/workflows/advisor-live-acceptance.yml` also supports manual dispatch
-with repository secret `ADVISOR_ACCEPTANCE_OPENAI_API_KEY` and optional variable
-`ADVISOR_ACCEPTANCE_MODEL` (default `gpt-5`). Its automatic billable trigger is
-restricted to the original completion branch, not this parity branch. Credentials
-are supplied only to preflight/live steps, never committed or printed. Record
+The optional live probe remains available through the local command above; its
+obsolete branch-specific workflow was removed during CI consolidation. Record
 and inspect successful live verdicts separately before closing the live-model
 gate. No live-model success, OMP competitive win or measured resource-regression
 floor is claimed here. See [PHASE0_3_AUDIT.md](./PHASE0_3_AUDIT.md) for the earlier

@@ -184,9 +184,9 @@ Module resolution and dependency-boundary checks pass. Later implementation
 fixes require the PR's final-head checks; earlier counts are not substituted.
 
 Local Unix socket creation/connect is denied with `EPERM`. Consequently the
-mandatory isolated daemon/socket matrix runs in the PR's **Advisor acceptance**
-workflow, which also rebuilds selfdev, runs Rust/TUI/SDK/provider regressions and
-rechecks the bounded Phase 0–3 audit suites. Its uploaded fixture report is the
+mandatory isolated daemon/socket matrix runs in the **CI** workflow's
+**Advisor and session acceptance** job, which rebuilds selfdev and rechecks the
+bounded Phase 0–3 audit suites. CI also runs Rust/TUI/SDK/provider regressions. Its uploaded fixture report is the
 authoritative deterministic acceptance evidence. Do not infer socket success
 from compilation or source inspection.
 
@@ -195,6 +195,6 @@ remain separate unclaimed gates. The workspace read boundary assumes a trusted
 workspace and is not a hostile-filesystem sandbox. Providers with autonomous
 tools that cannot be disabled are rejected; named Anthropic profile routes that
 require process-wide activation fail visibly. Repository-wide size and error
-ratchets already fail on the base; necessary touched-file growth is disclosed
-in the PR without rebaselining. The issue-link gate conflicts with disabled
-Issues. No unrelated gate/configuration changes or Phases 5–7 were included.
+ratchets exposed base-branch debt, repaired in this PR without rebaselining. At
+the owner’s request, redundant CI workflows and the incompatible issue-link gate
+were removed while retaining unique validation. Phases 5–7 were not included.
