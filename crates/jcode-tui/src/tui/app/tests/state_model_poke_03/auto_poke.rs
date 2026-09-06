@@ -2,6 +2,7 @@
 fn test_poke_arms_auto_poke_until_todos_are_done() {
     with_temp_jcode_home(|| {
         let mut app = create_test_app();
+        super::commands::disable_auto_poke(&mut app);
         crate::todo::save_todos(
             &app.session.id,
             &[crate::todo::TodoItem {
@@ -22,6 +23,7 @@ fn test_poke_arms_auto_poke_until_todos_are_done() {
         assert!(super::commands::handle_session_command(&mut app, "/poke"));
 
         assert!(app.auto_poke_incomplete_todos);
+        assert!(app.auto_poke_default_on);
         assert!(app.pending_turn);
         assert!(app.display_messages().iter().any(|msg| {
             msg.content
@@ -129,6 +131,22 @@ fn test_poke_off_disarms_and_clears_queued_followup() {
             msg.content.contains("Auto-poke disabled.")
                 && msg.content.contains("Cleared 2 queued poke follow-ups")
         }));
+
+        app.queued_messages
+            .push("Keep the branch open for review".to_string());
+        app.hidden_queued_system_messages
+            .push("Advisor note: inspect the final diff".to_string());
+        app.pending_queued_dispatch = true;
+        app.auto_poke_incomplete_todos = true; // simulate a stale arm after /poke off
+        assert!(!app.schedule_auto_poke_followup_if_needed());
+        assert!(!app.auto_poke_incomplete_todos);
+        assert!(!app.auto_poke_default_on);
+        assert_eq!(app.queued_messages, ["Keep the branch open for review"]);
+        assert_eq!(
+            app.hidden_queued_system_messages,
+            ["Advisor note: inspect the final diff"]
+        );
+        assert!(app.pending_queued_dispatch);
     });
 }
 #[test]

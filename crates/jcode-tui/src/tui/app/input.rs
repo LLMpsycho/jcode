@@ -1386,6 +1386,12 @@ impl App {
     }
 
     pub(super) fn schedule_auto_poke_followup_if_needed(&mut self) -> bool {
+        // Explicit /poke off wins over a stale arm. Both /poke and /poke on
+        // restore this flag when the user deliberately enables continuation.
+        if !self.auto_poke_default_on {
+            self.auto_poke_incomplete_todos = false;
+            return false;
+        }
         if !self.auto_poke_incomplete_todos
             || self.pending_queued_dispatch
             || self.pending_turn
