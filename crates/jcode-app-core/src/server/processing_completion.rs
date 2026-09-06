@@ -24,6 +24,24 @@ pub(super) async fn publish(
     }
 }
 
+/// Drain readiness handshakes while an SSH origin is disconnected. Awaiting
+/// the task first would deadlock its terminal publisher on this receiver.
+pub(super) async fn next_while_running(
+    task: &mut tokio::task::JoinHandle<()>,
+    pending: &mut mpsc::UnboundedReceiver<ProcessingCompletion>,
+) -> Option<ProcessingCompletion> {
+    tokio::select! {
+        biased;
+        completion = pending.recv() => completion,
+        result = task => {
+            if let Err(error) = result {
+                crate::logging::warn(&format!("Disconnected turn task failed: {error}"));
+            }
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +115,37 @@ mod tests {
             observed.recv().await,
             Some(ServerEvent::Done { id: 9 })
         ));
+    }
+    #[tokio::test]
+    async fn disconnected_owner_drains_readiness_without_deadlocking_turn() {
+        let (events, mut observed) = mpsc::unbounded_channel();
+        let (completions, mut pending) = mpsc::unbounded_channel();
+        let mut task = tokio::spawn(async move {
+            publish(
+                10,
+                Ok(()),
+                None,
+                ServerEvent::Done { id: 10 },
+                &events,
+                &completions,
+            )
+            .await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            let (id, result, _, ready) = next_while_running(&mut task, &mut pending)
+                .await
+                .expect("completion");
+            assert_eq!(id, 10);
+            result.expect("success");
+            assert!(observed.try_recv().is_err());
+            ready.send(true).expect("ready");
+            assert!(next_while_running(&mut task, &mut pending).await.is_none());
+            assert!(matches!(
+                observed.recv().await,
+                Some(ServerEvent::Done { id: 10 })
+            ));
+        })
+        .await
+        .expect("owner must service the handshake before joining the task");
     }
 }

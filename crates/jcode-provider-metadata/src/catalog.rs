@@ -12,11 +12,11 @@ pub use profiles::{
     CONIFER_PROFILE, CORTECS_PROFILE, DEEPINFRA_PROFILE, DEEPSEEK_PROFILE, FIREWORKS_PROFILE,
     FIRMWARE_PROFILE, FPT_PROFILE, GEMINI_OPENAI_COMPAT_PROFILE, GROQ_PROFILE,
     HUGGING_FACE_PROFILE, KIMI_PROFILE, LMSTUDIO_PROFILE, META_MUSE_PROFILE, MINIMAX_PROFILE,
-    MISTRAL_PROFILE, MOONSHOT_PROFILE, NEBIUS_PROFILE, NVIDIA_NIM_PROFILE, OLLAMA_PROFILE,
-    OPENAI_COMPAT_PROFILE, OPENAI_NATIVE_OPENAI_COMPAT_PROFILE, OPENCODE_GO_PROFILE,
-    OPENCODE_PROFILE, OPENROUTER_OPENAI_COMPAT_PROFILE, ORCAROUTER_PROFILE, PERPLEXITY_PROFILE,
-    SCALEWAY_PROFILE, STACKIT_PROFILE, TOGETHER_AI_PROFILE, XAI_PROFILE, XIAOMI_MIMO_PROFILE,
-    ZAI_PROFILE,
+    MISTRAL_PROFILE, MOONSHOT_PROFILE, NEBIUS_PROFILE, NOVITA_PROFILE, NVIDIA_NIM_PROFILE,
+    OLLAMA_PROFILE, OPENAI_COMPAT_PROFILE, OPENAI_NATIVE_OPENAI_COMPAT_PROFILE,
+    OPENCODE_GO_PROFILE, OPENCODE_PROFILE, OPENROUTER_OPENAI_COMPAT_PROFILE, ORCAROUTER_PROFILE,
+    PERPLEXITY_PROFILE, SCALEWAY_PROFILE, STACKIT_PROFILE, TOGETHER_AI_PROFILE, XAI_PROFILE,
+    XIAOMI_MIMO_PROFILE, ZAI_PROFILE,
 };
 
 pub const CLAUDE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
@@ -511,6 +511,19 @@ pub const FIREWORKS_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescr
     order: LoginProviderSurfaceOrder::new(Some(37), Some(37), Some(37), Some(37), Some(37)),
 };
 
+pub const NOVITA_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
+    id: "novita",
+    display_name: "Novita AI",
+    auth_kind: LoginProviderAuthKind::ApiKey,
+    auth_state_key: LoginProviderAuthStateKey::OpenRouterLike,
+    auth_status_method: "API key",
+    aliases: &["novita-ai", "novita.ai"],
+    menu_detail: "Pay-as-you-go API key",
+    recommended: false,
+    target: LoginProviderTarget::OpenAiCompatible(NOVITA_PROFILE),
+    order: LoginProviderSurfaceOrder::new(Some(39), Some(39), Some(39), Some(39), Some(39)),
+};
+
 pub const MINIMAX_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescriptor {
     id: "minimax",
     display_name: "MiniMax",
@@ -726,7 +739,7 @@ pub const GOOGLE_LOGIN_PROVIDER: LoginProviderDescriptor = LoginProviderDescript
     order: LoginProviderSurfaceOrder::new(Some(13), None, None, None, None),
 };
 
-pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
+pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 54] = [
     AUTO_IMPORT_LOGIN_PROVIDER,
     CLAUDE_LOGIN_PROVIDER,
     ANTHROPIC_API_LOGIN_PROVIDER,
@@ -764,6 +777,7 @@ pub(crate) const LOGIN_PROVIDERS: [LoginProviderDescriptor; 53] = [
     TOGETHER_AI_LOGIN_PROVIDER,
     DEEPINFRA_LOGIN_PROVIDER,
     FIREWORKS_LOGIN_PROVIDER,
+    NOVITA_LOGIN_PROVIDER,
     MINIMAX_LOGIN_PROVIDER,
     XAI_LOGIN_PROVIDER,
     GROK_BUILD_LOGIN_PROVIDER,

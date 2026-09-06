@@ -427,6 +427,11 @@ impl App {
             .clamp(-4096, 4096);
     }
 
+    pub(super) fn close_panel_image_preview(&mut self) {
+        self.panel_image_preview = None;
+        crate::tui::mermaid::clear_image_state();
+    }
+
     pub(super) fn adjust_side_panel_image_zoom(&mut self, delta_percent: i16) {
         let current = self.side_panel_image_zoom_percent as i16;
         let next = current.saturating_add(delta_percent).clamp(25, 250) as u8;
@@ -1258,6 +1263,13 @@ impl App {
             }};
         }
 
+        if self.panel_image_preview.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left)) {
+                self.close_panel_image_preview();
+            }
+            finish_mouse_event!(false, "panel_image_preview");
+        }
+
         if self.changelog_scroll.is_some() {
             match mouse.kind {
                 MouseEventKind::ScrollUp => {
@@ -1510,7 +1522,9 @@ impl App {
                 }
                 self.set_diagram_focus(true);
                 handled_scroll = true;
-            } else if self.diagram_focus {
+            } else {
+                // Wheel input belongs to the pane under the pointer, even while
+                // keyboard focus stays in chat. Do not fall through at pan limits.
                 match mouse.kind {
                     MouseEventKind::ScrollUp => self.pan_diagram(0, -1),
                     MouseEventKind::ScrollDown => self.pan_diagram(0, 1),
@@ -1565,7 +1579,16 @@ impl App {
         }
 
         if handled_scroll {
-            finish_mouse_event!(!immediate_redraw, "pane_or_focused_diagram_scroll");
+            finish_mouse_event!(!immediate_redraw, "hovered_pane_scroll");
+        }
+
+        if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))
+            && let Some(hash) =
+                crate::tui::ui::panel_image_preview::image_at(mouse.column, mouse.row)
+        {
+            self.panel_image_preview = Some(hash);
+            crate::tui::mermaid::clear_image_state();
+            finish_mouse_event!(false, "open_panel_image_preview");
         }
 
         if matches!(mouse.kind, MouseEventKind::Up(MouseButton::Left))

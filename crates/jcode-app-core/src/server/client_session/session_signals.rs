@@ -50,3 +50,25 @@ pub(super) async fn subscribe_should_mark_ready(
         .get(client_session_id)
         .is_none_or(|member| member.status != "running")
 }
+
+pub(in crate::server) fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
+    let messages = agent.messages();
+    let Some(last) = messages.last() else {
+        return false;
+    };
+
+    last.content.iter().any(|block| match block {
+        ContentBlock::Text { text, .. } => {
+            text.ends_with("[generation interrupted - server reloading]")
+        }
+        ContentBlock::ToolResult {
+            content, is_error, ..
+        } => {
+            content == "Reload initiated. Process restarting..."
+                || (is_error.unwrap_or(false)
+                    && (content.contains("interrupted by server reload")
+                        || content.contains("Skipped - server reloading")))
+        }
+        _ => false,
+    })
+}

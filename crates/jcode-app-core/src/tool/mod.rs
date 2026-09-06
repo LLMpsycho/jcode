@@ -58,6 +58,7 @@ use jcode_message_types::ToolDefinition;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) fn tool_name_is_allowed(allowed: &HashSet<String>, name: &str) -> bool {
     allowed.contains(name)
@@ -86,63 +87,15 @@ pub use jcode_tool_core::{
 pub use jcode_tool_types::{ToolImage, ToolOutput};
 pub(crate) use session_search::spawn_recent_index_warmup;
 
-#[derive(Clone, Debug, Default)]
-struct SessionToolPolicy {
-    allowed_tools: Option<HashSet<String>>,
-    disabled_tools: HashSet<String>,
-}
-
-static SESSION_TOOL_POLICIES: LazyLock<StdRwLock<HashMap<String, SessionToolPolicy>>> =
-    LazyLock::new(|| StdRwLock::new(HashMap::new()));
-
-pub(crate) fn set_session_tool_policy(
-    session_id: &str,
-    allowed_tools: Option<HashSet<String>>,
-    disabled_tools: HashSet<String>,
-) {
-    let mut policies = SESSION_TOOL_POLICIES
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    policies.insert(
-        session_id.to_string(),
-        SessionToolPolicy {
-            allowed_tools,
-            disabled_tools,
-        },
-    );
-}
-
-pub(crate) fn clear_session_tool_policy(session_id: &str) {
-    let mut policies = SESSION_TOOL_POLICIES
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    policies.remove(session_id);
-}
-
-fn session_tool_policy(session_id: &str) -> Option<SessionToolPolicy> {
-    SESSION_TOOL_POLICIES
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(session_id)
-        .cloned()
-}
-
-/// Apply the current session policy to an MCP server tool invoked through a
-/// fixed deferred surface. Explicitly enabling the fixed surface authorizes its
-/// underlying MCP calls, while per-tool allow/deny entries remain effective.
-pub(crate) fn session_mcp_dispatch_is_allowed(
-    session_id: &str,
-    dispatched_name: &str,
-    fixed_surface: &str,
-) -> bool {
-    let Some(policy) = session_tool_policy(session_id) else {
-        return true;
-    };
-    let allowed = policy.allowed_tools.as_ref().is_none_or(|allowed| {
-        tool_name_is_allowed(allowed, dispatched_name) || allowed.contains(fixed_surface)
-    });
-    allowed && !tool_name_is_disabled(&policy.disabled_tools, dispatched_name)
-}
+mod session_policy;
+use session_policy::session_tool_policy;
+pub(crate) use session_policy::{
+    SessionToolPolicyRegistration, register_session_tool_policy, session_mcp_dispatch_is_allowed,
+};
+#[cfg(test)]
+pub(crate) use session_policy::{
+    clear_session_tool_policy, session_tool_policy_allows_tool_for_test, set_session_tool_policy,
+};
 
 /// Whether a tool call opted in to receiving an oversized (truncated) result.
 ///
@@ -181,6 +134,28 @@ pub struct Registry {
     lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
 }
 
+/// Non-owning handle used by tools stored inside a registry.
+///
+/// A tool cannot strongly own the registry containing it without creating an
+/// Arc cycle. Upgrade this handle only for the duration of a tool call.
+pub(super) struct WeakRegistry {
+    tools: std::sync::Weak<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+    skills: Arc<RwLock<SkillRegistry>>,
+    compaction: Arc<RwLock<CompactionManager>>,
+    lsp_pool: Option<Arc<jcode_lsp::LspServicePool>>,
+}
+
+impl WeakRegistry {
+    pub(super) fn upgrade(&self) -> Option<Registry> {
+        Some(Registry {
+            tools: self.tools.upgrade()?,
+            skills: Arc::clone(&self.skills),
+            compaction: Arc::clone(&self.compaction),
+            lsp_pool: self.lsp_pool.clone(),
+        })
+    }
+}
+
 impl Clone for Registry {
     fn clone(&self) -> Self {
         Self {
@@ -195,6 +170,15 @@ impl Clone for Registry {
 }
 
 impl Registry {
+    fn downgrade(&self) -> WeakRegistry {
+        WeakRegistry {
+            tools: Arc::downgrade(&self.tools),
+            skills: Arc::clone(&self.skills),
+            compaction: Arc::clone(&self.compaction),
+            lsp_pool: self.lsp_pool.clone(),
+        }
+    }
+
     fn shared_skills_registry() -> Arc<RwLock<SkillRegistry>> {
         SkillRegistry::shared_registry()
     }
@@ -458,7 +442,7 @@ impl Registry {
         Self::insert_tool(
             &mut tools_map,
             "batch",
-            batch::BatchTool::new(registry.clone()),
+            batch::BatchTool::new(registry.downgrade()),
         );
         Self::insert_tool(
             &mut tools_map,

@@ -29,6 +29,7 @@ pub(super) struct RestoredReloadInput {
     pub split_view_enabled: bool,
     pub todos_view_enabled: bool,
     pub todo_confidence_spike_challenged: bool,
+    pub last_todo_ownership_fingerprint: Option<String>,
 }
 
 impl App {
@@ -94,6 +95,9 @@ impl App {
     }
 
     pub(super) fn note_client_focus(&mut self, force: bool) {
+        if crate::tui::is_ssh_remote() {
+            return;
+        }
         let Some(session_id) = self.active_client_session_id() else {
             return;
         };
@@ -243,6 +247,7 @@ impl App {
             && !self.split_view_enabled
             && !self.todos_view_enabled
             && !self.todo_confidence_spike_challenged
+            && self.last_todo_ownership_fingerprint.is_none()
         {
             // Nothing to save, but a stale file from an earlier run could
             // still hold old queued messages/input. Leaving it behind would
@@ -333,6 +338,7 @@ impl App {
                 "split_view_enabled": self.split_view_enabled,
                 "todos_view_enabled": self.todos_view_enabled,
                 "todo_confidence_spike_challenged": self.todo_confidence_spike_challenged,
+                "last_todo_ownership_fingerprint": self.last_todo_ownership_fingerprint,
             });
             let _ = std::fs::write(&path, data.to_string());
         }
@@ -574,6 +580,10 @@ impl App {
                 split_view_enabled,
                 todos_view_enabled,
                 todo_confidence_spike_challenged,
+                last_todo_ownership_fingerprint: value
+                    .get("last_todo_ownership_fingerprint")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
             });
         }
 
@@ -600,6 +610,7 @@ impl App {
             split_view_enabled: false,
             todos_view_enabled: false,
             todo_confidence_spike_challenged: false,
+            last_todo_ownership_fingerprint: None,
         })
     }
 
@@ -701,6 +712,10 @@ impl App {
     }
 
     pub(super) fn refresh_side_panel_linked_content_if_due(&mut self) -> bool {
+        if crate::tui::is_ssh_remote() {
+            // Linked paths in server snapshots belong to the remote filesystem.
+            return false;
+        }
         let refresh_interval = crate::perf::tui_policy().linked_side_panel_refresh_interval;
 
         let should_refresh = self

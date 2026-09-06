@@ -16,15 +16,28 @@ pub(in crate::server) fn resolve(
     coordinator: &CoordinatorSpawnIdentity,
     requested_effort: Option<&str>,
 ) -> ResolvedSwarmRole {
+    resolve_with_model(config, coordinator, None, requested_effort)
+}
+
+pub(in crate::server) fn resolve_with_model(
+    config: &AgentsConfig,
+    coordinator: &CoordinatorSpawnIdentity,
+    requested_model: Option<&str>,
+    requested_effort: Option<&str>,
+) -> ResolvedSwarmRole {
+    let requested_model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
     let session_model = coordinator
         .subagent_model
         .as_ref()
         .filter(|model| !model.trim().is_empty() && !is_inherit_sentinel(model));
-    let configured_route = session_model
+    let override_model = requested_model.or_else(|| session_model.map(String::as_str));
+    let route = override_model
         .is_none()
         .then_some(config.swarm_route.as_ref())
-        .flatten();
-    let route = configured_route.map(configured_role_route);
+        .flatten()
+        .map(configured_role_route);
     let selection = if let Some(route) = route.as_ref() {
         SwarmSpawnSelection {
             model: Some(if route.runtime_key == RuntimeKey::OpenRouter {
@@ -37,19 +50,21 @@ pub(in crate::server) fn resolve(
         }
     } else {
         resolve_swarm_spawn_selection(
-            session_model
-                .cloned()
-                .or_else(|| config.swarm_model.clone()),
+            override_model.map(str::to_string),
+            config.swarm_model.clone(),
             coordinator,
         )
     };
-    let inherits_model = session_model.is_none()
-        && route.is_none()
-        && config
-            .swarm_model
-            .as_ref()
-            .is_none_or(|model| model.trim().is_empty() || is_inherit_sentinel(model));
-    let configured_effort = session_model
+    let inherits_model = override_model.map(is_inherit_sentinel).unwrap_or_else(|| {
+        route.is_none()
+            && config
+                .swarm_model
+                .as_ref()
+                .is_none_or(|model| model.trim().is_empty() || is_inherit_sentinel(model))
+    });
+    // A per-worker or per-session model must not pick up effort for a different
+    // configured model. Explicit inheritance retains the coordinator's effort.
+    let configured_effort = override_model
         .is_none()
         .then_some(config.swarm_effort.as_deref())
         .flatten();
@@ -138,5 +153,36 @@ mod tests {
             Some("openai-oauth")
         );
         assert_eq!(resolved.effort.as_deref(), Some("high"));
+    }
+    #[test]
+    fn explicit_worker_choice_overrides_global_route_and_session_pin() {
+        let mut config = AgentsConfig::default();
+        config.swarm_route = Some(ConfigModelRoute {
+            model: "claude-opus-4-6".into(),
+            api_method: "claude-oauth".into(),
+            provider_label: "Anthropic".into(),
+        });
+        config.swarm_effort = Some("max".into());
+        let mut parent = coordinator();
+        parent.subagent_model = Some("claude-oauth:claude-opus-4-6".into());
+        let chosen = resolve_with_model(&config, &parent, Some("openai-api:gpt-5.5"), Some("low"));
+        assert!(chosen.route.is_none());
+        assert_eq!(
+            chosen.selection.route_api_method.as_deref(),
+            Some("openai-api-key")
+        );
+        assert_eq!(chosen.effort.as_deref(), Some("low"));
+        let inherit = resolve_with_model(&config, &parent, Some("inherit"), None);
+        assert!(inherit.route.is_none());
+        assert_eq!(
+            inherit.selection.route_api_method.as_deref(),
+            Some("openai-oauth")
+        );
+        assert_eq!(inherit.effort.as_deref(), Some("high"));
+        let fresh = resolve_with_model(&config, &parent, Some("openai-api:gpt-5.5"), None);
+        assert!(
+            fresh.effort.is_none(),
+            "do not leak configured effort onto another route"
+        );
     }
 }

@@ -443,7 +443,13 @@ pub enum ServerEvent {
 
     /// Pong response
     #[serde(rename = "pong")]
-    Pong { id: u64 },
+    Pong {
+        id: u64,
+        /// Native SSH protocol v1 supports opt-in disconnected turn continuation.
+        /// Omitted by older daemons, which a new SSH bridge must reject.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        native_ssh_protocol: Option<u32>,
+    },
 
     /// Current state (debug)
     #[serde(rename = "state")]

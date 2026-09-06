@@ -4,6 +4,8 @@ use std::{
     sync::{Mutex, MutexGuard, OnceLock},
 };
 
+pub(super) static TEST_DELIVERY_MODES: Mutex<Vec<DeliveryMode>> = Mutex::new(Vec::new());
+
 // All of these tests mutate process-global state: the env-var opt-out tests
 // flip `JCODE_NO_TELEMETRY` / `DO_NOT_TRACK`, while the session tests drive the
 // global `SESSION_STATE`. They must be serialized against *each other* with a
@@ -1174,3 +1176,6 @@ fn test_begin_session_closes_superseded_session() {
 fn test_superseded_reason_has_label() {
     assert_eq!(SessionEndReason::Superseded.as_str(), "superseded");
 }
+
+include!("lifecycle_delivery_tests.rs");
+include!("concurrency_guard_tests.rs");

@@ -28,6 +28,21 @@ pub(super) fn handle_split_response(
         app.set_status_notice(format!("Workspace + {}", new_session_name));
         return false;
     }
+    if crate::tui::is_ssh_remote() {
+        finish_remote_split_launch(app);
+        app.pending_split_request = false;
+        app.pending_split_startup_message = None;
+        app.pending_split_parent_session_id = None;
+        app.pending_split_prompt = None;
+        app.pending_split_model_override = None;
+        app.pending_split_role_selection = None;
+        app.pending_split_provider_key_override = None;
+        app.pending_split_label = None;
+        app.set_status_notice(format!(
+            "Remote session created: {new_session_id}. Resume using --ssh and --resume."
+        ));
+        return false;
+    }
     finish_remote_split_launch(app);
     app.pending_split_request = false;
     let startup_message = app.pending_split_startup_message.take();

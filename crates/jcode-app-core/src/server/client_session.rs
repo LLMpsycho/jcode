@@ -24,6 +24,7 @@ use crate::provider::Provider;
 use crate::tool::Registry;
 use crate::transport::WriteHalf;
 use anyhow::Result;
+use futures::FutureExt;
 use jcode_agent_runtime::InterruptSignal;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,27 +36,7 @@ type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 const RELOAD_RESTORE_MARKER_MAX_AGE: Duration = Duration::from_secs(60);
 
-pub(super) fn session_was_interrupted_by_reload(agent: &Agent) -> bool {
-    let messages = agent.messages();
-    let Some(last) = messages.last() else {
-        return false;
-    };
-
-    last.content.iter().any(|block| match block {
-        ContentBlock::Text { text, .. } => {
-            text.ends_with("[generation interrupted - server reloading]")
-        }
-        ContentBlock::ToolResult {
-            content, is_error, ..
-        } => {
-            content == "Reload initiated. Process restarting..."
-                || (is_error.unwrap_or(false)
-                    && (content.contains("interrupted by server reload")
-                        || content.contains("Skipped - server reloading")))
-        }
-        _ => false,
-    })
-}
+pub(super) use session_signals::session_was_interrupted_by_reload;
 
 pub(super) fn restored_session_was_interrupted(
     session_id: &str,
@@ -873,6 +854,17 @@ pub(super) async fn handle_subscribe(
         session_id: client_session_id.to_string(),
     });
     let _ = client_event_tx.send(ServerEvent::Done { id });
+    prewarm_idle_agent(agent);
+}
+
+fn prewarm_idle_agent(agent: &Arc<Mutex<Agent>>) -> bool {
+    // Poll local preparation once, without holding the agent across a yield.
+    // If a registry/provider lock would wait, abandon this optional attempt.
+    // Only the provider's network task can outlive this call.
+    let Ok(guard) = agent.try_lock() else {
+        return false;
+    };
+    guard.prewarm_provider().now_or_never().is_some()
 }
 
 async fn rename_swarm_member_session(

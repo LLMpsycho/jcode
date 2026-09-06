@@ -1,6 +1,8 @@
 //! Pure JSON-to-JSON translation between the harness API and the legacy
 //! internal protocol. Kept side-effect free so it is trivially unit-testable.
 
+mod model_catalog;
+
 mod api_requests;
 
 use crate::background_progress::parse_background_notification;
@@ -19,6 +21,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(test)]
+pub(crate) fn jcode_home_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Default number of messages a `peek_session` returns. A preview is a glance,
 /// so this is a tail rather than a transcript: enough to recognise which
@@ -108,11 +118,18 @@ pub struct BridgeState {
     /// Legacy id of the in-flight `message` request, so `done` maps to
     /// `turn_done`.
     pending_message_id: Option<u64>,
+    /// Soft interrupts normally join an active turn, but the daemon promotes
+    /// one received while idle into a new turn. Retain their ids so a matching
+    /// `done` can become `turn_done` without confusing queued interrupts with
+    /// the active ordinary message.
+    pending_soft_interrupt_ids: Vec<u64>,
     /// Legacy and API ids for a context-only message. Its daemon completion
     /// event is a request reply, not a model turn boundary.
     pending_no_reply_message_id: Option<(u64, u64)>,
     /// Legacy id of an in-flight `create/attach` subscribe.
     pending_attach_id: Option<(u64, u64, Option<String>)>,
+    /// Subscribe errors can arrive before the correlated state response.
+    pending_attach_subscribe_id: Option<u64>,
     /// Legacy and API ids for an in-flight session fork.
     pending_fork_id: Option<(u64, u64)>,
     /// Legacy id of the unsolicited model-catalog probe sent after attach. Its
@@ -137,6 +154,8 @@ pub struct BridgeState {
     /// again: a picker that opens instantly is the difference between a usable
     /// model switcher and a spinner.
     available_models: Vec<String>,
+    /// An empty catalog is a valid snapshot, not an uninitialized cache.
+    model_catalog_loaded: bool,
     /// Model currently serving the session, tracked alongside the catalog so
     /// a picker can mark the active entry.
     current_model: Option<String>,
@@ -243,6 +262,7 @@ enum SimpleKind {
     Compact,
     /// Awaiting the catalog reply that answers `list_models`.
     Models,
+    RuntimeInfo,
     Credential {
         provider: String,
         configured: bool,
@@ -284,12 +304,25 @@ impl BridgeState {
                 {
                     let api_id = *api_id;
                     self.pending_attach_id = None;
+                    self.pending_attach_subscribe_id = None;
                     // `state` snapshots can also be broadcast for other live
                     // sessions. Only the reply correlated with this connection's
                     // attach request establishes its identity. Otherwise opening
                     // a second panel can retarget the first panel's bridge and
                     // make its next command fail with a wrong-session error.
                     if !session_id.is_empty() {
+                        if self
+                            .session_id
+                            .as_ref()
+                            .is_some_and(|old| old != &session_id)
+                        {
+                            self.available_models.clear();
+                            self.available_routes.clear();
+                            self.current_model = None;
+                            self.current_provider = None;
+                            self.current_effort = None;
+                            self.model_catalog_loaded = false;
+                        }
                         self.session_id = Some(session_id.clone());
                     }
                     let metadata = Self::resolve_session_metadata(&session_id);
@@ -388,9 +421,15 @@ impl BridgeState {
             "done" => {
                 let id = event["id"].as_u64().unwrap_or(0);
                 // Subscribe and other requests also emit `done`; only a
-                // completed `message` is a turn boundary.
-                if self.pending_message_id == Some(id) {
+                // completed ordinary message or an idle soft interrupt promoted
+                // into a message is a turn boundary.
+                let completed_message = self.pending_message_id == Some(id);
+                let completed_idle_interrupt = self.pending_soft_interrupt_ids.contains(&id);
+                if completed_message || completed_idle_interrupt {
                     self.pending_message_id = None;
+                    // Any other retained soft interrupts were queued into the
+                    // turn which just ended. Their ids will not emit `done`.
+                    self.pending_soft_interrupt_ids.clear();
                     vec![ServerFrame::event(ApiEvent::TurnDone {
                         session_id: session(self),
                     })]
@@ -478,7 +517,10 @@ impl BridgeState {
                 if self.pending_model_probe == Some(id) {
                     self.pending_model_probe = None;
                     self.note_models(event);
-                    return vec![ServerFrame::event(self.model_info(session(self), event))];
+                    return vec![
+                        ServerFrame::event(self.model_info(session(self), event)),
+                        ServerFrame::event(self.runtime_info()),
+                    ];
                 }
                 // A `list_models` that arrived before the catalog did: the
                 // client asked too early, so answer it now that it is here.
@@ -492,6 +534,10 @@ impl BridgeState {
                             current: self.current_model.clone(),
                         },
                     )];
+                }
+                if let Some(api_id) = self.take_simple(id, SimpleKind::RuntimeInfo) {
+                    self.note_models(event);
+                    return vec![ServerFrame::reply(api_id, self.runtime_info())];
                 }
                 let Some(api_id) = self.take_simple(id, SimpleKind::History) else {
                     return vec![];
@@ -541,12 +587,12 @@ impl BridgeState {
                     self.current_model = Some(model.to_string());
                 }
                 if let Some(provider) = event["provider_name"].as_str() {
-                    self.current_provider = Some(provider.to_string());
+                    self.note_provider(provider);
                 }
                 let info = ApiEvent::ModelInfo {
                     session_id: session(self),
-                    provider: event["provider_name"].as_str().map(str::to_string),
-                    model: event["model"].as_str().map(str::to_string),
+                    provider: self.current_provider.clone(),
+                    model: self.current_model.clone(),
                     reasoning_effort: self.current_effort.clone(),
                 };
                 // Both a reply and a broadcast: the caller needs its request
@@ -638,7 +684,10 @@ impl BridgeState {
             }
             "available_models_updated" => {
                 self.note_models(event);
-                vec![ServerFrame::event(self.model_info(session(self), event))]
+                vec![
+                    ServerFrame::event(self.model_info(session(self), event)),
+                    ServerFrame::event(self.runtime_info()),
+                ]
             }
             // Background-task traffic reaches clients as a notification whose
             // body is the markdown the TUI renders. The API refuses to make
@@ -695,6 +744,28 @@ impl BridgeState {
             }
             "error" => {
                 let id = event["id"].as_u64().unwrap_or(0);
+                if let Some((state_id, api_id, target)) = self.pending_attach_id.as_ref()
+                    && (self.pending_attach_subscribe_id == Some(id) || *state_id == id)
+                {
+                    let api_id = *api_id;
+                    let code = if target.is_some() {
+                        ErrorCode::UnknownSession
+                    } else {
+                        ErrorCode::Internal
+                    };
+                    self.pending_attach_id = None;
+                    self.pending_attach_subscribe_id = None;
+                    self.pending_model_probe = None;
+                    return vec![ServerFrame::reply(
+                        api_id,
+                        ApiEvent::Error {
+                            code,
+                            message: event["message"].as_str().unwrap_or("").to_string(),
+                        },
+                    )];
+                }
+                self.pending_soft_interrupt_ids
+                    .retain(|pending_id| *pending_id != id);
                 let message = event["message"].as_str().unwrap_or("").to_string();
                 // A turn that fails ends with `error` *instead of* `done`, so
                 // the turn is over: forget the pending message, or a later
@@ -746,53 +817,6 @@ impl BridgeState {
     ///
     /// The daemon reports models on attach and on every change; caching here
     /// is what lets `list_models` answer without a round trip.
-    fn note_models(&mut self, event: &Value) {
-        if let Some(models) = event["available_models"].as_array() {
-            let names: Vec<String> = models
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect();
-            if !names.is_empty() {
-                self.available_models = names;
-            }
-        }
-        if let Some(model) = event["provider_model"].as_str() {
-            self.current_model = Some(model.to_string());
-        }
-        if let Some(provider) = event["provider_name"].as_str() {
-            self.current_provider = Some(provider.to_string());
-        }
-        if let Some(effort) = event["reasoning_effort"].as_str() {
-            self.current_effort = Some(effort.to_string());
-        }
-        if let Some(routes) = event["available_model_routes"].as_array() {
-            self.available_routes = routes
-                .iter()
-                .filter_map(|route| {
-                    Some(ModelRouteInfo {
-                        model: route["model"].as_str()?.to_string(),
-                        provider: route["provider"].as_str()?.to_string(),
-                        api_method: route["api_method"].as_str()?.to_string(),
-                        available: route["available"].as_bool().unwrap_or(false),
-                        detail: route["detail"].as_str().unwrap_or_default().to_string(),
-                    })
-                })
-                .collect();
-        }
-    }
-
-    fn model_info(&self, session_id: String, event: &Value) -> ApiEvent {
-        ApiEvent::ModelInfo {
-            session_id,
-            provider: event["provider_name"].as_str().map(str::to_string),
-            model: event["provider_model"].as_str().map(str::to_string),
-            reasoning_effort: event["reasoning_effort"]
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| self.current_effort.clone()),
-        }
-    }
-
     /// True when `path`, or any ancestor, looks like a jcode source checkout.
     ///
     /// Matched by content (a workspace manifest next to the crates directory)

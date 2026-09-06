@@ -275,6 +275,9 @@ fn openai_request_model(request: &Value) -> String {
 /// to send only new items instead of the full conversation each turn.
 struct PersistentWsState {
     ws_stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Actual handshake identity. Never logged. Forks can update shared
+    /// credentials without directly clearing this provider's private socket.
+    identity: (String, Option<String>, String),
     last_response_id: String,
     connected_at: Instant,
     last_activity_at: Instant,
@@ -716,6 +719,7 @@ pub struct OpenAIProvider {
     websocket_failure_streaks: Arc<RwLock<HashMap<String, u32>>>,
     /// Persistent WebSocket connection for incremental continuation
     persistent_ws: Arc<Mutex<Option<PersistentWsState>>>,
+    prewarm: Arc<openai_websocket_prewarm::PrewarmSlot>,
     /// Browser-backed ChatGPT state for web-only models such as GPT-5.6 Pro.
     chatgpt_web: Arc<chatgpt_web::ChatGptWebState>,
     /// True when this runtime was created without API credentials. It can still
@@ -865,6 +869,7 @@ impl OpenAIProvider {
             websocket_cooldowns: Arc::clone(&WEBSOCKET_COOLDOWNS),
             websocket_failure_streaks: Arc::clone(&WEBSOCKET_FAILURE_STREAKS),
             persistent_ws: Arc::new(Mutex::new(None)),
+            prewarm: Arc::new(openai_websocket_prewarm::PrewarmSlot::default()),
             chatgpt_web: Arc::new(chatgpt_web::ChatGptWebState::new()),
             browser_only: Arc::new(AtomicBool::new(browser_only)),
             route_pinned: AtomicBool::new(false),
@@ -955,6 +960,7 @@ impl OpenAIProvider {
     }
 
     fn clear_persistent_ws_try(&self, reason: &str) {
+        self.prewarm.clear();
         if let Ok(mut persistent_ws) = self.persistent_ws.try_lock() {
             if persistent_ws.is_some() {
                 jcode_base::logging::info(&format!(
@@ -967,6 +973,7 @@ impl OpenAIProvider {
     }
 
     async fn clear_persistent_ws(&self, reason: &str) {
+        self.prewarm.clear();
         let mut persistent_ws = self.persistent_ws.lock().await;
         if persistent_ws.is_some() {
             jcode_base::logging::info(&format!("Clearing persistent OpenAI WS state: {}", reason));
@@ -1274,7 +1281,7 @@ impl OpenAIProvider {
             .map(|mode| mode.as_str().to_string())
             .unwrap_or_else(|_| "busy".to_string());
         format!(
-            "transport_mode={} {}",
+            "transport_mode={} websocket_protocol=v2 {}",
             transport_mode,
             self.diagnostic_persistent_ws_summary()
         )
@@ -1297,6 +1304,7 @@ mod chatgpt_web;
 mod openai_provider_impl;
 #[path = "openai_stream_runtime.rs"]
 mod openai_stream_runtime;
+mod openai_websocket_prewarm;
 
 #[path = "openai/websocket_health.rs"]
 mod websocket_health;

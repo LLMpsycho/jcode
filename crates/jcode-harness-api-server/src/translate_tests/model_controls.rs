@@ -17,7 +17,8 @@ fn attaching_probes_and_reports_the_model() {
         "type": "history", "id": catalog_id, "messages": [],
         "provider_name": "anthropic", "provider_model": "claude-sonnet-4-5",
     }));
-    assert_eq!(frames.len(), 1);
+    assert_eq!(frames.len(), 2);
+    assert!(matches!(frames[1].event, ApiEvent::RuntimeInfo { .. }));
     assert_eq!(
         frames[0].reply_to, None,
         "the probe was not client-initiated"

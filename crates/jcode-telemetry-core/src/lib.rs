@@ -11,7 +11,9 @@ use feature_usage::mark_tool_success_side_effects;
 
 use jcode_logging as logging;
 use jcode_storage as storage;
+mod concurrency;
 mod lifecycle;
+pub use concurrency::{ConcurrencySession, begin_concurrency_session};
 pub mod onboarding_trace;
 mod state_support;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -29,25 +31,38 @@ use lifecycle::emit_lifecycle_event;
 use serde_json::Value;
 use state_support::*;
 use std::collections::HashSet;
+use std::sync::Mutex;
+#[cfg(not(test))]
+use std::sync::OnceLock;
+#[cfg(not(test))]
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
-use std::sync::{Mutex, OnceLock};
+#[cfg(not(test))]
+use std::sync::mpsc::TrySendError;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::{Duration, Instant};
 
 const TELEMETRY_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/event";
 const TRANSCRIPT_ENDPOINT: &str = "https://telemetry.jcode.sh/v1/transcript";
+#[cfg(not(test))]
 const ASYNC_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(not(test))]
 const BACKGROUND_QUEUE_CAPACITY: usize = 2048;
 const BLOCKING_INSTALL_TIMEOUT: Duration = Duration::from_millis(1200);
 const BLOCKING_LIFECYCLE_TIMEOUT: Duration = Duration::from_millis(800);
 const BLOCKING_FIRST_PROMPT_TIMEOUT: Duration = Duration::from_millis(500);
 const TELEMETRY_SCHEMA_VERSION: u32 = 6;
 const DEFAULT_DISCOVERY_ENDPOINT: &str = "https://api.jcode.sh/v1/discovery";
+#[cfg(not(test))]
 static TELEMETRY_PERMANENTLY_REJECTED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
 static TELEMETRY_QUEUE_OVERFLOW_WARNED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
 static TELEMETRY_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
+#[cfg(not(test))]
 static TRANSCRIPT_BACKGROUND_SENDER: OnceLock<std::io::Result<SyncSender<Value>>> = OnceLock::new();
-static TELEMETRY_HTTP_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
+#[cfg(not(test))]
+static TELEMETRY_HTTP_CLIENT: OnceLock<Result<reqwest::blocking::Client, reqwest::Error>> =
+    OnceLock::new();
 #[cfg(test)]
 static TEST_EMITTED_PAYLOADS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
 
@@ -984,10 +999,6 @@ fn now_ms_since(started_at: Instant) -> u64 {
     started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
-fn observe_session_concurrency(state: &mut SessionTelemetry) {
-    state.max_concurrent_sessions = state.max_concurrent_sessions.max(observe_active_sessions());
-}
-
 fn update_turn_activity_timestamp(turn: &mut TurnTelemetry, now: Instant) {
     if now >= turn.last_activity_at {
         turn.last_activity_at = now;
@@ -1021,7 +1032,6 @@ pub fn record_command_family(command: &str) {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         mark_command_family_usage(state, command);
         if let Some(turn) = state.current_turn.as_mut() {
             update_turn_activity_timestamp(turn, Instant::now());
@@ -1030,6 +1040,7 @@ pub fn record_command_family(command: &str) {
     maybe_emit_session_start();
 }
 
+#[cfg(not(test))]
 fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     if TELEMETRY_PERMANENTLY_REJECTED.load(Ordering::Relaxed) {
         return false;
@@ -1038,8 +1049,14 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
         reqwest::blocking::Client::builder()
             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
             .build()
-            .expect("telemetry HTTP client should build")
     });
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            logging::warn(&format!("Telemetry HTTP client unavailable: {error}"));
+            return false;
+        }
+    };
     match client
         .post(TELEMETRY_ENDPOINT)
         .timeout(timeout)
@@ -1068,6 +1085,7 @@ fn post_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     }
 }
 
+#[cfg(not(test))]
 fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> bool {
     const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(200), Duration::from_millis(800)];
     if post_payload(payload.clone(), timeout) {
@@ -1085,13 +1103,20 @@ fn post_payload_with_retry(payload: serde_json::Value, timeout: Duration) -> boo
     false
 }
 
+#[cfg(not(test))]
 fn post_transcript_payload(payload: serde_json::Value, timeout: Duration) -> bool {
     let client = TELEMETRY_HTTP_CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
             .user_agent(jcode_provider_core::JCODE_USER_AGENT)
             .build()
-            .expect("telemetry HTTP client should build")
     });
+    let client = match client {
+        Ok(client) => client,
+        Err(error) => {
+            logging::warn(&format!("Telemetry HTTP client unavailable: {error}"));
+            return false;
+        }
+    };
     match client
         .post(TRANSCRIPT_ENDPOINT)
         .timeout(timeout)
@@ -1132,6 +1157,7 @@ where
     Ok(sender)
 }
 
+#[cfg(not(test))]
 fn background_sender() -> std::io::Result<&'static SyncSender<Value>> {
     TELEMETRY_BACKGROUND_SENDER
         .get_or_init(|| {
@@ -1143,6 +1169,7 @@ fn background_sender() -> std::io::Result<&'static SyncSender<Value>> {
         .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
 }
 
+#[cfg(not(test))]
 fn transcript_background_sender() -> std::io::Result<&'static SyncSender<Value>> {
     TRANSCRIPT_BACKGROUND_SENDER
         .get_or_init(|| {
@@ -1162,7 +1189,7 @@ fn send_transcript_payload(payload: Value) -> bool {
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     let sender = match transcript_background_sender() {
@@ -1188,14 +1215,15 @@ fn send_transcript_payload(payload: Value) -> bool {
     }
 }
 
-fn send_payload(payload: serde_json::Value, mode: DeliveryMode) -> bool {
+fn send_payload(mut payload: serde_json::Value, mode: DeliveryMode) -> bool {
+    concurrency::mark_legacy_concurrency_unavailable(&mut payload);
     #[cfg(test)]
     {
-        let _ = mode;
+        tests::TEST_DELIVERY_MODES.lock().unwrap().push(mode);
         if let Ok(mut emitted) = TEST_EMITTED_PAYLOADS.lock() {
             emitted.push(payload);
         }
-        return true;
+        true
     }
     #[cfg(not(test))]
     match mode {
@@ -1461,7 +1489,6 @@ fn maybe_emit_session_start() {
         if state.start_event_sent {
             return;
         }
-        observe_session_concurrency(state);
         let (schema_version, build_channel, git_checkout, ci, from_cargo) = telemetry_envelope();
         SessionStartEvent {
             event_id: new_event_id(),
@@ -1747,8 +1774,9 @@ fn begin_session_with_mode(
     let (previous_session_gap_secs, sessions_started_24h, sessions_started_7d) = get_or_create_id()
         .map(|id| update_session_start_history(&id, started_at_utc))
         .unwrap_or((None, 0, 0));
-    let (active_sessions_at_start, other_active_sessions_at_start) =
-        register_active_session(&session_id);
+    // The process-global accumulator cannot attribute logical Agent concurrency.
+    // These legacy struct fields are stripped from all emitted payloads.
+    let (active_sessions_at_start, other_active_sessions_at_start) = (0, 0);
     let state = SessionTelemetry {
         session_id,
         correlation_id,
@@ -1902,7 +1930,6 @@ pub fn record_turn() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let now = Instant::now();
         let previous_last_activity = state
             .current_turn
@@ -1964,7 +1991,6 @@ pub fn record_assistant_response() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let now = Instant::now();
         if state.first_assistant_response_ms.is_none() {
             state.first_assistant_response_ms = Some(now_ms_since(state.started_at));
@@ -1987,7 +2013,6 @@ pub fn record_memory_injected(_count: usize, _age_ms: u64) {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         state.feature_memory_used = true;
         if let Some(turn) = state.current_turn.as_mut() {
             turn.feature_memory_used = true;
@@ -2001,7 +2026,6 @@ pub fn record_tool_call() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let now = Instant::now();
         state.tool_calls += 1;
         if state.first_tool_call_ms.is_none() {
@@ -2022,7 +2046,6 @@ pub fn record_tool_failure() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         state.tool_failures += 1;
         if let Some(turn) = state.current_turn.as_mut() {
             turn.tool_failures += 1;
@@ -2036,7 +2059,6 @@ pub fn record_connection_type(connection: &str) {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let normalized = sanitize_telemetry_label(connection).to_ascii_lowercase();
         if normalized.contains("websocket/persistent-reuse") {
             state.transport_persistent_ws_reuse += 1;
@@ -2069,7 +2091,6 @@ pub fn record_token_usage(
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let cache_read = cache_read_input_tokens.unwrap_or(0);
         let cache_creation = cache_creation_input_tokens.unwrap_or(0);
         let total = input_tokens
@@ -2113,7 +2134,6 @@ pub fn record_error(category: ErrorCategory) {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         if let Some(turn) = state.current_turn.as_mut() {
             update_turn_activity_timestamp(turn, Instant::now());
         }
@@ -2142,7 +2162,6 @@ pub fn record_provider_switch() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         if let Some(turn) = state.current_turn.as_mut() {
             update_turn_activity_timestamp(turn, Instant::now());
         }
@@ -2155,7 +2174,6 @@ pub fn record_model_switch() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         if let Some(turn) = state.current_turn.as_mut() {
             update_turn_activity_timestamp(turn, Instant::now());
         }
@@ -2168,7 +2186,6 @@ pub fn record_user_cancelled() {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         state.user_cancelled_count = state.user_cancelled_count.saturating_add(1);
         if let Some(turn) = state.current_turn.as_mut() {
             update_turn_activity_timestamp(turn, Instant::now());
@@ -2205,7 +2222,6 @@ pub fn record_todo_gate(kind: TodoGateKind) {
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let counter = match kind {
             TodoGateKind::Ownership => &mut state.todo_gate_ownership_count,
             TodoGateKind::ClosedFeedbackLoop
@@ -2241,7 +2257,6 @@ pub fn record_tool_execution(name: &str, input: &Value, succeeded: bool, latency
     if let Ok(mut guard) = SESSION_STATE.lock()
         && let Some(ref mut state) = *guard
     {
-        observe_session_concurrency(state);
         let now = Instant::now();
         state.executed_tool_calls += 1;
         state.tool_latency_total_ms = state.tool_latency_total_ms.saturating_add(latency_ms);

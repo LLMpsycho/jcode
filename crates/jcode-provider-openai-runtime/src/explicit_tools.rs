@@ -1,6 +1,63 @@
 use super::*;
 
 impl OpenAIProvider {
+    /// Shared request settings keep speculative warmup and foreground generation
+    /// identical even when reasoning, tools, cache policy, or service tier change.
+    pub(super) async fn response_request(
+        &self,
+        input: &[Value],
+        tools: &[ToolDefinition],
+        system: &str,
+    ) -> Value {
+        let model_id = self.model_id().await;
+        let is_chatgpt_mode = Self::is_chatgpt_mode(&*self.credentials.read().await);
+        self.response_request_for_model(&model_id, input, tools, system, is_chatgpt_mode)
+    }
+
+    pub(super) fn response_request_for_model(
+        &self,
+        model_id: &str,
+        input: &[Value],
+        tools: &[ToolDefinition],
+        system: &str,
+        is_chatgpt_mode: bool,
+    ) -> Value {
+        let api_tools = build_tools(tools);
+        let reasoning_effort = self
+            .reasoning_effort
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+            // No explicit user effort: fall back to the model's jcode-side
+            // default (e.g. `low` for GPT-5.6 Sol).
+            .or_else(|| Self::default_reasoning_effort_for_model(model_id));
+        // Map the `swarm` sentinel (and any future aliases) to the real effort
+        // value the API understands.
+        let api_reasoning_effort = self.api_reasoning_effort(reasoning_effort.as_deref());
+        let service_tier = self
+            .service_tier
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+        let native_compaction_threshold =
+            self.native_compaction_threshold_for_context_window(self.context_window());
+        let mut request = Self::build_response_request(
+            model_id,
+            system.to_string(),
+            input,
+            &api_tools,
+            is_chatgpt_mode,
+            self.max_output_tokens,
+            api_reasoning_effort.as_deref(),
+            service_tier.as_deref(),
+            self.prompt_cache_key.as_deref(),
+            self.prompt_cache_retention.as_deref(),
+            native_compaction_threshold,
+        );
+        self.apply_explicit_tool_policy(&mut request);
+        request
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "request construction threads explicit per-request OpenAI settings without hidden state"
@@ -126,6 +183,16 @@ mod tests {
                 .any(|tool| tool["type"] == "image_generation")
         );
         provider.restrict_to_explicit_tools().unwrap();
+        let tools = [ToolDefinition {
+            name: "read".into(),
+            description: "Read evidence".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let warmed = provider.response_request_for_model("gpt-5.5", &[], &tools, "advisor", true);
+        let advertised = warmed["tools"].as_array().unwrap();
+        assert_eq!(advertised.len(), 1);
+        assert_eq!(advertised[0]["name"], "read");
+        assert_eq!(advertised[0]["type"], "function");
         let mut advisor = ordinary.clone();
         // Future hosted tool kinds must be excluded too, not just image generation.
         advisor["tools"]

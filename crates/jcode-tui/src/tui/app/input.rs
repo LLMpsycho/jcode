@@ -311,6 +311,9 @@ fn image_content(media_type: String, base64_data: String) -> ClipboardPasteConte
 }
 
 fn download_image_url_content(url: &str) -> Option<ClipboardPasteContent> {
+    if crate::tui::is_ssh_remote() {
+        return None;
+    }
     super::download_image_url(url)
         .map(|(media_type, base64_data)| image_content(media_type, base64_data))
 }
@@ -416,7 +419,17 @@ pub(in crate::tui::app) use paste_guard::expire_for_test as paste_guard_expire_f
 use paste_guard::image_media_type;
 
 pub(super) fn handle_paste(app: &mut App, text: String) {
+    if app.append_ssh_login_input(&text) {
+        return;
+    }
     paste_guard::note_paste();
+    if crate::tui::is_ssh_remote() {
+        // Text paths refer to the remote machine. Do not stat/read laptop
+        // files or download image URLs automatically while attached over SSH.
+        handle_text_paste(app, text);
+        app.set_status_notice("SSH paste: text only. File paths refer to the remote host; paste image bytes from the clipboard to attach an image.");
+        return;
+    }
     // Note: clipboard_image() is NOT checked here. Bracketed paste events from the
     // terminal always deliver text. Checking clipboard_image() here caused a bug where
     // text pastes were misidentified as images when the clipboard also had image data
@@ -528,6 +541,9 @@ pub(super) fn promote_dropped_images(app: &mut App) -> bool {
 }
 
 pub(super) fn parse_dropped_paths(text: &str) -> Option<Vec<PathBuf>> {
+    if crate::tui::is_ssh_remote() {
+        return None;
+    }
     let trimmed = text.trim();
     let literal_path = PathBuf::from(trimmed);
     if literal_path.is_file() {
@@ -899,6 +915,9 @@ pub(super) fn insert_input_text(app: &mut App, text: &str) {
 }
 
 pub(super) fn handle_text_input(app: &mut App, text: &str) -> bool {
+    if app.append_ssh_login_input(text) {
+        return true;
+    }
     if text.is_empty() {
         return false;
     }
@@ -1436,6 +1455,7 @@ impl App {
                 // simply do nothing this turn.
                 crate::logging::info("AUTO_POKE_DECISION action=idle reason=no_todos incomplete=0");
                 self.todo_final_response_requested = false;
+                self.last_todo_ownership_fingerprint = None;
                 return false;
             }
             // Deferred quality checks land here, once, instead of interrupting
@@ -1446,12 +1466,44 @@ impl App {
             if self.deliver_deferred_gate_digest_if_needed() {
                 return true;
             }
-            let goals = crate::todo::load_goals(&todo_session_id).unwrap_or_default();
+            let goals = match crate::todo::load_goals(&todo_session_id) {
+                Ok(goals) => goals,
+                Err(error) => {
+                    crate::logging::warn(&format!(
+                        "Todo ownership check could not load goals: {error}"
+                    ));
+                    return false;
+                }
+            };
             let ownership_needs_followup =
                 !crate::todo::completed_groups_have_sufficient_delivery(&todos, &goals);
             let gate_budget_left =
                 self.todo_completion_gate_attempts < Self::TODO_COMPLETION_GATE_MAX_ATTEMPTS;
+            let ownership_fingerprint = serde_json::to_string(&(&todo_session_id, &todos, &goals))
+                .map_or_else(
+                    |error| {
+                        crate::logging::warn(&format!(
+                            "Todo ownership fingerprint unavailable: {error}"
+                        ));
+                        None
+                    },
+                    Some,
+                );
+            if ownership_needs_followup
+                && ownership_fingerprint.is_some()
+                && self.last_todo_ownership_fingerprint == ownership_fingerprint
+            {
+                // The agent has already had a chance to address this exact
+                // assessment. Leave the honest scores intact and stop, rather
+                // than buying another turn that only repeats the final answer.
+                // Do not fall through to the successful-completion handoff.
+                crate::logging::info(
+                    "AUTO_POKE_DECISION action=idle reason=unchanged_ownership_assessment",
+                );
+                return false;
+            }
             if ownership_needs_followup && gate_budget_left {
+                self.last_todo_ownership_fingerprint = ownership_fingerprint;
                 self.todo_completion_gate_attempts =
                     self.todo_completion_gate_attempts.saturating_add(1);
                 crate::telemetry::record_todo_gate(crate::telemetry::TodoGateKind::Ownership);
@@ -1546,6 +1598,7 @@ impl App {
         // latched until this point so the synthetic final-response turn cannot
         // retrigger the same evidence gate against unchanged completed todos.
         self.todo_confidence_spike_challenged = false;
+        self.last_todo_ownership_fingerprint = None;
         let fingerprint =
             serde_json::to_string(&incomplete).unwrap_or_else(|_| poke_message.clone());
         if self.last_auto_poke_fingerprint.as_ref() == Some(&fingerprint) {
@@ -1588,6 +1641,9 @@ impl App {
     }
 
     pub(crate) fn toggle_next_prompt_new_session_routing(&mut self) {
+        if super::commands_dispatch::ssh_local_action_blocked(self, "New-session routing") {
+            return;
+        }
         self.route_next_prompt_to_new_session = !self.route_next_prompt_to_new_session;
         if self.route_next_prompt_to_new_session {
             self.set_status_notice("Next prompt → new session");
@@ -1629,6 +1685,9 @@ impl App {
 
     /// Spawn a brand-new jcode session in a new terminal window.
     pub(crate) fn handle_new_terminal_hotkey(&mut self) {
+        if super::commands_dispatch::ssh_local_action_blocked(self, "Opening a sibling terminal") {
+            return;
+        }
         let cwd = commands::active_working_dir(self)
             .filter(|path| path.is_dir())
             .or_else(|| std::env::current_dir().ok())
@@ -1667,6 +1726,9 @@ fn input_routes_to_new_session(app: &App) -> bool {
 fn route_prompt_to_new_session_local(app: &mut App) -> bool {
     if !input_routes_to_new_session(app) {
         return false;
+    }
+    if super::commands_dispatch::ssh_local_action_blocked(app, "Local new-session routing") {
+        return true;
     }
 
     app.route_next_prompt_to_new_session = false;
@@ -2124,6 +2186,9 @@ pub(super) fn handle_pre_control_shortcuts(
         return true;
     }
     if app.dictation_key_matches(code, modifiers) {
+        if super::commands_dispatch::ssh_local_action_blocked(app, "Dictation setup") {
+            return true;
+        }
         app.handle_dictation_trigger();
         return true;
     }
@@ -2348,11 +2413,19 @@ pub(super) fn handle_modal_key(
     }
 
     if app.login_picker_overlay.is_some() {
+        if super::commands_dispatch::ssh_local_action_blocked(app, "Local login picker") {
+            app.login_picker_overlay = None;
+            return Ok(true);
+        }
         app.handle_login_picker_key(code, modifiers)?;
         return Ok(true);
     }
 
     if app.account_picker_overlay.is_some() {
+        if super::commands_dispatch::ssh_local_action_blocked(app, "Local account picker") {
+            app.account_picker_overlay = None;
+            return Ok(true);
+        }
         if let Some(command) = app.next_account_picker_action(code, modifiers)? {
             app.handle_account_picker_command(command);
         }
@@ -2399,7 +2472,12 @@ pub(super) fn handle_modal_key(
 }
 
 pub(super) fn handle_scroll_overlay_key(app: &mut App, code: KeyCode) -> Result<bool> {
-    if app.changelog_scroll.is_some() {
+    // This overlay seam is shared by local/replay and live remote clients.
+    if app.panel_image_preview.is_some() {
+        if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+            app.close_panel_image_preview();
+        }
+    } else if app.changelog_scroll.is_some() {
         app.handle_changelog_key(code)?;
     } else if app.help_scroll.is_some() {
         app.handle_help_key(code)?;
@@ -2639,6 +2717,15 @@ fn paste_placeholder(content: &str) -> String {
 
 impl App {
     pub(super) fn handle_key_event(&mut self, event: crossterm::event::KeyEvent) {
+        if self.remote_login.is_some() {
+            if matches!(
+                event.kind,
+                crossterm::event::KeyEventKind::Press | crossterm::event::KeyEventKind::Repeat
+            ) {
+                let _ = self.handle_key_press_event(event);
+            }
+            return;
+        }
         // Record the event if recording is active
         use crate::tui::test_harness::{TestEvent, record_event};
         let modifiers: Vec<String> = {
@@ -2696,6 +2783,10 @@ impl App {
         let mut code = code;
         let mut modifiers = modifiers;
         ctrl_bracket_fallback_to_esc(&mut code, &mut modifiers);
+
+        if self.handle_ssh_login_key(code, modifiers, text_input.as_deref()) {
+            return Ok(());
+        }
 
         // Alt+5 always starts the onboarding simulator from a pristine first
         // screen, even when another modal or a previous sim screen is active.
@@ -2937,6 +3028,9 @@ impl App {
     }
 
     pub(super) fn update_copy_badge_key_event(&mut self, event: crossterm::event::KeyEvent) {
+        if self.remote_login.is_some() {
+            return;
+        }
         use crossterm::event::{KeyCode, KeyEventKind, ModifierKeyCode};
 
         self.prune_copy_badge_ui();
@@ -3428,6 +3522,21 @@ impl App {
 
     /// Submit input - just sets up message and flags, processing happens in next loop iteration
     pub(super) fn submit_input(&mut self) {
+        // Connected SSH input is dispatched through the wire client, never the
+        // local submit fallback (which reads skills and persists prompts).
+        if crate::tui::is_ssh_remote() {
+            let input = self.input.clone();
+            if super::commands_dispatch::dispatch_local_command(self, input.trim()) {
+                self.input.clear();
+                self.cursor_pos = 0;
+            } else {
+                super::commands_dispatch::ssh_local_action_blocked(
+                    self,
+                    "Local submission fallback",
+                );
+            }
+            return;
+        }
         promote_dropped_images(self);
         if self.activate_picker_from_preview() {
             return;

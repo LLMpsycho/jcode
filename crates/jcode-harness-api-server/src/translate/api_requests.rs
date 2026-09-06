@@ -129,27 +129,12 @@ impl BridgeState {
                 let requested_session = (req == "attach_session")
                     .then(|| request["session_id"].as_str().map(str::to_string))
                     .flatten();
-                let working_dir = match request["working_dir"].as_str() {
-                    Some(directory) => directory.to_string(),
-                    None => match std::env::current_dir() {
-                        Ok(directory) => directory.display().to_string(),
-                        Err(error) => {
-                            return Self::error_reply(
-                                api_id,
-                                ErrorCode::Internal,
-                                &format!(
-                                    "Could not resolve the session working directory: {error}"
-                                ),
-                            );
-                        }
-                    },
-                };
                 self.pending_attach_id = Some((state_id, api_id, requested_session));
+                self.pending_attach_subscribe_id = Some(id);
                 self.pending_model_probe = Some(catalog_id);
                 let mut subscribe = json!({
                     "type": "subscribe",
                     "id": id,
-                    "working_dir": working_dir,
                 });
                 if self.crash_on_disconnect {
                     subscribe["crash_on_disconnect"] = json!(true);
@@ -159,12 +144,27 @@ impl BridgeState {
                 // prompt when the subscribe says so, and a client that opens
                 // the repo without saying so gets an agent that cannot build
                 // the very app it is running in.
-                if Self::path_is_inside_jcode_repo(&working_dir) {
-                    subscribe["selfdev"] = json!(true);
-                }
-                if req == "attach_session"
-                    && let Some(target) = request["session_id"].as_str()
-                {
+                if req == "create_session" {
+                    let working_dir = match request["working_dir"].as_str() {
+                        Some(directory) => directory.to_string(),
+                        None => match std::env::current_dir() {
+                            Ok(directory) => directory.display().to_string(),
+                            Err(error) => {
+                                return Self::error_reply(
+                                    api_id,
+                                    ErrorCode::Internal,
+                                    &format!(
+                                        "Could not resolve the session working directory: {error}"
+                                    ),
+                                );
+                            }
+                        },
+                    };
+                    subscribe["working_dir"] = json!(working_dir);
+                    if Self::path_is_inside_jcode_repo(&working_dir) {
+                        subscribe["selfdev"] = json!(true);
+                    }
+                } else if let Some(target) = request["session_id"].as_str() {
                     subscribe["target_session_id"] = json!(target);
                 }
                 // The daemon assigns the session during subscribe but reports
@@ -213,12 +213,19 @@ impl BridgeState {
             "soft_interrupt" => {
                 let id = self.legacy_id();
                 self.pending_simple.push((id, api_id, SimpleKind::Ok));
-                vec![Outbound::Legacy(json!({
+                self.pending_soft_interrupt_ids.push(id);
+                let mut interrupt = json!({
                     "type": "soft_interrupt",
                     "id": id,
                     "content": request["content"].as_str().unwrap_or(""),
                     "urgent": request["urgent"].as_bool().unwrap_or(false),
-                }))]
+                });
+                if let Some(images) = request["images"].as_array()
+                    && !images.is_empty()
+                {
+                    interrupt["images"] = json!(images);
+                }
+                vec![Outbound::Legacy(interrupt)]
             }
             "clear" => {
                 let id = self.legacy_id();
@@ -391,7 +398,7 @@ impl BridgeState {
                 // same breath as attaching can beat it. Returning an empty
                 // list would look like "no models exist", so ask the daemon
                 // and answer when the catalog lands.
-                if self.available_models.is_empty() {
+                if !self.model_catalog_loaded {
                     let id = self.legacy_id();
                     self.pending_simple.push((id, api_id, SimpleKind::Models));
                     return vec![Outbound::Legacy(
@@ -407,16 +414,20 @@ impl BridgeState {
                     },
                 ))]
             }
-            "get_runtime_info" => vec![Outbound::Reply(ServerFrame::reply(
-                api_id,
-                ApiEvent::RuntimeInfo {
-                    session_id: self.session_id.as_deref().unwrap_or("").to_owned(),
-                    provider: self.current_provider.clone(),
-                    model: self.current_model.clone(),
-                    reasoning_effort: self.current_effort.clone(),
-                    routes: self.available_routes.clone(),
-                },
-            ))],
+            "get_runtime_info" => {
+                if !self.model_catalog_loaded {
+                    let id = self.legacy_id();
+                    self.pending_simple
+                        .push((id, api_id, SimpleKind::RuntimeInfo));
+                    return vec![Outbound::Legacy(
+                        json!({"type": "get_model_catalog", "id": id}),
+                    )];
+                }
+                vec![Outbound::Reply(ServerFrame::reply(
+                    api_id,
+                    self.runtime_info(),
+                ))]
+            }
             "set_api_key" | "clear_api_key" => {
                 let provider = request["provider"].as_str().unwrap_or("");
                 let Some((provider, env_keys, file_name)) = Self::credential_binding(provider)

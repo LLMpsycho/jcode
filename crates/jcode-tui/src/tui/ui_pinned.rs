@@ -1,4 +1,7 @@
+#[path = "ui_pinned_images.rs"]
+mod images;
 use super::*;
+use images::markdown_image_line_to_placeholder;
 mod ui_pinned_table;
 use ui_pinned_table::is_rendered_table_line;
 
@@ -1247,6 +1250,7 @@ pub(super) fn draw_pinned_content_cached(
                         ) {
                             match plan {
                                 FitImageRenderPlan::Full { area } => {
+                                    super::panel_image_preview::record_image(area, placement.hash);
                                     mermaid::render_image_widget_scale(
                                         placement.hash,
                                         area,
@@ -1259,6 +1263,7 @@ pub(super) fn draw_pinned_content_cached(
                                     scroll_y,
                                     zoom_percent,
                                 } => {
+                                    super::panel_image_preview::record_image(area, placement.hash);
                                     mermaid::render_image_widget_viewport_precise(
                                         placement.hash,
                                         area,
@@ -1272,6 +1277,7 @@ pub(super) fn draw_pinned_content_cached(
                             }
                         }
                     } else {
+                        super::panel_image_preview::record_image(img_area, placement.hash);
                         mermaid::render_image_widget_scale(
                             placement.hash,
                             img_area,
@@ -1294,6 +1300,7 @@ pub(super) fn draw_pinned_content_cached(
                             )
                         })
                         .unwrap_or(0);
+                    super::panel_image_preview::record_image(img_area, placement.hash);
                     mermaid::render_image_widget_viewport_precise(
                         placement.hash,
                         img_area,
@@ -1529,6 +1536,10 @@ pub(super) fn draw_side_panel_markdown(
                             ) {
                                 let visible_widget_rect = match plan {
                                     FitImageRenderPlan::Full { area } => {
+                                        super::panel_image_preview::record_image(
+                                            area,
+                                            placement.hash,
+                                        );
                                         mermaid::render_image_widget_scale(
                                             placement.hash,
                                             area,
@@ -1542,6 +1553,10 @@ pub(super) fn draw_side_panel_markdown(
                                         scroll_y,
                                         zoom_percent,
                                     } => {
+                                        super::panel_image_preview::record_image(
+                                            area,
+                                            placement.hash,
+                                        );
                                         mermaid::render_image_widget_viewport_precise(
                                             placement.hash,
                                             area,
@@ -1594,6 +1609,7 @@ pub(super) fn draw_side_panel_markdown(
                                 });
                             }
                         } else {
+                            super::panel_image_preview::record_image(img_area, placement.hash);
                             mermaid::render_image_widget_scale(
                                 placement.hash,
                                 img_area,
@@ -1617,6 +1633,7 @@ pub(super) fn draw_side_panel_markdown(
                                 )
                             })
                             .unwrap_or(0);
+                        super::panel_image_preview::record_image(img_area, placement.hash);
                         mermaid::render_image_widget_viewport_precise(
                             placement.hash,
                             img_area,
@@ -1972,73 +1989,6 @@ fn wrap_side_panel_markdown_lines(lines: Vec<Line<'static>>, width: usize) -> Ve
             }
         })
         .collect()
-}
-
-fn markdown_image_line_to_placeholder(
-    page: &crate::side_panel::SidePanelPage,
-    line: Line<'static>,
-) -> Result<Line<'static>, Line<'static>> {
-    let text = super::line_plain_text(&line);
-    let Some(path_text) = parse_rendered_markdown_image_path(&text) else {
-        return Err(line);
-    };
-    let path = resolve_side_panel_image_path(page, path_text);
-    let Ok((width, height)) = ::image::image_dimensions(&path) else {
-        return Err(line);
-    };
-
-    let hash = mermaid::register_external_image(&path, width, height);
-    let marker = mermaid::image_widget_placeholder_markdown(hash)
-        .trim_end()
-        .to_string();
-    Ok(Line::from(Span::styled(
-        marker,
-        Style::default().fg(Color::Black).bg(Color::Black),
-    )))
-}
-
-fn parse_rendered_markdown_image_path(text: &str) -> Option<&str> {
-    let text = text.trim();
-    if !text.starts_with("[image:") || !text.ends_with(')') {
-        return None;
-    }
-
-    let start = text.rfind("] (")? + 3;
-    let path = text.get(start..text.len().saturating_sub(1))?.trim();
-    if path.is_empty()
-        || path.starts_with("http://")
-        || path.starts_with("https://")
-        || path.starts_with("data:")
-    {
-        return None;
-    }
-
-    let lower = path.to_ascii_lowercase();
-    if matches!(
-        std::path::Path::new(&lower)
-            .extension()
-            .and_then(|extension| extension.to_str()),
-        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico")
-    ) {
-        Some(path)
-    } else {
-        None
-    }
-}
-
-fn resolve_side_panel_image_path(
-    page: &crate::side_panel::SidePanelPage,
-    path_text: &str,
-) -> std::path::PathBuf {
-    let path = std::path::Path::new(path_text);
-    if path.is_absolute() {
-        return path.to_path_buf();
-    }
-
-    std::path::Path::new(&page.file_path)
-        .parent()
-        .map(|parent| parent.join(path))
-        .unwrap_or_else(|| path.to_path_buf())
 }
 
 #[cfg(test)]

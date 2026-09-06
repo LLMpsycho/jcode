@@ -749,3 +749,47 @@ fn provider_allowlist_keeps_only_exact_active_route_when_model_and_provider_over
         ]
     );
 }
+
+#[test]
+fn ssh_model_picker_uses_wire_catalog_without_local_cache() {
+    if crate::tui::app::commands_dispatch::ssh_test_runs_in_child(
+        "ssh_model_picker_uses_wire_catalog_without_local_cache",
+    ) {
+        return;
+    }
+    assert!(super::model_picker_usage_path().is_none());
+    assert!(super::model_picker_favorites_path().is_none());
+    assert!(super::remote_model_catalog_cache_path().is_none());
+    let mut app = crate::tui::app::tests::create_test_app();
+    app.is_remote = true;
+    app.remote_startup_phase = None;
+    app.remote_provider_name = Some("remote-provider".to_string());
+    app.remote_provider_model = Some("remote-test-model".to_string());
+    app.remote_available_entries = vec!["remote-test-model".to_string()];
+    assert!(!app.hydrate_remote_model_catalog_cache());
+    let routes = app.build_remote_model_routes_fallback();
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].model, "remote-test-model");
+    assert_eq!(routes[0].api_method, "remote-catalog");
+    app.open_model_picker();
+    assert!(app.inline_interactive_state.is_some());
+    assert!(app.pending_model_picker_load.is_none());
+    app.persist_remote_model_catalog_cache();
+    app.handle_inline_interactive_key(KeyCode::Char('o'), crossterm::event::KeyModifiers::CONTROL)
+        .unwrap();
+    assert!(
+        app.display_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Saving a default model")
+    );
+    // Choosing a runtime route still stages a request for the remote daemon.
+    for _ in 0..3 {
+        if app.inline_interactive_state.is_some() {
+            app.handle_inline_interactive_key(KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+                .unwrap();
+        }
+    }
+    assert!(app.pending_model_switch.is_some());
+}

@@ -12,6 +12,7 @@
 
 use crate::errors::{Error, ErrorKind, Result};
 use crate::launch::{LaunchOptions, LaunchedInstance, ensure_runtime, launch_instance};
+use crate::ssh::{SshConnectOptions, SshProcess, SshTransport};
 use jcode_harness_api::{
     API_VERSION_MAJOR, ApiEvent, ApiRequest, ClientFrame, HistoryMessage, ModelRouteInfo,
     PermissionDecision, ServerFrame, SessionInfo, TextMatch, api_socket_path, read_frame,
@@ -108,9 +109,9 @@ impl Transport for UnixTransport {
         #[cfg(unix)]
         {
             let socket = self.0.try_clone().ok()?;
-            return Some(Arc::new(move || {
+            Some(Arc::new(move || {
                 let _ = socket.shutdown(std::net::Shutdown::Both);
-            }));
+            }))
         }
         #[cfg(windows)]
         {
@@ -309,12 +310,14 @@ fn stop_global_stream(control: &GlobalEventControl, error: Option<Error>) {
     drop(children);
 }
 
+type Subscription = (u64, Option<String>, Sender<ApiEvent>);
+
 struct Inner {
     writer: Mutex<Box<dyn Write + Send>>,
     /// Requests waiting for their `reply_to` frame.
     pending: Mutex<HashMap<u64, Sender<ServerFrame>>>,
     /// Live subscriptions: (id, session filter, sink).
-    subscribers: Mutex<Vec<(u64, Option<String>, Sender<ApiEvent>)>>,
+    subscribers: Mutex<Vec<Subscription>>,
     next_id: AtomicU64,
     next_sub: AtomicU64,
     closed: AtomicBool,
@@ -322,6 +325,7 @@ struct Inner {
     socket_path: std::path::PathBuf,
     client_name: String,
     native_socket: bool,
+    ssh_process: Option<Arc<SshProcess>>,
     shutdown: Option<Arc<dyn Fn() + Send + Sync>>,
     client_handles: AtomicUsize,
 }
@@ -332,6 +336,7 @@ struct Inner {
 /// without one is a stream event and goes to every subscriber.
 pub struct JcodeClient {
     inner: Arc<Inner>,
+    ssh_options: Option<SshConnectOptions>,
     instance: Option<Arc<LaunchedInstance>>,
     /// State directory of the private instance this client owns, if any.
     pub instance_home: Option<std::path::PathBuf>,
@@ -346,6 +351,7 @@ impl Clone for JcodeClient {
         self.inner.client_handles.fetch_add(1, Ordering::Relaxed);
         Self {
             inner: Arc::clone(&self.inner),
+            ssh_options: self.ssh_options.clone(),
             instance: self.instance.clone(),
             instance_home: self.instance_home.clone(),
             server: self.server.clone(),
@@ -356,15 +362,77 @@ impl Clone for JcodeClient {
 
 impl Drop for JcodeClient {
     fn drop(&mut self) {
-        if self.inner.client_handles.fetch_sub(1, Ordering::AcqRel) == 1 {
-            if let Some(shutdown) = &self.inner.shutdown {
-                shutdown();
-            }
+        if self.inner.client_handles.fetch_sub(1, Ordering::AcqRel) == 1
+            && let Some(shutdown) = &self.inner.shutdown
+        {
+            shutdown();
         }
     }
 }
 
 impl JcodeClient {
+    /// Connect to a remote shared harness using system SSH credentials/config.
+    ///
+    /// The remote must have `jcode api --stdio`. Dropping the last client clone
+    /// kills and reaps SSH, but leaves the remote shared daemon running. This
+    /// never launches a local runtime or falls back to local session data.
+    pub fn connect_ssh(options: SshConnectOptions) -> Result<Self> {
+        let transport = SshTransport::spawn(&options)?;
+        Self::over_ssh(transport, options)
+    }
+
+    pub(crate) fn over_ssh(transport: SshTransport, options: SshConnectOptions) -> Result<Self> {
+        let process = Arc::clone(&transport.process);
+        // Also interrupts a blocked hello write, not just the reply wait.
+        let (deadline, watchdog) = process.startup_deadline(options.connect_timeout);
+        let connect = ConnectOptions {
+            socket_path: None,
+            client_name: options.client_name.clone(),
+            request_timeout: options.request_timeout,
+            ensure_runtime: false,
+        };
+        // A remote connection has no local socket path. Do not resolve the
+        // user's local configuration just to manufacture one.
+        let result = Self::over(
+            Box::new(transport),
+            &connect,
+            std::path::PathBuf::new(),
+            false,
+            Some((options, Arc::clone(&process))),
+        );
+        if deadline.send(()).is_err() { /* Startup watchdog already completed. */ }
+        if watchdog.join().is_err() {
+            return Err(Error::new(
+                ErrorKind::Transport,
+                "SSH startup watchdog panicked",
+            ));
+        }
+        let result = if process.timed_out.load(Ordering::Acquire) {
+            Err(Error::new(
+                ErrorKind::StartupTimeout,
+                "SSH startup and handshake timed out",
+            ))
+        } else {
+            result
+        };
+        result.map_err(|error| {
+            process.shutdown();
+            let message = if error.kind == ErrorKind::Disconnected {
+                process.diagnostic()
+            } else {
+                format!("{}; {}", error.message, process.diagnostic())
+            };
+            Error::new(
+                if error.kind == ErrorKind::Timeout || process.timed_out.load(Ordering::Acquire) {
+                    ErrorKind::StartupTimeout
+                } else {
+                    error.kind
+                },
+                message,
+            )
+        })
+    }
+
     /// Start and own a private jcode instance, then connect to it.
     ///
     /// Its state and sockets are isolated from the user's interactive jcode.
@@ -397,13 +465,14 @@ impl JcodeClient {
             &options,
             path,
             true,
+            None,
         )
     }
 
     /// Connect over a caller-supplied transport. The seam tests use.
     pub fn connect_with(transport: Box<dyn Transport>, options: ConnectOptions) -> Result<Self> {
         let path = options.socket_path.clone().unwrap_or_else(api_socket_path);
-        Self::over(transport, &options, path, false)
+        Self::over(transport, &options, path, false, None)
     }
 
     fn over(
@@ -411,7 +480,16 @@ impl JcodeClient {
         options: &ConnectOptions,
         socket_path: std::path::PathBuf,
         native_socket: bool,
+        ssh: Option<(SshConnectOptions, Arc<SshProcess>)>,
     ) -> Result<Self> {
+        let hello_timeout = ssh
+            .as_ref()
+            .map(|(options, _)| options.connect_timeout)
+            .or(options.request_timeout);
+        let (ssh_options, ssh_process) = match ssh {
+            Some((options, process)) => (Some(options), Some(process)),
+            None => (None, None),
+        };
         let shutdown = transport.shutdown_handle();
         let (reader, writer) = transport.split()?;
         let inner = Arc::new(Inner {
@@ -425,6 +503,7 @@ impl JcodeClient {
             socket_path,
             client_name: options.client_name.clone(),
             native_socket,
+            ssh_process,
             shutdown,
             client_handles: AtomicUsize::new(1),
         });
@@ -432,16 +511,20 @@ impl JcodeClient {
 
         let mut client = Self {
             inner,
+            ssh_options,
             instance: None,
             instance_home: None,
             server: String::new(),
             capabilities: Vec::new(),
         };
-        let frame = client.request(ApiRequest::Hello {
-            min_version: API_VERSION_MAJOR,
-            max_version: API_VERSION_MAJOR,
-            client: options.client_name.clone(),
-        })?;
+        let frame = client.request_with_timeout(
+            ApiRequest::Hello {
+                min_version: API_VERSION_MAJOR,
+                max_version: API_VERSION_MAJOR,
+                client: options.client_name.clone(),
+            },
+            hello_timeout,
+        )?;
         match frame.event {
             ApiEvent::HelloOk {
                 server,
@@ -460,7 +543,7 @@ impl JcodeClient {
         }
     }
 
-    /// The socket this client is talking to.
+    /// The socket this client is talking to. Empty for SSH connections.
     pub fn socket_path(&self) -> &std::path::Path {
         &self.inner.socket_path
     }
@@ -477,6 +560,14 @@ impl JcodeClient {
 
     /// Send a raw request and wait for its reply frame.
     pub fn request(&self, request: ApiRequest) -> Result<ServerFrame> {
+        self.request_with_timeout(request, self.inner.request_timeout)
+    }
+
+    fn request_with_timeout(
+        &self,
+        request: ApiRequest,
+        timeout: Option<Duration>,
+    ) -> Result<ServerFrame> {
         let (tx, rx) = channel();
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         self.inner.pending.lock().map_err(poisoned)?.insert(id, tx);
@@ -484,15 +575,15 @@ impl JcodeClient {
             self.inner.pending.lock().map_err(poisoned)?.remove(&id);
             return Err(error);
         }
-        let received = match self.inner.request_timeout {
+        let received = match timeout {
             Some(timeout) => rx.recv_timeout(timeout).map_err(|error| match error {
                 RecvTimeoutError::Timeout => Error::new(
                     ErrorKind::Timeout,
                     format!("no reply to {} within {timeout:?}", request_name(&request)),
                 ),
-                RecvTimeoutError::Disconnected => closed_error(),
+                RecvTimeoutError::Disconnected => self.disconnect_error(),
             }),
-            None => rx.recv().map_err(|_| closed_error()),
+            None => rx.recv().map_err(|_| self.disconnect_error()),
         };
         if received.is_err() {
             self.inner.pending.lock().map_err(poisoned)?.remove(&id);
@@ -508,10 +599,27 @@ impl JcodeClient {
 
     fn write(&self, frame: ClientFrame) -> Result<()> {
         if self.inner.closed.load(Ordering::Relaxed) {
-            return Err(closed_error());
+            return Err(self.disconnect_error());
         }
         let mut writer = self.inner.writer.lock().map_err(poisoned)?;
-        write_frame(&mut *writer, &frame).map_err(Error::from)
+        write_frame(&mut *writer, &frame).map_err(|error| {
+            if let Some(process) = &self.inner.ssh_process {
+                process.shutdown();
+                Error::new(
+                    ErrorKind::Disconnected,
+                    format!("{error}; {}", process.diagnostic()),
+                )
+            } else {
+                Error::from(error)
+            }
+        })
+    }
+
+    fn disconnect_error(&self) -> Error {
+        match &self.inner.ssh_process {
+            Some(process) => Error::new(ErrorKind::Disconnected, process.diagnostic()),
+            None => closed_error(),
+        }
     }
 
     /// Send a request, failing when the server replies with an error frame.
@@ -547,14 +655,14 @@ impl JcodeClient {
     /// fans their events into a bounded queue. A disconnected child is removed
     /// and attached again by a later discovery pass.
     pub fn global_events(&self, options: GlobalEventsOptions) -> Result<GlobalEventStream> {
-        if !self.inner.native_socket {
+        if !self.inner.native_socket && self.ssh_options.is_none() {
             return Err(Error::new(
                 ErrorKind::UnsupportedTransport,
-                "global_events requires a native socket connection; custom transports cannot be cloned into per-session child connections",
+                "global_events requires a native socket or SSH connection; custom transports cannot be cloned into per-session child connections",
             ));
         }
         if self.is_closed() {
-            return Err(closed_error());
+            return Err(self.disconnect_error());
         }
         if options.max_buffered_events == 0 {
             return Err(Error::new(
@@ -727,9 +835,21 @@ impl JcodeClient {
     }
 
     pub fn soft_interrupt(&self, session_id: &str, content: &str, urgent: bool) -> Result<()> {
+        self.soft_interrupt_with_images(session_id, content, Vec::new(), urgent)
+    }
+
+    /// Inject text and image attachments at the next safe point without cancelling.
+    pub fn soft_interrupt_with_images(
+        &self,
+        session_id: &str,
+        content: &str,
+        images: Vec<(String, String)>,
+        urgent: bool,
+    ) -> Result<()> {
         self.request_ok(ApiRequest::SoftInterrupt {
             session_id: session_id.to_string(),
             content: content.to_string(),
+            images,
             urgent,
         })
         .map(drop)
@@ -904,7 +1024,7 @@ impl JcodeClient {
                 _ => {}
             }
         }
-        Err(closed_error())
+        Err(self.disconnect_error())
     }
 
     /// Whether the connection has been closed or lost.
@@ -1054,12 +1174,19 @@ fn start_global_child(parent: &JcodeClient, control: &Arc<GlobalEventControl>, s
         return;
     }
 
-    let child = match JcodeClient::connect(ConnectOptions {
-        socket_path: Some(parent.inner.socket_path.clone()),
-        client_name: format!("{}/global-events", parent.inner.client_name),
-        request_timeout: parent.inner.request_timeout,
-        ensure_runtime: false,
-    }) {
+    let connection = if let Some(options) = &parent.ssh_options {
+        let mut options = options.clone();
+        options.client_name = format!("{}/global-events", parent.inner.client_name);
+        JcodeClient::connect_ssh(options)
+    } else {
+        JcodeClient::connect(ConnectOptions {
+            socket_path: Some(parent.inner.socket_path.clone()),
+            client_name: format!("{}/global-events", parent.inner.client_name),
+            request_timeout: parent.inner.request_timeout,
+            ensure_runtime: false,
+        })
+    };
+    let child = match connection {
         Ok(child) => child,
         Err(error) => {
             stop_global_stream(control, Some(error));
@@ -1128,11 +1255,7 @@ fn start_global_child(parent: &JcodeClient, control: &Arc<GlobalEventControl>, s
 /// The reader thread: correlates replies, fans stream events out.
 fn spawn_reader(inner: Arc<Inner>, mut reader: Box<dyn BufRead + Send>) {
     std::thread::spawn(move || {
-        loop {
-            let frame: ServerFrame = match read_frame(&mut reader) {
-                Ok(frame) => frame,
-                Err(_) => break,
-            };
+        while let Ok(frame) = read_frame::<ServerFrame>(&mut reader) {
             // Unknown kinds are skipped silently, per the protocol's
             // forward-compatibility rule.
             if matches!(frame.event, ApiEvent::Unknown) {
@@ -1168,6 +1291,9 @@ fn spawn_reader(inner: Arc<Inner>, mut reader: Box<dyn BufRead + Send>) {
                 });
             }
         }
+        if let Some(shutdown) = &inner.shutdown {
+            shutdown();
+        }
         inner.closed.store(true, Ordering::Relaxed);
         // Fail everything in flight rather than leaving callers blocked on a
         // reply that can never arrive.
@@ -1199,6 +1325,8 @@ fn event_session(event: &ApiEvent) -> Option<&str> {
         | PermissionRequest { session_id, .. }
         | SessionStatus { session_id, .. }
         | ModelInfo { session_id, .. }
+        | RuntimeInfo { session_id, .. }
+        | ConnectionPhase { session_id, .. }
         | Models { session_id, .. }
         | Compacted { session_id, .. }
         | SessionRenamed { session_id, .. }

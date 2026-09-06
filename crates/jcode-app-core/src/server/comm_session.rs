@@ -448,6 +448,7 @@ pub(super) async fn spawn_swarm_agent(
     working_dir: Option<String>,
     initial_message: Option<String>,
     spawn_mode: Option<SwarmSpawnMode>,
+    requested_model: Option<String>,
     requested_effort: Option<String>,
     label: Option<String>,
     profile: Option<String>,
@@ -507,7 +508,12 @@ pub(super) async fn spawn_swarm_agent(
     let agents_config = &crate::config::Config::load().agents;
     let configured_swarm_model = agents_config.swarm_model.clone();
     let resolved_spawn_mode = spawn_mode.unwrap_or(agents_config.swarm_spawn_mode);
-    let role = swarm_role::resolve(agents_config, &coordinator, requested_effort.as_deref());
+    let role = swarm_role::resolve_with_model(
+        agents_config,
+        &coordinator,
+        requested_model.as_deref(),
+        requested_effort.as_deref(),
+    );
     let selection = role.selection;
     let spawn_model = selection.model.clone();
     let spawn_provider_key = selection.provider_key.clone();
@@ -524,7 +530,8 @@ pub(super) async fn spawn_swarm_agent(
         )?;
     }
     crate::logging::info(&format!(
-        "Swarm spawn model resolution: requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
+        "Swarm spawn model resolution: requested_model={:?} requested_effort={:?} configured_swarm_effort={:?} configured_swarm_model={:?} coordinator_model={:?} coordinator_provider_key={:?} coordinator_route={:?} -> spawn_model={:?} spawn_provider_key={:?} spawn_route={:?}",
+        requested_model,
         requested_effort,
         agents_config.swarm_effort,
         configured_swarm_model,
@@ -773,6 +780,7 @@ pub(super) async fn handle_comm_spawn(
     initial_message: Option<String>,
     request_nonce: Option<String>,
     spawn_mode: Option<SwarmSpawnMode>,
+    model: Option<String>,
     effort: Option<String>,
     label: Option<String>,
     profile: Option<String>,
@@ -835,6 +843,7 @@ pub(super) async fn handle_comm_spawn(
                 .map(|mode| format!("{mode:?}"))
                 .unwrap_or_default(),
             effort.clone().unwrap_or_default(),
+            model.as_deref().unwrap_or("").to_owned(),
             label.clone().unwrap_or_default(),
             profile.clone().unwrap_or_default(),
         ],
@@ -858,6 +867,7 @@ pub(super) async fn handle_comm_spawn(
         working_dir,
         initial_message,
         spawn_mode,
+        model,
         effort,
         label,
         profile,

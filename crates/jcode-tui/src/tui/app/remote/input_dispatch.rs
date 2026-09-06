@@ -1,5 +1,6 @@
 use super::super::{PendingRemoteMessage, PendingSplitPrompt};
 use super::*;
+use crate::tui::app as app_mod;
 
 #[expect(
     clippy::too_many_arguments,
@@ -182,6 +183,22 @@ pub(in crate::tui::app) async fn submit_remote_slash_input(
 
     if super::review_controls::dispatch(app, remote, raw_input.trim()).await {
         return Ok(());
+    }
+
+    if crate::tui::is_ssh_remote() {
+        let trimmed = prepared.expanded.trim();
+        if app_mod::commands_dispatch::handle_ssh_unsupported_command(app, trimmed) {
+            return Ok(());
+        }
+        if matches!(
+            trimmed.split_whitespace().next(),
+            Some("/cancel" | "/stop" | "/help" | "/?" | "/commands" | "/diff")
+        ) {
+            app_mod::commands_dispatch::dispatch_local_command(app, trimmed);
+            return Ok(());
+        }
+        // Only the server knows remote skills and their multi-word names.
+        return submit_prepared_remote_input(app, remote, prepared).await;
     }
 
     // Text that merely starts with `/` is not necessarily a command. A terminal
