@@ -1281,7 +1281,7 @@ fn unbiased_visual_prompt_retry_renders_complete_feedback_change() {
 }
 
 #[test]
-fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
+fn visually_appealing_prompt_batched_retry_renders_compact_todo_card() {
     // This fixture is only the first todo retry emitted after the
     // closed feedback loop continuation. The eval stops here and deliberately does
     // not depend on the model implementing or completing the visual task.
@@ -1353,7 +1353,12 @@ fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
         }),
     };
 
-    let rendered = render_tool_message(&msg, 84, crate::config::DiffDisplayMode::Off)
+    let lines = render_tool_message(&msg, 84, crate::config::DiffDisplayMode::Off);
+    assert!(
+        lines.iter().all(|line| line.width() <= 84),
+        "batched todo card must respect the available width: {lines:?}"
+    );
+    let rendered = lines
         .iter()
         .map(extract_line_text)
         .collect::<Vec<_>>()
@@ -1362,10 +1367,21 @@ fn visually_appealing_prompt_batched_retry_renders_complete_todo_card() {
 
     assert!(rendered.contains("✓ todo"), "{rendered}");
     assert!(rendered.contains("pelican-bike"), "{rendered}");
+    let intent_lines: Vec<_> = rendered
+        .lines()
+        .filter(|line| line.contains("Intent clear:"))
+        .collect();
+    assert_eq!(intent_lines.len(), 1, "{rendered}");
     assert!(
-        compact.contains(&without_whitespace(OBJECTIVE)),
-        "batched todo plan intention was truncated:\n{rendered}"
+        intent_lines[0].contains("Deliver a single-page vanilla HTML/CSS/JS animation")
+            && intent_lines[0].ends_with('…'),
+        "batched todo intent should use the same single-line summary as standalone cards:\n{rendered}"
     );
+    let parsed_todo = tools_ui::parse_batch_sub_outputs_by_index(&msg.content)
+        .get(&1)
+        .and_then(|result| parse_todo_tool_output(&result.content))
+        .expect("batched todo payload should remain available in full");
+    assert_eq!(parsed_todo.plan.user_intention.as_deref(), Some(OBJECTIVE));
     // Compact transcript cards show the goal's quality assessments rather than
     // repeating its potentially long feedback-loop prose. The full prose remains
     // available in the serialized todo payload and the todos side panel.
