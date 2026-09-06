@@ -19,6 +19,9 @@ impl App {
     }
 
     pub(in crate::tui::app) fn try_open_repository_markdown_link(&mut self, target: &str) -> bool {
+        if crate::tui::is_ssh_remote() {
+            return false;
+        }
         let path_target = target.split(['#', '?']).next().unwrap_or(target);
         let relative = std::path::Path::new(path_target);
         if relative.is_absolute()

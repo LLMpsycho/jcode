@@ -180,6 +180,12 @@ impl App {
     }
 
     pub(crate) fn open_agents_picker(&mut self) {
+        if crate::tui::app::commands_dispatch::ssh_local_action_blocked(
+            self,
+            "Agent model configuration",
+        ) {
+            return;
+        }
         self.pending_model_picker_load = None;
         let mut entries: Vec<_> = [
             AgentModelTarget::Main,
@@ -296,6 +302,12 @@ impl App {
     }
 
     pub(crate) fn open_agent_model_picker(&mut self, target: AgentModelTarget) {
+        if crate::tui::app::commands_dispatch::ssh_local_action_blocked(
+            self,
+            "Agent model configuration",
+        ) {
+            return;
+        }
         match target {
             AgentModelTarget::Main => self.open_model_picker(),
             AgentModelTarget::Advisor => {

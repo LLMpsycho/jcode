@@ -121,15 +121,29 @@ pub(super) fn selection_for_concrete_model(
 }
 
 pub(super) fn resolve_swarm_spawn_selection(
+    requested_model: Option<String>,
     configured_swarm_model: Option<String>,
     coordinator: &CoordinatorSpawnIdentity,
 ) -> SwarmSpawnSelection {
+    // An explicit per-worker choice overrides the configured default. The
+    // inheritance sentinels bypass even a concrete configured model.
+    if let Some(model) = requested_model
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+    {
+        return if is_inherit_sentinel(&model) {
+            inherit_coordinator_selection(coordinator)
+        } else {
+            selection_for_concrete_model(model, coordinator)
+        };
+    }
     // Treat empty strings and the explicit "inherit"/"coordinator" sentinels as
     // "no override": spawned swarm agents should inherit the coordinator's model
     // unless `agents.swarm_model` is deliberately set to a concrete model. This
     // avoids the surprising case where a stale `swarm_model` config pins every
     // spawned agent to an unrelated model/provider.
     let configured_swarm_model = configured_swarm_model
+        .map(|model| model.trim().to_string())
         .filter(|model| !model.trim().is_empty() && !is_inherit_sentinel(model));
 
     match configured_swarm_model {

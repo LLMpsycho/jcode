@@ -204,3 +204,30 @@ fn text_input_for_control_shortcut_letters_stays_non_text() {
         None
     );
 }
+
+#[test]
+fn ssh_clipboard_image_bytes_work_without_local_file_or_url_fetch() {
+    if crate::tui::app::commands_dispatch::ssh_test_runs_in_child(
+        "ssh_clipboard_image_bytes_work_without_local_file_or_url_fetch",
+    ) {
+        return;
+    }
+    let content = super::read_clipboard_for_paste_with(
+        &super::ClipboardPasteKind::Smart,
+        || None,
+        || Some(("image/png".to_string(), "aW1hZ2U=".to_string())),
+        |_| panic!("clipboard image bytes must not fetch a URL"),
+    );
+    assert!(matches!(
+        content,
+        super::ClipboardPasteContent::Image { .. }
+    ));
+    assert!(super::download_image_url_content("http://127.0.0.1/secret.png").is_none());
+    let content = super::read_clipboard_for_paste_with(
+        &super::ClipboardPasteKind::Smart,
+        || Some("http://127.0.0.1/secret.png".to_string()),
+        || panic!("text must stay text"),
+        super::download_image_url_content,
+    );
+    assert!(matches!(content, super::ClipboardPasteContent::Text(_)));
+}

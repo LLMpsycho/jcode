@@ -1173,6 +1173,7 @@ async fn init_provider_with_options(
         | ProviderChoice::TogetherAi
         | ProviderChoice::Deepinfra
         | ProviderChoice::Fireworks
+        | ProviderChoice::Novita
         | ProviderChoice::Minimax
         | ProviderChoice::Xai
         | ProviderChoice::NvidiaNim

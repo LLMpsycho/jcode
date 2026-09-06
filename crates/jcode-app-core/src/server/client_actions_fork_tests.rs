@@ -47,7 +47,7 @@ fn verify_child_routing(transfer: bool) {
             let (id, _) = if transfer {
                 create_transfer_child_session(&parent.id, &parent, None)
             } else {
-                clone_split_session(&parent.id)
+                clone_split_session(&parent.id, None)
             }
             .expect("create child");
             let mut child = Session::load(&id).expect("child is durable before launch");

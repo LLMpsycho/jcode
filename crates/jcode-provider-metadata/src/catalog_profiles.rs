@@ -324,6 +324,17 @@ pub const FIREWORKS_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     requires_api_key: true,
 };
 
+pub const NOVITA_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
+    id: "novita",
+    display_name: "Novita AI",
+    api_base: "https://api.novita.ai/openai",
+    api_key_env: "NOVITA_API_KEY",
+    env_file: "novita.env",
+    setup_url: "https://novita.ai/settings/key-management",
+    default_model: Some("zai-org/glm-5.3"),
+    requires_api_key: true,
+};
+
 pub const MINIMAX_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfile {
     id: "minimax",
     display_name: "MiniMax",
@@ -475,7 +486,7 @@ pub const OPENAI_COMPAT_PROFILE: OpenAiCompatibleProfile = OpenAiCompatibleProfi
     requires_api_key: true,
 };
 
-pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 41] = [
+pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 42] = [
     OPENCODE_PROFILE,
     OPENCODE_GO_PROFILE,
     ZAI_PROFILE,
@@ -508,6 +519,7 @@ pub(crate) const OPENAI_COMPAT_PROFILES: [OpenAiCompatibleProfile; 41] = [
     TOGETHER_AI_PROFILE,
     DEEPINFRA_PROFILE,
     FIREWORKS_PROFILE,
+    NOVITA_PROFILE,
     MINIMAX_PROFILE,
     XAI_PROFILE,
     NVIDIA_NIM_PROFILE,

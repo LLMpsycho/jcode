@@ -11,6 +11,12 @@ impl App {
     }
 
     fn open_auth_provider_picker_inline(&mut self, logout: bool) {
+        if crate::tui::app::commands_dispatch::ssh_local_action_blocked(
+            self,
+            "Local authentication",
+        ) {
+            return;
+        }
         let status = crate::auth::AuthStatus::check_fast();
         let providers = crate::provider_catalog::tui_login_providers();
         let mut models = providers

@@ -30,7 +30,7 @@ fn saved_config_location(env_file: &str) -> String {
 }
 
 impl App {
-    fn open_auth_browser(url: &str) -> bool {
+    pub(super) fn open_auth_browser(url: &str) -> bool {
         // Honors --no-browser/NO_BROWSER/JCODE_NO_BROWSER and never opens real
         // browser windows from test binaries (login flows are exercised by TUI
         // tests; without this guard a test run pops OAuth pages on the
@@ -1941,6 +1941,10 @@ impl App {
         }
 
         match pending {
+            PendingLogin::Remote => {
+                // SSH input must never fall through to laptop credential handlers.
+                self.append_ssh_login_input(&input);
+            }
             PendingLogin::ClaudeAccount {
                 verifier,
                 label,
