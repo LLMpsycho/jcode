@@ -137,19 +137,18 @@ impl TurnUsage {
             .saturating_add(self.output_tokens)
             .saturating_add(self.cached_read_tokens.unwrap_or(0))
             .saturating_add(self.cached_write_tokens.unwrap_or(0));
-        let mut usage = json!({
-            "totalTokens": total_tokens,
-            "inputTokens": self.input_tokens,
-            "outputTokens": self.output_tokens,
-        });
-        let object = usage.as_object_mut().expect("usage is an object");
+        let mut object = serde_json::Map::from_iter([
+            ("totalTokens".to_string(), json!(total_tokens)),
+            ("inputTokens".to_string(), json!(self.input_tokens)),
+            ("outputTokens".to_string(), json!(self.output_tokens)),
+        ]);
         if let Some(tokens) = self.cached_read_tokens {
             object.insert("cachedReadTokens".to_string(), json!(tokens));
         }
         if let Some(tokens) = self.cached_write_tokens {
             object.insert("cachedWriteTokens".to_string(), json!(tokens));
         }
-        Some(usage)
+        Some(Value::Object(object))
     }
 }
 
@@ -160,14 +159,11 @@ fn add_optional_tokens(total: &mut Option<u64>, tokens: Option<u64>) {
 }
 
 fn prompt_response(stop_reason: &str, usage: &TurnUsage) -> Value {
-    let mut response = json!({ "stopReason": stop_reason });
+    let mut response = serde_json::Map::from_iter([("stopReason".to_string(), json!(stop_reason))]);
     if let Some(usage) = usage.to_acp() {
-        response
-            .as_object_mut()
-            .expect("prompt response is an object")
-            .insert("usage".to_string(), usage);
+        response.insert("usage".to_string(), usage);
     }
-    response
+    Value::Object(response)
 }
 
 impl SessionUiState {
